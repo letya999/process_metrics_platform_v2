@@ -38,5 +38,3 @@ __all__ = [
     "HTTP_502_BAD_GATEWAY",
     "HTTP_503_SERVICE_UNAVAILABLE",
 ]
-
-

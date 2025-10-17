@@ -4,8 +4,6 @@ Revision ID: 0001_initial
 Revises: None
 Create Date: 2025-10-17
 """
-from alembic import op
-import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "0001_initial"

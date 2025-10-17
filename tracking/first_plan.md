@@ -176,11 +176,11 @@ from datetime import datetime
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Auth Service", version="1.0.0")
-    
+
     @app.get("/health")
     async def health():
         return {"status": "healthy", "service": "auth_service", "timestamp": datetime.utcnow().isoformat() + "Z"}
-    
+
     return app
 ```
 **Commit:** `auth: add FastAPI application`
@@ -194,9 +194,9 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     database_url: str
     jwt_secret_key: str
-    
+
     model_config = {"env_file": ".env"}
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if len(self.jwt_secret_key) < 32:
@@ -222,19 +222,39 @@ networks:
 services:
   postgres:
     image: postgres:15-alpine
-    environment: {POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD}
-    volumes: [postgres_data:/var/lib/postgresql/data, ./db/init:/docker-entrypoint-initdb.d]
-    expose: ["5432"]
-    healthcheck: ["CMD", "pg_isready"]
+    environment:
+      POSTGRES_DB: process_metrics
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   redis:
     image: redis:7-alpine
     command: redis-server --requirepass ${REDIS_PASSWORD}
-    expose: ["6379"]
-    healthcheck: ["CMD", "redis-cli", "ping"]
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   auth_service:
     build: ./services/auth_service
-    ports: ["8001:8001"]
-    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: .env
 volumes:
   postgres_data:
@@ -247,6 +267,34 @@ volumes:
 Sections: Project description, Prerequisites (Docker, Python 3.11), Quick start (cp .env.example .env, docker-compose up), Development (make commands), Architecture (link to .cursor/rules)
 
 **Commit:** `docs: add README.md`
+
+---
+
+## Dependencies: установка (коротко)
+Для локальной разработки рекомендуется PDM.
+
+1) Установите PDM:
+```powershell
+python -m pip install --user "pdm==2.25.5"
+```
+
+2) Для сервиса `auth_service`:
+```powershell
+cd services/auth_service
+pdm install
+pdm install -d
+pdm export --prod --without-hashes -o requirements.txt
+cd ../..
+```
+
+3) Установите pre-commit и включите хуки:
+```powershell
+cd services/auth_service
+pdm add -d pre-commit
+pdm run pre-commit install
+pdm run pre-commit run --all-files
+cd ../..
+```
 
 ---
 

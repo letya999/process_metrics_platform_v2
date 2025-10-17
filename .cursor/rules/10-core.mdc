@@ -162,15 +162,15 @@ Public functions must have docstrings:
 def calculate_cycle_time(issue: Issue) -> timedelta:
     """
     Calculate cycle time for an issue.
-    
+
     Cycle time is time from first "In Progress" to "Done".
-    
+
     Args:
         issue: Issue with status history
-        
+
     Returns:
         Time duration in timedelta
-        
+
     Raises:
         ValueError: If issue missing required transitions
     """

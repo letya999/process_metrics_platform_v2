@@ -1,5 +1,6 @@
-from fastapi import FastAPI
 from datetime import datetime
+
+from fastapi import FastAPI
 
 
 def create_app() -> FastAPI:
@@ -7,6 +8,10 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"status": "healthy", "service": "auth_service", "timestamp": datetime.utcnow().isoformat() + "Z"}
+        return {
+            "status": "healthy",
+            "service": "auth_service",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
 
     return app

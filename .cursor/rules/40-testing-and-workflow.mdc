@@ -42,10 +42,10 @@ def test_calculate_sprint_velocity_completed_issues():
     """Calculate velocity with completed issues."""
     # Arrange
     issues = [Issue(story_points=3, status="Done"), Issue(story_points=5, status="Done")]
-    
+
     # Act
     result = calculate_sprint_velocity(issues)
-    
+
     # Assert
     assert result == 8
 ```
@@ -238,7 +238,7 @@ pytest -k "velocity"        # Tests matching name
 ### ❌ Tests Depend on Each Other
 ```python
 # BAD: test_get depends on test_create
-def test_create(): 
+def test_create():
     global user_id
     user_id = create_user()
 

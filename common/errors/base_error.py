@@ -12,7 +12,12 @@ class BaseServiceError(Exception):
         details: optional dict with extra context
     """
 
-    def __init__(self, message: str, code: Optional[str] = None, details: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
@@ -32,5 +37,3 @@ class ValidationError(BaseServiceError):
 
 class AuthenticationError(BaseServiceError):
     """Authentication / authorization failure (HTTP 401 / 403)."""
-
-

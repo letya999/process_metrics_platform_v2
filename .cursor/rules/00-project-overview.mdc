@@ -9,9 +9,9 @@ globs:
 
 ## 1. What This Platform Is
 
-**Name:** Process Metrics Platform v2  
-**Type:** Open-source, self-hosted metrics collection and analytics platform  
-**Purpose:** Automated collection, normalization, storage, and visualization of development and project management metrics from external tools (Jira, GitLab, etc.)  
+**Name:** Process Metrics Platform v2
+**Type:** Open-source, self-hosted metrics collection and analytics platform
+**Purpose:** Automated collection, normalization, storage, and visualization of development and project management metrics from external tools (Jira, GitLab, etc.)
 **Deployment:** Single docker-compose stack, fully local, no SaaS or cloud dependencies
 
 ---

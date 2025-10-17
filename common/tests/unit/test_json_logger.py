@@ -4,12 +4,12 @@ import json
 import logging
 from io import StringIO
 
-import pytest
-
 from common.loggers.json_logger import JSONFormatter, get_json_logger
 
 
-def capture_log_message(formatter: JSONFormatter, level: int = logging.INFO, **record_kwargs):
+def capture_log_message(
+    formatter: JSONFormatter, level: int = logging.INFO, **record_kwargs
+):
     """Helper to capture a single formatted log message as dict."""
     stream = StringIO()
     handler = logging.StreamHandler(stream)
@@ -48,7 +48,9 @@ def test_get_json_logger_idempotent_handlers():
     logger2 = get_json_logger("myservice")
     assert logger is logger2
     # there should be exactly one JSONFormatter handler
-    json_handlers = [h for h in logger.handlers if isinstance(h.formatter, JSONFormatter)]
+    json_handlers = [
+        h for h in logger.handlers if isinstance(h.formatter, JSONFormatter)
+    ]
     assert len(json_handlers) == 1
 
 
@@ -72,5 +74,3 @@ def test_formatter_includes_exception_info():
     assert contents
     obj = json.loads(contents)
     assert "exc_info" in obj
-
-

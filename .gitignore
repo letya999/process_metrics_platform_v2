@@ -7,5 +7,3 @@ __pypackages__/
 logs/
 .env
 tracking/*.md
-
-

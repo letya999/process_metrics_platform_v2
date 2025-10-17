@@ -9,7 +9,9 @@ from typing import Any, Dict, Optional
 class JSONFormatter(logging.Formatter):
     """Logging formatter that outputs a single-line JSON object per record.
 
-    Required fields: timestamp, level, service, module, message, trace_id, user_id, extra
+    Required fields:
+      timestamp, level, service, module, message,
+      trace_id, user_id, extra
     """
 
     def __init__(self, service_name: str, datefmt: Optional[str] = None) -> None:
@@ -29,7 +31,8 @@ class JSONFormatter(logging.Formatter):
             "extra": {},
         }
 
-        # Attach any additional structured data passed via record.args or record.__dict__
+        # Attach any additional structured data passed via
+        # record.args or record.__dict__
         for attr in ("trace_id", "user_id", "extra"):
             if hasattr(record, attr):
                 payload[attr] = getattr(record, attr)
@@ -49,11 +52,11 @@ def get_json_logger(service_name: str, level: int = logging.INFO) -> logging.Log
     logger = logging.getLogger(service_name)
     logger.setLevel(level)
     # Avoid adding multiple handlers if called multiple times
-    if not any(isinstance(h.formatter, JSONFormatter) for h in logger.handlers if h.formatter):
+    if not any(
+        isinstance(h.formatter, JSONFormatter) for h in logger.handlers if h.formatter
+    ):
         handler = logging.StreamHandler()
         handler.setLevel(level)
         handler.setFormatter(JSONFormatter(service_name=service_name))
         logger.addHandler(handler)
     return logger
-
-

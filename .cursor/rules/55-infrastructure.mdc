@@ -72,7 +72,7 @@ services:
       - "8001:8001"  # External access
     networks:
       - process_metrics_network
-  
+
   etl_service:
     expose:
       - "8002"  # Internal only
@@ -108,7 +108,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-  
+
   etl_service:
     depends_on:
       auth_service:

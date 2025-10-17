@@ -9,5 +9,3 @@ def test_http_status_constants_exist_and_values():
     assert http_status.HTTP_404_NOT_FOUND == 404
     assert http_status.HTTP_422_UNPROCESSABLE_ENTITY == 422
     assert http_status.HTTP_500_INTERNAL_SERVER_ERROR == 500
-
-

@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 from common.errors.base_error import (
+    AuthenticationError,
     BaseServiceError,
     NotFoundError,
     ValidationError,
-    AuthenticationError,
 )
 
 
@@ -31,5 +31,3 @@ def test_subclass_behavior(exc_class, code_expected):
     assert isinstance(e, BaseServiceError)
     assert e.message == "msg"
     assert e.code is code_expected
-
-

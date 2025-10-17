@@ -67,7 +67,7 @@ import httpx
 class JiraConnectorClient:
     def __init__(self, base_url: str):
         self.base_url = base_url
-    
+
     async def trigger_import(self, config: dict):
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{self.base_url}/api/v1/import", json=config)
@@ -172,7 +172,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 class IssueModel(Base):
     __tablename__ = "issues"
     __table_args__ = {"schema": "clean_jira"}
-    
+
     id: Mapped[int] = mapped_column(primary_key=True)
     key: Mapped[str] = mapped_column(unique=True)
     summary: Mapped[str]
@@ -191,7 +191,7 @@ class IssueOut(BaseModel):
     id: int
     key: str
     summary: str
-    
+
     model_config = {"from_attributes": True}
 ```
 
