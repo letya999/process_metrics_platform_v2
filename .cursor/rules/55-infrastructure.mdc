@@ -164,3 +164,23 @@ services:
 - **Service structure** → `20-structure-and-style.mdc`
 
 ---
+
+## 8. Migrations (Alembic)
+
+- **Use Alembic:** Manage all schema migrations with Alembic. Keep the Alembic environment under `db/migrations/` and commit migration revisions to VCS.
+- **Deployment:** Run `alembic upgrade head` as a pre-start step in deployment or via a dedicated one-time `alembic` service in `docker-compose` to ensure databases are up-to-date before services start.
+- **Example docker-compose snippet:**
+```yaml
+  alembic:
+    build: ./services/auth_service  # or central utilities image with alembic
+    command: alembic -c db/migrations/alembic.ini upgrade head
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - process_metrics_network
+```
+- **Note:** Keep `db/init` scripts for first-time initialization; subsequent schema changes should be applied via Alembic. Avoid running raw SQL migrations manually in production.
+
+---

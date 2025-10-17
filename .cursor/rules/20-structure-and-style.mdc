@@ -274,3 +274,15 @@ class UserOut(BaseModel): ...  # Pydantic
 - **Infrastructure** → `55-infrastructure.mdc`
 
 ---
+
+## 13. Migrations
+
+- **Tool:** Use **Alembic** for incremental schema migrations (do not rely on ad-hoc SQL for evolution).
+- **Repository layout:** place Alembic environment and versions under `db/migrations/` (e.g. `db/migrations/alembic.ini`, `db/migrations/env.py`, `db/migrations/versions/`).
+- **Per-service migrations:** if a service requires service-scoped migrations, keep them under `services/<service>/migrations/` and document how they are applied during deployment.
+- **Commands (examples):**
+  - `alembic -c db/migrations/alembic.ini revision --autogenerate -m "describe change"`
+  - `alembic -c db/migrations/alembic.ini upgrade head`
+- **Policy:** commit generated migration scripts to VCS, include a clear revision message, and never commit secrets. Prefer Alembic-managed migrations over repeating `db/init` scripts for schema changes.
+
+---
