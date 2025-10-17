@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+__pypackages__/
+.pytest_cache/
+.coverage
+logs/
+.env
+tracking/*.md
+
+

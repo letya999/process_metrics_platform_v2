@@ -19,6 +19,7 @@ mkdir -p db/{init,schemas} docker/{prometheus,grafana/dashboards} metabase track
 touch tracking/.gitkeep tests/e2e/.gitkeep
 ```
 **Commit:** `infra: initialize project structure`
+**Status:** completed
 
 ---
 
@@ -26,6 +27,7 @@ touch tracking/.gitkeep tests/e2e/.gitkeep
 Create with: `__pycache__/`, `*.py[cod]`, `.venv/`, `__pypackages__/`, `.pytest_cache/`, `.coverage`, `logs/`, `.env`, `tracking/*.md`
 
 **Commit:** `infra: add .gitignore`
+**Status:** completed
 
 ---
 
