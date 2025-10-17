@@ -122,7 +122,7 @@ mkdir -p services/auth_service/tests/{unit,integration,fixtures}
 mkdir -p services/auth_service/logs
 # Add __init__.py to all packages
 ```
-**Commit:** `auth: create service structure`
+**Commit:** `chore: create service structure`
 
 ---
 
@@ -130,7 +130,7 @@ mkdir -p services/auth_service/logs
 Dependencies: fastapi, uvicorn, pydantic, sqlalchemy[asyncio], asyncpg, python-jose, passlib, httpx
 Dev: black, isort, ruff. Test: pytest, pytest-asyncio, pytest-cov
 
-**Commit:** `auth: add pyproject.toml`
+**Commit:** `chore: add pyproject.toml + create service structure`
 
 ---
 
