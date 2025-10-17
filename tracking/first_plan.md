@@ -18,7 +18,7 @@ mkdir -p services common/{loggers,errors,middleware,validators,constants,types}
 mkdir -p db/{init,schemas} docker/{prometheus,grafana/dashboards} metabase tracking tests/e2e
 touch tracking/.gitkeep tests/e2e/.gitkeep
 ```
-**Commit:** `infra: initialize project structure`
+**Commit:** `chore: initialize project structure`
 **Status:** completed
 
 ---
@@ -26,7 +26,7 @@ touch tracking/.gitkeep tests/e2e/.gitkeep
 ## Task 2: .gitignore
 Create with: `__pycache__/`, `*.py[cod]`, `.venv/`, `__pypackages__/`, `.pytest_cache/`, `.coverage`, `logs/`, `.env`, `tracking/*.md`
 
-**Commit:** `infra: add .gitignore`
+**Commit:** `chore: add .gitignore`
 **Status:** completed
 
 ---
@@ -38,7 +38,7 @@ POSTGRES_PASSWORD=change-me-min-16-chars
 REDIS_PASSWORD=change-me-min-16-chars
 JWT_SECRET_KEY=change-me-min-32-chars
 ```
-**Commit:** `infra: add .env.example`
+**Commit:** `chore: add .env.example`
 **Status:** completed
 
 ---
@@ -46,7 +46,7 @@ JWT_SECRET_KEY=change-me-min-32-chars
 ## Task 4: Makefile
 Targets: `help`, `lint` (black, isort, ruff), `test` (pytest --cov), `docker-build`, `docker-up`, `docker-down`, `ci` (lint + test + build), `clean`
 
-**Commit:** `infra: add Makefile`
+**Commit:** `chore: add Makefile`
 **Status:** completed
 
 ---
@@ -58,7 +58,7 @@ testpaths = services tests
 asyncio_mode = auto
 addopts = --verbose --cov-report=html
 ```
-**Commit:** `tests: add pytest configuration`
+**Commit:** `chore: add pytest configuration`
 **Status:** completed
 
 ---
@@ -66,7 +66,7 @@ addopts = --verbose --cov-report=html
 ## Task 6: .coveragerc
 Omit: `*/tests/*`, `*/migrations/*`. Exclude: `pragma: no cover`, `if TYPE_CHECKING:`
 
-**Commit:** `tests: add coverage configuration`
+**Commit:** `chore: add coverage configuration`
 **Status:** completed
 
 ---
@@ -74,14 +74,14 @@ Omit: `*/tests/*`, `*/migrations/*`. Exclude: `pragma: no cover`, `if TYPE_CHECK
 ## Task 7: .pre-commit-config.yaml
 Repos: black (23.12.0), isort (5.13.2), ruff (v0.1.9), pre-commit-hooks (trailing-whitespace, end-of-file-fixer, check-yaml)
 
-**Commit:** `infra: add pre-commit hooks`
+**Commit:** `chore: add pre-commit hooks`
 
 ---
 
 ## Task 8: Root pyproject.toml
 Tool configs for black, isort, ruff (line-length 88, target py311)
 
-**Commit:** `infra: add root pyproject.toml`
+**Commit:** `chore: add root pyproject.toml`
 
 ---
 
@@ -89,21 +89,21 @@ Tool configs for black, isort, ruff (line-length 88, target py311)
 `JSONFormatter` class with fields: timestamp, level, service, module, message, trace_id, user_id, extra.
 `get_json_logger(service_name)` function.
 
-**Commit:** `common: add JSON logger`
+**Commit:** `chore: add JSON logger`
 
 ---
 
 ## Task 10: common/errors/base_error.py
 Classes: `BaseServiceError`, `NotFoundError` (404), `ValidationError` (422), `AuthenticationError` (401)
 
-**Commit:** `common: add base error classes`
+**Commit:** `chore: add base error classes`
 
 ---
 
 ## Task 11: common/constants/http_status.py
 Constants: `HTTP_200_OK`, `HTTP_404_NOT_FOUND`, etc.
 
-**Commit:** `common: add HTTP status constants`
+**Commit:** `chore: add HTTP status constants`
 
 ---
 
@@ -239,7 +239,7 @@ services:
 volumes:
   postgres_data:
 ```
-**Commit:** `infra: add docker-compose.yml`
+**Commit:** `chore: add docker-compose.yml`
 
 ---
 
