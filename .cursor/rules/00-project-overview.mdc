@@ -1,0 +1,125 @@
+---
+description: "Business context for AI agents. What the platform is, why it exists, who uses it. Always applies."
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+# Project Overview
+
+## 1. What This Platform Is
+
+**Name:** Process Metrics Platform v2  
+**Type:** Open-source, self-hosted metrics collection and analytics platform  
+**Purpose:** Automated collection, normalization, storage, and visualization of development and project management metrics from external tools (Jira, GitLab, etc.)  
+**Deployment:** Single docker-compose stack, fully local, no SaaS or cloud dependencies
+
+---
+
+## 2. Business Context
+
+### Target Users
+- Project managers
+- Delivery managers
+- Agile coaches
+- Team leads
+- Process owners
+
+### Problems Solved
+- No unified metrics storage across projects and teams
+- Manual data consolidation from multiple systems
+- Difficult team performance comparison over time
+- External cloud/SaaS usage prohibited by policy
+- Complex BI integration and expensive maintenance
+- No historical reporting capability
+
+### Key Differentiators
+- **Self-hosted:** Full data control, no vendor lock-in
+- **Open-source:** Transparent, customizable, no licensing costs
+- **Modular architecture:** Easy to extend with new connectors
+- **No external dependencies:** Runs entirely locally
+
+---
+
+## 3. Core Features
+
+### Data Import
+- Connect to Jira (Cloud/Server) and GitLab (Cloud/Self-hosted)
+- Scheduled automatic imports via Prefect
+- Full change history storage (raw → clean → bi)
+
+### Metrics Supported
+- **Little's Law:** Lead time, throughput, WIP
+- **DORA:** Deployment frequency, lead time for changes, MTTR, change failure rate
+- **Agile/Scrum:** Velocity, burndown, sprint predictability
+- **Custom metrics:** Extensible via ETL service
+
+### Analytics Access
+- REST APIs (all services expose `/api/v1/...`)
+- Metabase dashboards (self-service BI)
+- Grafana monitoring (system health)
+- Prometheus metrics (performance)
+
+---
+
+## 4. Architecture Principles
+
+### Repository Structure
+- **Monorepo:** All code in `/services/`, shared utilities in `/common/`
+- **Service isolation:** Each service has own `pyproject.toml`, `Dockerfile`, database schema
+- **Single database:** PostgreSQL with 15 schemas, dedicated user per service
+- **Data flow:** raw → clean → bi (via ETL service)
+
+### Service Categories
+
+| Category | Services | Purpose |
+|----------|----------|---------|
+| **Platform** | auth, etl, admin, monitoring, bi_layer | Core business logic |
+| **Connectors** | jira_cloud_dlt, jira_cloud_rest, jira_server_rest, gitlab_cloud_api, gitlab_selfhosted_db | Data import from external systems |
+| **Background** | prefect_server, prefect_agent, celery_worker, celery_flower | Orchestration and task processing |
+| **Monitoring** | prometheus, grafana, metabase | Observability and BI |
+| **Infrastructure** | postgres, redis | Data storage and cache |
+
+---
+
+## 5. Database Schemas (15 Total)
+
+| Type | Count | Schemas | Owner |
+|------|-------|---------|-------|
+| **Core** | 5 | `auth`, `admin`, `etl`, `monitoring`, `orchestrator` | Platform services |
+| **Raw** | 5 | `raw_jira_cloud_dlt`, `raw_jira_cloud_rest`, `raw_jira_server_rest`, `raw_gitlab_cloud_api`, `raw_gitlab_selfhosted_db` | Connectors (write only) |
+| **Clean** | 2 | `clean_jira`, `clean_gitlab` | ETL service (normalized data) |
+| **BI** | 3 | `bi_metrics`, `bi_dashboards`, `metabase` | BI layer and Metabase |
+
+### Schema Access Rules
+- Each service has dedicated database user with minimal permissions
+- Service can access ONLY its own schema
+- **Exceptions:** `etl_service` (read raw_*, write clean_* and bi_*), `orchestrator` (read auth)
+
+---
+
+## 6. Hard Boundaries
+
+These rules define system integrity and MUST be followed:
+
+- ❌ **No secrets in code, configs, or Dockerfiles** (only in `.env`)
+- ❌ **No cross-service imports** (except `/common/` utilities)
+- ❌ **No business logic in `/common/`** (only infrastructure utilities)
+- ❌ **No direct external API access** (use connector services)
+- ❌ **`/common/` never imports from `/services/`** (one-way dependency only)
+
+---
+
+## 7. Related Rules
+
+Read these files for detailed implementation guidance:
+
+- **10-core.mdc** — Agent workflow, guardrails, quality standards
+- **20-structure-and-style.mdc** — Code structure, naming conventions, "where does X go?"
+- **30-dependencies.mdc** — PDM workflow, Docker builds, license policy
+- **35-security.mdc** — Secrets management, authentication, security rules
+- **40-testing-and-workflow.mdc** — Testing requirements, Git workflow, CI/CD
+- **50-observability.mdc** — Logging format, metrics, health checks
+- **55-infrastructure.mdc** — Docker network, port exposure, service dependencies
+
+---

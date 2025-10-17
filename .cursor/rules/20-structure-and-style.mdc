@@ -1,0 +1,276 @@
+---
+description: "Architecture, service structure, code style, API standards. Always applies."
+alwaysApply: true
+globs:
+  - "services/**/*.py"
+  - "common/**/*.py"
+---
+
+# Structure & Style
+
+## 1. Repository Structure
+
+**Monorepo layout:**
+- `/common/` — Shared infrastructure utilities only
+- `/services/` — All microservices
+- `/db/` — Database init scripts, migrations
+- `/docker/` — Prometheus, Grafana configs
+- `/tracking/` — Temporary plans (delete after use)
+- `/tests/` — Global integration tests
+
+**Rule:** One directory = one responsibility, no mixing.
+
+---
+
+## 2. Service Structure (Mandatory)
+```
+services/<service_name>/
+├── app/
+│   ├── api/              # FastAPI routes (optional)
+│   ├── domain/           # Business logic (pure functions)
+│   ├── infra/            # DB repos, external clients
+│   ├── models/
+│   │   ├── orm/         # SQLAlchemy models
+│   │   └── schemas/     # Pydantic models
+│   ├── tasks/           # Celery tasks (optional)
+│   ├── flows/           # Prefect flows (orchestrator only)
+│   ├── clients/         # HTTP clients (optional)
+│   └── utils/           # Service-specific helpers
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── fixtures/
+├── Dockerfile
+├── pyproject.toml
+├── requirements.txt     # Generated from pyproject.toml
+└── README.md
+```
+
+**Notes:**
+- `api/` — Only for services with REST endpoints (auth, admin)
+- `flows/` — Only for orchestrator service
+- `clients/` — Only for services calling other services via HTTP
+
+---
+
+## 3. Orchestrator Communication
+
+**Platform type:** Data pipeline and analytics (not request-response API server).
+
+Most services are background workers (Celery/Prefect), not REST APIs.
+
+**Rule:** Orchestrator calls other services via HTTP, never direct imports.
+```python
+# ✅ Good: services/orchestrator/app/clients/jira_client.py
+import httpx
+
+class JiraConnectorClient:
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+    
+    async def trigger_import(self, config: dict):
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{self.base_url}/api/v1/import", json=config)
+            return response.json()
+
+# ❌ Wrong: direct import from another service
+from services.jira_connector.app.domain import import_issues  # FORBIDDEN
+```
+
+---
+
+## 4. /common/ Directory
+
+**Allowed content:**
+- `loggers/` — JSON logger setup
+- `errors/` — Base error classes
+- `middleware/` — JWT auth, tracing, error handling
+- `validators/` — Pydantic validators
+- `constants/` — Error codes, HTTP statuses
+- `types/` — Shared type definitions
+
+**Rules:**
+- ✅ Infrastructure utilities only
+- ✅ Services import from `/common/`
+- ❌ NO business logic (calculations, domain rules)
+- ❌ NO ORM models or business Pydantic schemas
+- ❌ NO API routes or endpoints
+- ❌ `/common/` NEVER imports from `/services/`
+
+---
+
+## 5. Naming Conventions
+
+| Type | Format | Examples |
+|------|--------|----------|
+| **Files/dirs/vars/funcs** | snake_case | `user_service.py`, `calculate_velocity()`, `project_id` |
+| **Classes** | PascalCase | `UserCreate`, `UserModel`, `BaseServiceError` |
+| **Constants** | UPPER_CASE | `MAX_RETRIES`, `JWT_ALGORITHM`, `ERROR_CODE_NOT_FOUND` |
+| **DB schemas** | snake_case | `auth`, `raw_jira_cloud`, `clean_jira`, `bi_metrics` |
+| **DB tables** | snake_case | `users`, `projects`, `issues`, `sprint_metrics` |
+| **DB columns** | snake_case | `user_id`, `created_at`, `is_active`, `hashed_password` |
+| **DB foreign keys** | `<table>_id` | `project_id`, `user_id`, `sprint_id` |
+| **DB indexes** | `idx_<table>_<column>` | `idx_issues_project_id`, `idx_users_email` |
+| **Celery tasks** | `verb_noun_task` | `import_jira_issues_task`, `calculate_metrics_task` |
+| **Prefect flows** | `verb_noun_flow` | `import_jira_issues_flow`, `transform_etl_pipeline_flow` |
+| **API endpoints** | snake_case, plural | `/api/v1/users`, `/api/v1/projects/{id}/issues` |
+
+---
+
+## 6. Code Style
+
+**Formatting (enforced by tools):**
+- **black:** Line length 88, double quotes
+- **isort:** Import groups, alphabetical
+- **ruff:** Linting, unused imports, complexity checks
+
+**Principles:**
+- Functional > OOP (except models, repos, clients)
+- `async def` for all I/O operations
+- `def` for pure functions (calculations, transformations)
+- Type hints required for all public functions
+- No global state, no side effects at import time
+
+**File limits:**
+- Max 500 lines per file (split if exceeded)
+- Max 50 lines per function (refactor if exceeded)
+
+---
+
+## 7. FastAPI Standards
+
+**App factory pattern:**
+```python
+# app/main.py
+def create_app() -> FastAPI:
+    app = FastAPI(title="Auth Service", version="1.0.0")
+    app.include_router(users_router, prefix="/api/v1")
+    return app
+```
+
+**RORO pattern (Receive Object, Return Object):**
+```python
+@router.post("/users", response_model=UserOut)
+async def create_user(data: UserCreate) -> UserOut:
+    return await user_service.create(data)
+```
+
+**Requirements:**
+- Versioned: `/api/v1/...`
+- Require JWT (except `/health`, `/metrics`)
+- OpenAPI documented: summary, description, tags
+
+---
+
+## 8. Models
+
+**One file per entity, separate ORM and Pydantic:**
+```python
+# app/models/orm/issue.py
+from sqlalchemy.orm import Mapped, mapped_column
+
+class IssueModel(Base):
+    __tablename__ = "issues"
+    __table_args__ = {"schema": "clean_jira"}
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(unique=True)
+    summary: Mapped[str]
+    project_id: Mapped[int] = mapped_column(ForeignKey("clean_jira.projects.id"))
+```
+```python
+# app/models/schemas/issue.py
+from pydantic import BaseModel
+
+class IssueCreate(BaseModel):
+    key: str
+    summary: str
+    project_id: int
+
+class IssueOut(BaseModel):
+    id: int
+    key: str
+    summary: str
+    
+    model_config = {"from_attributes": True}
+```
+
+**Rule:** Never mix ORM and Pydantic in same file.
+
+---
+
+## 9. Async/Await
+
+All I/O must be async:
+```python
+# ✅ Good: async I/O
+async def fetch_issues():
+    async with httpx.AsyncClient() as client:
+        response = await client.get("http://jira/api/issues")
+        return response.json()
+
+# ❌ Bad: blocking I/O
+async def fetch_issues():
+    response = requests.get("http://jira/api/issues")  # blocks event loop
+    return response.json()
+```
+
+---
+
+## 10. Common Anti-Patterns
+
+### ❌ Orchestrator imports from service
+```python
+# services/orchestrator/app/flows/jira_flow.py
+from services.jira_connector.app.domain import import_issues  # FORBIDDEN
+```
+**Fix:** Use HTTP client to call connector API.
+
+### ❌ Business logic in /common/
+```python
+# common/metrics.py
+def calculate_velocity(issues):  # WRONG - domain logic
+    return sum(i.points for i in issues)
+```
+**Fix:** Move to `services/etl_service/app/domain/metrics/`.
+
+### ❌ Mixing ORM and Pydantic
+```python
+# app/models/user.py
+class UserModel(Base): ...  # ORM
+class UserOut(BaseModel): ...  # Pydantic
+# WRONG - split into orm/user.py and schemas/user.py
+```
+
+---
+
+## 11. Where Does X Go?
+
+| What | Where | Example |
+|------|-------|---------|
+| Shared logger | `/common/loggers/` | `json_logger.py` |
+| Base error class | `/common/errors/` | `base_error.py` |
+| JWT middleware | `/common/middleware/` | `auth.py` |
+| Business logic | `services/<service>/app/domain/` | `velocity_calculator.py` |
+| API endpoint | `services/<service>/app/api/` | `users.py` |
+| Prefect flow | `services/orchestrator/app/flows/` | `import_jira_issues_flow.py` |
+| Celery task | `services/<service>/app/tasks/` | `send_notification_task.py` |
+| ORM model | `services/<service>/app/models/orm/` | `user.py` |
+| Pydantic schema | `services/<service>/app/models/schemas/` | `user.py` |
+| DB repository | `services/<service>/app/infra/repos/` | `user_repo.py` |
+| HTTP client | `services/<service>/app/clients/` | `auth_client.py` |
+| Service utils | `services/<service>/app/utils/` | `date_helpers.py` |
+| Test fixtures | `services/<service>/tests/fixtures/` | `database.py` |
+
+---
+
+## 12. Related Rules
+
+- **Core workflow** → `10-core.mdc`
+- **Dependencies & Docker** → `30-dependencies.mdc`
+- **Security** → `35-security.mdc`
+- **Testing & Git** → `40-testing-and-workflow.mdc`
+- **Observability** → `50-observability.mdc`
+- **Infrastructure** → `55-infrastructure.mdc`
+
+---

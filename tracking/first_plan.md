@@ -39,6 +39,7 @@ REDIS_PASSWORD=change-me-min-16-chars
 JWT_SECRET_KEY=change-me-min-32-chars
 ```
 **Commit:** `infra: add .env.example`
+**Status:** completed
 
 ---
 

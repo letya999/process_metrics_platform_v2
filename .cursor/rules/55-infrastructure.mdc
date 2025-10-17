@@ -1,0 +1,166 @@
+---
+description: "Docker network, port exposure, monitoring setup, service dependencies. Always applies."
+alwaysApply: true
+globs:
+  - "docker-compose.yml"
+  - "db/**/*.sql"
+  - "docker/prometheus.yml"
+---
+
+# Infrastructure
+
+## 1. Database Schemas
+
+See `00-project-overview.mdc` section 5 for complete schema list and ownership.
+
+### Cross-Schema Access
+- **etl_service:** Read `raw_*`, write `clean_*` and `bi_*`
+- **orchestrator:** Read `auth` only
+- **All others:** Own schema only
+
+---
+
+## 2. Docker Network
+
+### Configuration
+- **Network name:** `process_metrics_network`
+- **Driver:** bridge
+- **Communication:** Container names (e.g., `auth_service`, `postgres`)
+- **Authentication:** JWT via `Authorization: Bearer <token>` header
+- **Tracing:** `X-Trace-Id` header propagation
+
+---
+
+## 3. Port Exposure (CRITICAL)
+
+### External Ports (use `ports:` in docker-compose)
+
+Only these 6 services are externally accessible:
+
+| Port | Service | Purpose |
+|------|---------|---------|
+| **3000** | Metabase | BI dashboards |
+| **3100** | Grafana | Monitoring UI |
+| **4200** | Prefect UI | Orchestration management |
+| **8001** | Auth API | Authentication |
+| **8003** | Admin Panel | Configuration UI |
+| **9090** | Prometheus | Metrics collection |
+
+### Internal Ports (use `expose:` in docker-compose)
+
+All other services are internal only:
+
+| Port Range | Services | Purpose |
+|------------|----------|---------|
+| **5432** | PostgreSQL | Database |
+| **6379** | Redis | Cache |
+| **8002** | ETL Service | Internal API |
+| **8004** | Monitoring Service | Internal API |
+| **8005** | BI Layer | Internal API |
+| **8011-8022** | Connectors | Data import |
+
+### Rules
+- ✅ Use `ports:` ONLY for 6 external services above
+- ✅ Use `expose:` for ALL internal services
+- ❌ NEVER expose database (5432) or Redis (6379) externally
+
+### docker-compose Example
+```yaml
+services:
+  auth_service:
+    ports:
+      - "8001:8001"  # External access
+    networks:
+      - process_metrics_network
+  
+  etl_service:
+    expose:
+      - "8002"  # Internal only
+    networks:
+      - process_metrics_network
+
+networks:
+  process_metrics_network:
+    driver: bridge
+```
+
+---
+
+## 4. Service Dependencies
+
+### Startup Order
+
+Services must start in correct order:
+
+| Order | Services | Reason |
+|-------|----------|--------|
+| **1** | postgres, redis | Infrastructure dependencies |
+| **2** | auth_service, monitoring_service | Core platform services |
+| **3** | connectors, etl_service | Data pipeline services |
+| **4** | orchestrator, prefect_agent | Orchestration (needs auth) |
+
+### docker-compose Configuration
+```yaml
+services:
+  auth_service:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  
+  etl_service:
+    depends_on:
+      auth_service:
+        condition: service_healthy
+```
+
+---
+
+## 5. Monitoring Setup
+
+### Prometheus
+- **URL:** http://localhost:9090
+- **Scrape interval:** 10 seconds
+- **Targets:** All services exposing `/metrics` endpoint
+- **Config:** `docker/prometheus.yml`
+
+### Grafana
+- **URL:** http://localhost:3100
+- **Datasource:** Prometheus (pre-configured via provisioning)
+- **Dashboards:** `docker/grafana/dashboards/`
+
+### Metabase
+- **URL:** http://localhost:3000
+- **Database:** PostgreSQL (`bi_metrics`, `bi_dashboards` schemas)
+- **Init:** Auto-setup on first run
+
+---
+
+## 6. Quick Reference
+
+| Component | Detail | Value |
+|-----------|--------|-------|
+| **Network** | Name | process_metrics_network |
+| **Network** | Driver | bridge |
+| **External ports** | Count | 6 (see section 3) |
+| **Internal ports** | Rule | Use `expose:`, not `ports:` |
+| **Prometheus** | URL | http://localhost:9090 |
+| **Prometheus** | Scrape interval | 10 seconds |
+| **Grafana** | URL | http://localhost:3100 |
+| **Metabase** | URL | http://localhost:3000 |
+| **Startup** | First | postgres, redis |
+| **Startup** | Second | auth_service, monitoring_service |
+| **Startup** | Third | connectors, etl_service |
+| **Startup** | Last | orchestrator, prefect_agent |
+
+---
+
+## 7. Related Rules
+
+- **Database schemas** → `00-project-overview.mdc` section 5
+- **Network security** → `35-security.mdc` section 5
+- **Health checks** → `50-observability.mdc` section 4
+- **Service structure** → `20-structure-and-style.mdc`
+
+---

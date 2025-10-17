@@ -1,0 +1,123 @@
+---
+description: "Logging, metrics, health checks, tracing. Always applies."
+alwaysApply: true
+globs:
+  - "services/**/*.py"
+  - "common/loggers/**/*.py"
+---
+
+# Observability
+
+## 1. Logging Policy
+
+### Format
+**JSON, one line = one event**
+
+**Required fields:**
+```json
+{
+  "timestamp": "2025-01-15T10:30:45.123Z",
+  "level": "INFO",
+  "service": "etl_service",
+  "module": "domain.metrics.velocity",
+  "message": "Calculated sprint velocity",
+  "trace_id": "550e8400-e29b-41d4-a716-446655440000",
+  "user_id": 42,
+  "extra": {"sprint_id": 123, "velocity": 25.5}
+}
+```
+
+### Implementation
+Use `common/loggers/json_logger.py` in all services.
+
+### Storage
+- **Path:** `/services/<service>/logs/<service>.log`
+- **Retention:** Minimum 30 days
+- **Rotation:** 7 days or 1GB
+
+### Security
+Never log: passwords, tokens, API keys, PII (emails, names). Log user_id only.
+
+See `35-security.mdc` section 6 for details.
+
+---
+
+## 2. Tracing
+
+### trace_id (Mandatory)
+- **Format:** UUIDv4
+- **Propagation:** `X-Trace-Id` HTTP header
+- **Generation:** Create if missing, pass to all downstream calls
+
+### user_id (Optional)
+Include when user context available (logged-in users only).
+
+---
+
+## 3. Metrics Collection
+
+### Required Metrics (Per Service)
+- **Latency:** p50, p95, p99 (milliseconds)
+- **Error rate:** 5xx, 4xx (percentage)
+- **Throughput:** requests/sec, tasks/sec
+- **Saturation:** CPU, memory, queue depth (percentage)
+- **Availability:** uptime (percentage)
+
+### Prometheus Integration
+Expose metrics at `/metrics` endpoint (Prometheus format).
+
+### Naming Convention
+**Pattern:** `<service>_<module>_<metric_type>`
+
+**Examples:**
+- `etl_service_velocity_calculation_duration_seconds`
+- `auth_service_jwt_validation_errors_total`
+
+### Labels
+- `environment`, `service`, `instance`, `version`
+
+---
+
+## 4. Health Checks (Mandatory)
+
+### Endpoint
+Every service MUST expose `/health`:
+```python
+@router.get("/health", status_code=200)
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "etl_service",
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
+```
+
+### Docker Configuration
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
+```
+
+---
+
+## 5. Quick Reference
+
+| Aspect | Requirement | Format |
+|--------|-------------|--------|
+| **Log format** | JSON with required fields | `{"timestamp": ..., "level": ..., "service": ..., ...}` |
+| **Log security** | Never log secrets/PII | Log user_id only, not email/name |
+| **Tracing** | X-Trace-Id header | UUIDv4 |
+| **Metrics** | /metrics endpoint | Prometheus format |
+| **Naming** | <service>_<module>_<type> | `etl_service_velocity_duration_seconds` |
+| **Health** | /health endpoint | `{"status": "healthy", ...}` |
+| **Health check** | Docker HEALTHCHECK | interval=30s, timeout=10s, retries=3 |
+
+---
+
+## 6. Related Rules
+
+- **Logging security** → `35-security.mdc` section 6
+- **Monitoring infrastructure** → `55-infrastructure.mdc`
+- **Service structure** → `20-structure-and-style.mdc`
+
+---
