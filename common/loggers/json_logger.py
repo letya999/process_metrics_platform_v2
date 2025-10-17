@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
@@ -19,7 +19,12 @@ class JSONFormatter(logging.Formatter):
         self.service_name = service_name
 
     def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
-        timestamp = datetime.utcfromtimestamp(record.created).isoformat() + "Z"
+        # Use timezone-aware UTC datetime to avoid deprecated utcfromtimestamp
+        timestamp = (
+            datetime.fromtimestamp(record.created, timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         payload: Dict[str, Any] = {
             "timestamp": timestamp,
             "level": record.levelname,

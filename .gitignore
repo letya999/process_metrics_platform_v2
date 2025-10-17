@@ -7,3 +7,7 @@ __pypackages__/
 logs/
 .env
 tracking/*.md
+.pdm-python
+.ruff_cache
+.audit
+.pytest_cache

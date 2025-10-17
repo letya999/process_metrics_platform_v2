@@ -1,5 +1,9 @@
 .PHONY: help lint test docker-build docker-up docker-down ci clean
 
+# Allow enabling BuildKit cross-platform by exporting from Make (works on Windows and Unix)
+DOCKER_BUILDKIT ?= 1
+export DOCKER_BUILDKIT
+
 help:
 	@echo "Available targets: help, lint, test, docker-build, docker-up, docker-down, ci, clean"
 
@@ -11,11 +15,12 @@ lint:
 
 test:
 	@echo "Running tests..."
-	pytest --cov=.
+	@echo "Running tests via pdm"
+	pdm run pytest
 
 docker-build:
-	@echo "Building docker images for services (uses DOCKER_BUILDKIT=1)"
-	export DOCKER_BUILDKIT=1 && docker build -t auth_service:local services/auth_service
+	@echo "Building docker images for services (uses DOCKER_BUILDKIT=$(DOCKER_BUILDKIT))"
+	docker build -t auth_service:local services/auth_service
 
 docker-up:
 	@echo "Starting docker-compose stack"
