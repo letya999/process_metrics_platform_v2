@@ -111,7 +111,7 @@ Constants: `HTTP_200_OK`, `HTTP_404_NOT_FOUND`, etc.
 ```python
 __version__ = "1.0.0"
 ```
-**Commit:** `common: add package init`
+**Commit:** `chore: add package init`
 
 ---
 
