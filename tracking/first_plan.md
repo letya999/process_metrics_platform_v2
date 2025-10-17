@@ -47,6 +47,7 @@ JWT_SECRET_KEY=change-me-min-32-chars
 Targets: `help`, `lint` (black, isort, ruff), `test` (pytest --cov), `docker-build`, `docker-up`, `docker-down`, `ci` (lint + test + build), `clean`
 
 **Commit:** `infra: add Makefile`
+**Status:** completed
 
 ---
 
@@ -58,6 +59,7 @@ asyncio_mode = auto
 addopts = --verbose --cov-report=html
 ```
 **Commit:** `tests: add pytest configuration`
+**Status:** completed
 
 ---
 
@@ -65,6 +67,7 @@ addopts = --verbose --cov-report=html
 Omit: `*/tests/*`, `*/migrations/*`. Exclude: `pragma: no cover`, `if TYPE_CHECKING:`
 
 **Commit:** `tests: add coverage configuration`
+**Status:** completed
 
 ---
 
