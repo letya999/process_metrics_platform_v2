@@ -84,17 +84,22 @@ globs:
 
 ## 5. Database Schemas (15 Total)
 
+## 5. Database Schemas (5 Total - Jira Only)
+
 | Type | Count | Schemas | Owner |
 |------|-------|---------|-------|
-| **Core** | 5 | `auth`, `admin`, `etl`, `monitoring`, `orchestrator` | Platform services |
-| **Raw** | 5 | `raw_jira_cloud_dlt`, `raw_jira_cloud_rest`, `raw_jira_server_rest`, `raw_gitlab_cloud_api`, `raw_gitlab_selfhosted_db` | Connectors (write only) |
-| **Clean** | 2 | `clean_jira`, `clean_gitlab` | ETL service (normalized data) |
-| **BI** | 3 | `bi_metrics`, `bi_dashboards`, `metabase` | BI layer and Metabase |
+| **Platform** | 1 | `platform` | auth_service, admin_service, monitoring_service, orchestrator |
+| **Raw** | 1 | `raw_jira` | jira_cloud_dlt, jira_cloud_rest, jira_server_rest |
+| **Clean** | 1 | `clean_jira` | etl_service |
+| **BI** | 1 | `bi_analytics` | etl_service, bi_layer |
+| **External** | 1 | `metabase` | metabase |
 
 ### Schema Access Rules
-- Each service has dedicated database user with minimal permissions
-- Service can access ONLY its own schema
-- **Exceptions:** `etl_service` (read raw_*, write clean_* and bi_*), `orchestrator` (read auth)
+- Service groups share domain schemas
+- Platform services can all access `platform` schema
+- All jira connectors write to `raw_jira` schema
+- ETL service reads from `raw_jira`, writes to `clean_jira` and `bi_analytics`
+- BI layer reads from `bi_analytics`
 
 ---
 
@@ -103,7 +108,8 @@ globs:
 These rules define system integrity and MUST be followed:
 
 - ❌ **No secrets in code, configs, or Dockerfiles** (only in `.env`)
-- ❌ **No cross-service imports** (except `/common/` utilities)
+- ❌ **No cross-service imports** (except `/common/` utilities).
+- **Domain groups:** Services sharing schema can import from each other via `/common/domain/`
 - ❌ **No business logic in `/common/`** (only infrastructure utilities)
 - ❌ **No direct external API access** (use connector services)
 - ❌ **`/common/` never imports from `/services/`** (one-way dependency only)

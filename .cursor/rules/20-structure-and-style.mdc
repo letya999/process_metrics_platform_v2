@@ -88,6 +88,8 @@ from services.jira_connector.app.domain import import_issues  # FORBIDDEN
 - `validators/` — Pydantic validators
 - `constants/` — Error codes, HTTP statuses
 - `types/` — Shared type definitions
+- `domain/platform/` — Shared models for platform schema (users, auth, monitoring)
+- `domain/jira/` — Shared models for jira schemas (issues, projects)
 
 **Rules:**
 - ✅ Infrastructure utilities only

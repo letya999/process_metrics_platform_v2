@@ -14,9 +14,11 @@ globs:
 See `00-project-overview.mdc` section 5 for complete schema list and ownership.
 
 ### Cross-Schema Access
-- **etl_service:** Read `raw_*`, write `clean_*` and `bi_*`
-- **orchestrator:** Read `auth` only
-- **All others:** Own schema only
+- **Platform services:** All access `platform` schema
+- **Jira connectors:** All write to `raw_jira` schema
+- **etl_service:** Read `raw_jira`, write `clean_jira` and `bi_analytics`
+- **bi_layer:** Read `bi_analytics`
+- **metabase:** Own schema only
 
 ---
 
