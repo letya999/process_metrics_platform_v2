@@ -7,6 +7,7 @@ implemented fully in Phase 3 integration tasks.
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any, Dict
 
 
@@ -43,9 +44,71 @@ def fetch_projects_with_credentials(db_conn) -> list:
     For unit tests this can be mocked; real implementation will use asyncpg
     and proper SQL.
     """
-    raise NotImplementedError
+    # Support simple in-memory fixtures used by unit tests.
+    # Supported inputs:
+    # - None -> empty list
+    # - dict with key 'projects' -> return that list
+    # - iterable of project rows -> return list(iterable)
+    if db_conn is None:
+        return []
+
+    if isinstance(db_conn, dict) and "projects" in db_conn:
+        return list(db_conn["projects"])
+
+    # If db_conn is an iterable of rows (e.g. a mocked result), return its list
+    try:
+        # avoid treating strings/bytes as iterables of rows
+        if isinstance(db_conn, (str, bytes)):
+            raise TypeError
+        return list(db_conn)
+    except TypeError:
+        raise NotImplementedError(
+            "fetch_projects_with_credentials: real DB connector not implemented; "
+            "provide an iterable or dict{'projects': [...]} for tests"
+        )
 
 
 def upsert_sync_checkpoint(db_conn, checkpoint: Dict[str, Any]) -> None:
     """Placeholder for upserting integration_sync_checkpoints row."""
-    raise NotImplementedError
+    # Support an in-memory dict-based store for unit tests.
+    # Expected shape example:
+    # db_conn = {
+    #   'checkpoints': [
+    #       {'tool_integration_id': ..., 'project_id': ..., 'entity_type': ..., ...},
+    #   ]
+    # }
+    if db_conn is None:
+        raise NotImplementedError(
+            "upsert_sync_checkpoint: no db_conn provided; provide an in-memory dict "
+            "for tests or implement DB logic"
+        )
+
+    if isinstance(db_conn, dict):
+        cps = db_conn.setdefault("checkpoints", [])
+
+        for idx, existing in enumerate(cps):
+            if (
+                existing.get("tool_integration_id")
+                == checkpoint.get("tool_integration_id")
+                and existing.get("project_id") == checkpoint.get("project_id")
+                and existing.get("entity_type") == checkpoint.get("entity_type")
+            ):
+                updated = existing.copy()
+                updated.update(checkpoint)
+                updated["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                cps[idx] = updated
+                return
+
+        # insert new
+        new_cp = checkpoint.copy()
+        now = datetime.utcnow().isoformat() + "Z"
+        new_cp.setdefault("created_at", now)
+        new_cp.setdefault("updated_at", now)
+        cps.append(new_cp)
+        return
+
+    raise NotImplementedError(
+        "upsert_sync_checkpoint: only in-memory dict store "
+        "is supported by this helper; "
+        "implement DB upsert in integration phase"
+    )

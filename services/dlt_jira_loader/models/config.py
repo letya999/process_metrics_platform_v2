@@ -56,3 +56,22 @@ class JiraSyncResult(BaseModel):
     project_id: UUID
     status: str
     summary: Dict[str, Any]
+
+
+class Release(BaseModel):
+    """Representation of a Jira Release/Version."""
+
+    id: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    released: Optional[bool] = None
+    releaseDate: Optional[str] = None
+
+
+class Board(BaseModel):
+    """Representation of a Jira Board associated with a project."""
+
+    id: int
+    name: Optional[str] = None
+    type: Optional[str] = None
+    location: Optional[Dict[str, Any]] = None

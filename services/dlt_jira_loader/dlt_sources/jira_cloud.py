@@ -22,10 +22,14 @@ from services.dlt_jira_loader.clients.jira_client import (
     JiraClient,
     resolve_from_env_or_config,
 )
+from services.dlt_jira_loader.dlt_sources.resources.boards import make_boards_resource
 from services.dlt_jira_loader.dlt_sources.resources.comments import (
     make_comments_resource,
 )
 from services.dlt_jira_loader.dlt_sources.resources.issues import make_issues_resource
+from services.dlt_jira_loader.dlt_sources.resources.releases import (
+    make_releases_resource,
+)
 from services.dlt_jira_loader.dlt_sources.resources.sprints import make_sprints_resource
 
 # credentials in services/dlt_jira_loader/clients/jira_client.py
@@ -57,6 +61,8 @@ def jira_source(project_key: str, config: Dict[str, Any]) -> Iterable[dlt.Resour
     issues = make_issues_resource(project_key=project_key, client=client)
     sprints = make_sprints_resource(client=client)
     comments = make_comments_resource(client=client)
+    releases = make_releases_resource(client=client)
+    boards = make_boards_resource(client=client, project_key=project_key)
 
-    # return resource callables to DLT
-    return issues, sprints, comments
+    # return resource callables to DLT (additions: releases, boards)
+    return issues, sprints, comments, releases, boards

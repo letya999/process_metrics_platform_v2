@@ -59,6 +59,15 @@ class JiraClient:
             params={"startAt": start_at, "maxResults": max_results},
         )
 
+    def get_project_versions(self, project_key: str) -> Dict[str, Any]:
+        return self._get(f"/rest/api/3/project/{project_key}/versions")
+
+    def find_boards(self, project_key: Optional[str] = None) -> Dict[str, Any]:
+        params = {}
+        if project_key:
+            params["projectKeyOrId"] = project_key
+        return self._get("/rest/agile/1.0/board", params=params)
+
     def get_comments(
         self, issue_key: str, start_at: int = 0, max_results: int = 50
     ) -> Dict[str, Any]:

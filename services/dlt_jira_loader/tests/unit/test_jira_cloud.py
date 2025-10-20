@@ -38,6 +38,21 @@ def mock_client(monkeypatch):
             )
             return resp.json()
 
+        def get_project_versions(self, project_key, start_at=0, max_results=50):
+            params = {"startAt": start_at, "maxResults": max_results}
+            resp = requests.get(
+                f"{self.base_url}/rest/api/3/project/{project_key}/versions",
+                params=params,
+            )
+            return resp.json()
+
+        def find_boards(self, project_key=None):
+            params = {}
+            if project_key:
+                params["projectKeyOrId"] = project_key
+            resp = requests.get(f"{self.base_url}/rest/agile/1.0/board", params=params)
+            return resp.json()
+
     monkeypatch.setenv("JIRA_INSTANCE_URL", "https://example.atlassian.net")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     monkeypatch.setenv("JIRA_API_TOKEN", "token123")
@@ -105,6 +120,29 @@ def add_comments_stub(issue_key: str, payload: Dict[str, Any]) -> None:
         json=payload,
         status=200,
     )
+
+
+def versions_payload(project_key: str, count: int = 2) -> Dict[str, Any]:
+    return [
+        {
+            "id": str(200 + i),
+            "name": f"v{i+1}",
+            "description": "",
+            "released": False,
+        }
+        for i in range(count)
+    ]
+
+
+def boards_payload(project_key: str) -> Dict[str, Any]:
+    return {
+        "maxResults": 50,
+        "startAt": 0,
+        "total": 1,
+        "values": [
+            {"id": 11, "name": f"{project_key} Board", "type": "scrum", "location": {}}
+        ],
+    }
 
 
 # --- Tests ---------------------------------------------------------------
@@ -194,6 +232,37 @@ def test_sprints_resource_iteration(mock_client):
     sprints = list(sprints_res(board_id=board_id))
     assert len(sprints) == 1
     assert sprints[0]["sprint_id"] == 1
+
+
+@responses.activate
+def test_releases_and_boards_resources_iteration(mock_client):
+    project_key = "PROJ"
+    # stub versions endpoint
+    responses.add(
+        responses.GET,
+        f"https://example.atlassian.net/rest/api/3/project/{project_key}/versions",
+        json=versions_payload(project_key, count=2),
+        status=200,
+    )
+    # stub boards endpoint
+    responses.add(
+        responses.GET,
+        "https://example.atlassian.net/rest/agile/1.0/board",
+        json=boards_payload(project_key),
+        status=200,
+    )
+
+    client = mock_client
+    releases_res = jira_cloud.make_releases_resource(client=client)
+    boards_res = jira_cloud.make_boards_resource(client=client, project_key=project_key)
+
+    releases = list(releases_res(project_key))
+    assert len(releases) == 2
+    assert releases[0]["release_id"] is not None
+
+    boards = list(boards_res())
+    assert len(boards) == 1
+    assert boards[0]["board_id"] == 11
 
 
 @responses.activate
