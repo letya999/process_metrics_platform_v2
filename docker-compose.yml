@@ -1,4 +1,3 @@
-version: '3.8'
 networks:
   process_metrics_network:
     driver: bridge
@@ -8,12 +7,12 @@ services:
     image: postgres:15-alpine
     container_name: pmp_v2
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-process_metrics}
+      POSTGRES_DB: ${POSTGRES_DB:-process_metrics_v2}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d
+      - ./db:/docker-entrypoint-initdb.d
     expose:
       - "5432"
     healthcheck:
@@ -22,9 +21,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      process_metrics_network:
-        aliases:
-          - pmp_v2
+      - process_metrics_network
 
   redis:
     image: redis:7-alpine
@@ -37,6 +34,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - process_metrics_network
 
   auth_service:
     build: ./services/auth_service
@@ -44,7 +43,7 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,5 +53,57 @@ services:
     networks:
       - process_metrics_network
 
+  prefect-server:
+    image: prefecthq/prefect:2.14-python3.11
+    container_name: prefect-server
+    command: ["prefect", "server", "start", "--host", "0.0.0.0", "--ui", "--log-level", "INFO"]
+    ports:
+      - "4200:4200"
+    volumes:
+      - prefect_data:/root/.prefect
+    environment:
+      PREFECT_API_URL: http://0.0.0.0:4200/api
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health', timeout=5)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - process_metrics_network
+
+  prefect-worker:
+    image: prefecthq/prefect:2.14-python3.11
+    container_name: prefect-worker
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_LOGGING_LEVEL: INFO
+    command: ["prefect", "worker", "start", "--pool", "default"]
+    volumes:
+      - prefect_data:/root/.prefect
+    networks:
+      - process_metrics_network
+
+  alembic:
+    image: python:3.11-slim
+    container_name: alembic
+    working_dir: /app
+    volumes:
+      - ./:/app
+    env_file: .env
+    environment:
+      ALEMBIC_SQLALCHEMY_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - process_metrics_network
+    profiles:
+      - migration
+
 volumes:
   postgres_data:
+  prefect_data:

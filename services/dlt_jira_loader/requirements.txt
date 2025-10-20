@@ -1,0 +1,7 @@
+prefect==2.14.10
+dlt==0.4.8
+pydantic==2.8.2
+requests==2.32.3
+python-dotenv==1.0.1
+PyYAML==6.0.2
+asyncpg==0.29.0
