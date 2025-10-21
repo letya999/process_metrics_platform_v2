@@ -7,7 +7,7 @@ implemented fully in Phase 3 integration tasks.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 
@@ -95,13 +95,21 @@ def upsert_sync_checkpoint(db_conn, checkpoint: Dict[str, Any]) -> None:
             ):
                 updated = existing.copy()
                 updated.update(checkpoint)
-                updated["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                updated["updated_at"] = (
+                    datetime.now(timezone.utc)
+                    .replace(microsecond=0)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ")
+                )
                 cps[idx] = updated
                 return
 
         # insert new
         new_cp = checkpoint.copy()
-        now = datetime.utcnow().isoformat() + "Z"
+        now = (
+            datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
         new_cp.setdefault("created_at", now)
         new_cp.setdefault("updated_at", now)
         cps.append(new_cp)
