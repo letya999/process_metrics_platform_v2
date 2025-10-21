@@ -13,28 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
-try:
-    from prefect import task
-except Exception:  # pragma: no cover - fallback for environments without prefect
-    # Lightweight task decorator that mimics Prefect Task interface used in tests.
-    class _DummyTask:
-        def __init__(self, fn, name: str | None = None):
-            self.fn = fn
-            self.__name__ = getattr(fn, "__name__", "task")
-
-        def __call__(self, *args, **kwargs):
-            return self.fn(*args, **kwargs)
-
-    def task(*dargs, **dkwargs):
-        # support both @task and @task(name="...")
-        if dargs and callable(dargs[0]):
-            return _DummyTask(dargs[0])
-
-        def _decorator(fn):
-            return _DummyTask(fn, name=dkwargs.get("name"))
-
-        return _decorator
-
+from prefect import task
 
 from services.dlt_jira_loader.models.config import JiraSyncConfig
 

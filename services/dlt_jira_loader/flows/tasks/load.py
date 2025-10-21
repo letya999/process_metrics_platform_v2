@@ -13,26 +13,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable
 
-try:
-    from prefect import task
-except Exception:  # pragma: no cover - fallback for environments without prefect
-
-    class _DummyTask:
-        def __init__(self, fn, name: str | None = None):
-            self.fn = fn
-
-        def __call__(self, *args, **kwargs):
-            return self.fn(*args, **kwargs)
-
-    def task(*dargs, **dkwargs):
-        if dargs and callable(dargs[0]):
-            return _DummyTask(dargs[0])
-
-        def _decorator(fn):
-            return _DummyTask(fn, name=dkwargs.get("name"))
-
-        return _decorator
-
+from prefect import task
 
 try:
     import dlt

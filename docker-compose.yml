@@ -87,6 +87,29 @@ services:
     networks:
       - process_metrics_network
 
+  dlt_jira_worker:
+    build: ./services/dlt_jira_loader
+    container_name: dlt_jira_worker
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_LOGGING_LEVEL: INFO
+      PREFECT_WORK_QUEUE: default
+      # DLT real run can be enabled by setting to 1
+      DLT_ENABLE_REAL_RUN: "0"
+      # Postgres creds for DLT pipeline when enabled
+      DB_HOST: postgres
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+    command: ["prefect", "worker", "start", "--pool", "default"]
+    volumes:
+      - prefect_data:/root/.prefect
+    networks:
+      - process_metrics_network
+
   alembic:
     image: python:3.11-slim
     container_name: alembic

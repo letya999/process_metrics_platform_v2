@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+__pypackages__/
+.pdm-python
+.pdm-build/
+.pytest_cache/
+.coverage
+logs/
+.env
+.git/
+dist/
+build/
+*.log

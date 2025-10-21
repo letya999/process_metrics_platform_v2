@@ -7,9 +7,11 @@ resource callables and metadata.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Iterable, List
 
 from prefect import task
+from prefect.exceptions import MissingContextError
 
 from services.dlt_jira_loader.dlt_sources.jira_cloud import jira_source
 from services.dlt_jira_loader.models.config import ProjectWithCredentials
@@ -33,6 +35,11 @@ def prepare_resources(
         Dict mapping resource names
         to DLT resource callables (callables expected by DLT).
     """
+    try:
+        # ensure logger doesn't raise when called inside non-Prefect context
+        _logger = logging.getLogger(__name__)
+    except MissingContextError:
+        _logger = logging.getLogger(__name__)
     cfg = dict(project.credentials or {})
     if config_overrides:
         cfg.update(config_overrides)

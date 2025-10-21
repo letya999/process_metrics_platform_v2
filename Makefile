@@ -42,6 +42,10 @@ gen-env:
 docker-build:
 	@echo "Building docker images (DOCKER_BUILDKIT=$(DOCKER_BUILDKIT))"
 	docker build -t auth_service:local services/auth_service
+	@echo "Exporting dlt_jira_loader requirements via PDM"
+	cd services/dlt_jira_loader && pdm export --prod --without-hashes -o requirements.txt
+	@echo "Building dlt_jira_loader image"
+	docker build -t dlt_jira_loader:local services/dlt_jira_loader
 
 docker-up:
 	@echo "Starting all services"
@@ -53,7 +57,11 @@ docker-down:
 
 up-core:
 	@echo "Starting core services: postgres, redis, prefect"
-	docker-compose up -d postgres redis prefect-server prefect-worker
+	docker-compose up -d postgres redis prefect-server prefect-worker dlt_jira_worker
+
+deploy-jira:
+	@echo "Registering Prefect deployments for Jira sync"
+	cd services/dlt_jira_loader && python deployments/deploy.py
 
 reset-db:
 	@echo "=== DESTROYING DATABASE AND RECREATING ==="

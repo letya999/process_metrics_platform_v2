@@ -1,0 +1,31 @@
+[build-system]
+requires = ["pdm-pep517"]
+build-backend = "pdm.pep517.api"
+
+[project]
+name = "dlt-jira-loader"
+version = "0.1.0"
+description = "DLT + Prefect based Jira loader"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "prefect>=3.4.0,<3.5.0",
+    "dlt>=1.4.0,<1.5.0",
+    "pydantic>=2.12.0,<2.13.0",
+    "requests>=2.32.3",
+    "python-dotenv>=1.0.1",
+    "PyYAML>=6.0.2",
+    "asyncpg>=0.30.0,<0.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "ruff>=0.1.0",
+]
+test = [
+  "pytest>=8.4.2",
+  "pytest-asyncio>=1.2.0",
+  "pytest-cov>=7.0.0",
+  "responses>=0.23.0",
+]
