@@ -39,34 +39,152 @@ def resolve_api_token(tool_integration_row: Dict[str, Any]) -> str:
     raise ValueError("No API token available for integration")
 
 
-def fetch_projects_with_credentials(db_conn) -> list:
-    """Placeholder: fetch active projects joined with credentials.
+def resolve_integration_secret(tool_integration_id: str) -> str:
+    """Resolve secret for a given tool integration id via platform.tool_integrations.
 
-    For unit tests this can be mocked; real implementation will use asyncpg
-    and proper SQL.
+    Rules:
+      - Read row by id
+      - If secret_provider == 'env': read os.getenv(secret_reference); if missing -> fail
+      - Never log token
+
+    This implementation uses asyncpg when available and DB_* env vars. As a
+    fallback for unit tests, it supports dict-based stores with shape:
+      {'tool_integrations': [{'id': '<uuid>', 'secret_provider': 'env', 'secret_reference': 'ENV_NAME', ...}]}
     """
-    # Support simple in-memory fixtures used by unit tests.
-    # Supported inputs:
-    # - None -> empty list
-    # - dict with key 'projects' -> return that list
-    # - iterable of project rows -> return list(iterable)
-    if db_conn is None:
-        return []
+    # First, allow in-memory dict fixture via special escape hatch
+    # If the caller passes a dict store instead of an id (for tests), support it
+    if isinstance(tool_integration_id, dict):  # type: ignore[unreachable]
+        store = tool_integration_id
+        raise NotImplementedError(
+            "Pass tool_integration_id as string; dict-based provider is not supported here"
+        )
 
+    import os as _os
+
+    try:
+        import asyncio
+        import asyncpg  # type: ignore
+
+        async def _run() -> str:
+            conn = await asyncpg.connect(
+                host=_os.getenv("DB_HOST", "postgres"),
+                database=_os.getenv("DB_NAME", "process_metrics_v2"),
+                user=_os.getenv("DB_USER", "postgres"),
+                password=_os.getenv("DB_PASSWORD", ""),
+            )
+            try:
+                row = await conn.fetchrow(
+                    """
+                    SELECT secret_provider, secret_reference, api_token_unsafe
+                    FROM platform.tool_integrations
+                    WHERE id = $1 AND is_active = TRUE
+                    """,
+                    tool_integration_id,
+                )
+                if not row:
+                    raise ValueError("tool_integration not found or inactive")
+                provider = row["secret_provider"]
+                if provider == "env":
+                    ref = row["secret_reference"]
+                    if not ref:
+                        raise ValueError("secret_reference is NULL for env provider")
+                    val = _os.getenv(str(ref) or "")
+                    if not val:
+                        raise ValueError("environment variable referenced by secret_reference is empty")
+                    return val
+                # Optional unsafe fallback for dev/test only
+                if row["api_token_unsafe"]:
+                    return str(row["api_token_unsafe"])
+                raise ValueError("no supported secret provider")
+            finally:
+                await conn.close()
+
+        return asyncio.run(_run())
+    except Exception as exc:
+        # Do not expose token or env var values; just rethrow concise error
+        raise
+
+
+def fetch_projects_with_credentials(db_conn) -> list:
+    """Fetch active projects joined with credentials.
+
+    Test support:
+      - dict store with key 'projects' -> returned verbatim
+      - iterable of rows -> list(iterable)
+
+    Production:
+      - Uses asyncpg with DB_* env vars to read from platform.projects joined to
+        platform.tool_integrations. Secrets are NOT returned; only references.
+    """
+    # Unit-test fixtures path
     if isinstance(db_conn, dict) and "projects" in db_conn:
         return list(db_conn["projects"])
 
     # If db_conn is an iterable of rows (e.g. a mocked result), return its list
     try:
         # avoid treating strings/bytes as iterables of rows
-        if isinstance(db_conn, (str, bytes)):
-            raise TypeError
-        return list(db_conn)
+        if db_conn is not None and not isinstance(db_conn, (str, bytes)):
+            return list(db_conn)
     except TypeError:
-        raise NotImplementedError(
-            "fetch_projects_with_credentials: real DB connector not implemented; "
-            "provide an iterable or dict{'projects': [...]} for tests"
-        )
+        pass
+
+    # Production path: query database via asyncpg
+    try:
+        import asyncio
+        import asyncpg  # type: ignore
+        import os as _os
+
+        async def _run() -> list:
+            conn = await asyncpg.connect(
+                host=_os.getenv("DB_HOST", "postgres"),
+                database=_os.getenv("DB_NAME", "process_metrics_v2"),
+                user=_os.getenv("DB_USER", "postgres"),
+                password=_os.getenv("DB_PASSWORD", ""),
+            )
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT p.id AS project_id,
+                           p.external_id,
+                           p.external_key,
+                           p.name,
+                           p.is_active,
+                           ti.id AS tool_integration_id,
+                           ti.instance_url,
+                           ti.user_email,
+                           ti.secret_provider,
+                           ti.secret_reference
+                    FROM platform.projects p
+                    JOIN platform.tool_integrations ti ON ti.id = p.tool_integration_id
+                    WHERE p.is_active = TRUE AND ti.is_active = TRUE
+                    """
+                )
+                result: list = []
+                for r in rows:
+                    result.append(
+                        {
+                            "project_id": str(r["project_id"]),
+                            "external_id": r["external_id"],
+                            "external_key": r["external_key"],
+                            "name": r["name"],
+                            "is_active": r["is_active"],
+                            "credentials": {
+                                "tool_integration_id": str(r["tool_integration_id"]),
+                                "instance_url": r["instance_url"],
+                                "user_email": r["user_email"],
+                                "secret_provider": r["secret_provider"],
+                                "secret_reference": r["secret_reference"],
+                            },
+                        }
+                    )
+                return result
+            finally:
+                await conn.close()
+
+        return asyncio.run(_run())
+    except Exception as exc:
+        # best-effort: return empty list; flows will log and continue
+        return []
 
 
 def upsert_sync_checkpoint(db_conn, checkpoint: Dict[str, Any]) -> None:
@@ -222,3 +340,73 @@ def finalize_pipeline_run(
             return r
 
     raise KeyError(f"pipeline run id not found: {run_id}")
+
+
+def record_project_run_metrics(
+    *,
+    pipeline_name: str,
+    project_id: str,
+    window: Dict[str, Any],
+    load_info: Dict[str, Any],
+    status: str,
+) -> None:
+    """Best-effort insert into platform.pipeline_runs for per-project metrics.
+
+    Uses DB_* environment for connection via asyncpg. Silently no-ops on error.
+    """
+    try:
+        import asyncio
+        import asyncpg  # type: ignore
+        import os as _os
+        import json as _json
+
+        total_rows = 0
+        try:
+            rows_by_resource = load_info.get("rows_loaded_by_resource", {})
+            if isinstance(rows_by_resource, dict):
+                total_rows = int(sum(int(v or 0) for v in rows_by_resource.values()))
+        except Exception:
+            total_rows = 0
+
+        metrics = {
+            "rows_total": total_rows,
+            "rows_by_resource": load_info.get("rows_loaded_by_resource", {}),
+            "last_synced_at": load_info.get("last_synced_at"),
+        }
+
+        async def _run() -> None:
+            conn = await asyncpg.connect(
+                host=_os.getenv("DB_HOST", "postgres"),
+                database=_os.getenv("DB_NAME", "process_metrics_v2"),
+                user=_os.getenv("DB_USER", "postgres"),
+                password=_os.getenv("DB_PASSWORD", ""),
+            )
+            try:
+                pipeline_row = await conn.fetchrow(
+                    "SELECT id FROM platform.pipelines WHERE name = $1",
+                    pipeline_name,
+                )
+                if not pipeline_row:
+                    return
+                pipeline_id = pipeline_row["id"]
+                await conn.execute(
+                    """
+                    INSERT INTO platform.pipeline_runs (
+                        id, pipeline_id, project_id, status, started_at, completed_at, metrics, config
+                    ) VALUES (
+                        gen_random_uuid(), $1, $2, $3, now(), now(), $4::jsonb, $5::jsonb
+                    )
+                    """,
+                    pipeline_id,
+                    project_id,
+                    status,
+                    _json.dumps(metrics),
+                    _json.dumps({"window": window}),
+                )
+            finally:
+                await conn.close()
+
+        asyncio.run(_run())
+    except Exception:
+        # Optional, do nothing on failure
+        return

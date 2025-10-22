@@ -54,7 +54,7 @@ services:
       - process_metrics_network
 
   prefect-server:
-    image: prefecthq/prefect:2.14-python3.11
+    image: prefecthq/prefect:3.4-python3.11
     container_name: prefect-server
     command: ["prefect", "server", "start", "--host", "0.0.0.0", "--ui", "--log-level", "INFO"]
     ports:
@@ -73,7 +73,7 @@ services:
       - process_metrics_network
 
   prefect-worker:
-    image: prefecthq/prefect:2.14-python3.11
+    image: prefecthq/prefect:3.4-python3.11
     container_name: prefect-worker
     depends_on:
       prefect-server:
@@ -81,7 +81,9 @@ services:
     environment:
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: INFO
-    command: ["prefect", "worker", "start", "--pool", "default"]
+      PREFECT_WORK_POOL: ${PREFECT_WORK_POOL:-default}
+      PREFECT_WORKER_CONCURRENCY: ${PREFECT_WORKER_CONCURRENCY:-2}
+    command: ["sh", "-c", "prefect worker start --pool ${PREFECT_WORK_POOL:-default} --concurrency ${PREFECT_WORKER_CONCURRENCY:-2}"]
     volumes:
       - prefect_data:/root/.prefect
     networks:
@@ -96,7 +98,8 @@ services:
     environment:
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: INFO
-      PREFECT_WORK_QUEUE: default
+      PREFECT_WORK_POOL: ${DLT_WORK_POOL:-dlt}
+      PREFECT_WORKER_CONCURRENCY: ${PREFECT_WORKER_CONCURRENCY:-2}
       # DLT real run can be enabled by setting to 1
       DLT_ENABLE_REAL_RUN: "0"
       # Postgres creds for DLT pipeline when enabled
@@ -104,9 +107,31 @@ services:
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
-    command: ["prefect", "worker", "start", "--pool", "default"]
+    env_file: .env
+    command: ["sh", "-c", "prefect worker start --pool ${PREFECT_WORK_POOL:-default} --concurrency ${PREFECT_WORKER_CONCURRENCY:-2}"]
     volumes:
       - prefect_data:/root/.prefect
+    networks:
+      - process_metrics_network
+
+  prefect-deploy-init:
+    build: ./services/dlt_jira_loader
+    container_name: prefect-deploy-init
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_LOGGING_LEVEL: INFO
+      PREFECT_WORK_POOL: ${DLT_WORK_POOL:-dlt}
+      # Database connection for platform pipeline upserts
+      DB_HOST: postgres
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+    env_file: .env
+    command: ["python", "deployments/deploy.py"]
+    restart: "no"
     networks:
       - process_metrics_network
 

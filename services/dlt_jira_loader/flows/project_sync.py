@@ -18,7 +18,6 @@ from typing import Any, Dict
 from prefect import flow, get_run_logger
 from prefect.exceptions import MissingContextError
 
-from services.dlt_jira_loader.flows.tasks.checkpoint import upsert_checkpoint
 from services.dlt_jira_loader.flows.tasks.extract import prepare_resources
 from services.dlt_jira_loader.flows.tasks.load import run_load
 from services.dlt_jira_loader.flows.tasks.sync_window import determine_window
@@ -26,6 +25,10 @@ from services.dlt_jira_loader.flows.tasks.validation import validate_load
 from services.dlt_jira_loader.models.config import (
     JiraSyncConfig,
     ProjectWithCredentials,
+)
+from services.dlt_jira_loader.utils.db import (
+    resolve_integration_secret,
+    record_project_run_metrics,
 )
 
 
@@ -56,8 +59,29 @@ def project_sync_subflow(
         extra={"project": project.external_key, **window},
     )
 
+    # Inject resolved secret into credentials without persisting it.
+    # Expect project.credentials to contain tool_integration_id, instance_url, user_email
+    secret_token = None
+    try:
+        ti_id = (
+            project.credentials.get("tool_integration_id")
+            if isinstance(project.credentials, dict)
+            else None
+        )
+        if ti_id:
+            secret_token = resolve_integration_secret(str(ti_id))
+    except Exception:
+        secret_token = None
+
+    overrides: Dict[str, Any] = {}
+    if secret_token:
+        overrides["api_token"] = secret_token
+
     resources = prepare_resources(
-        project=project, date_from=window["date_from"], date_to=window["date_to"]
+        project=project,
+        date_from=window["date_from"],
+        date_to=window["date_to"],
+        config_overrides=overrides or None,
     )
 
     load_info = run_load(
@@ -65,15 +89,19 @@ def project_sync_subflow(
     )
     validation = validate_load(load_info)
 
-    # checkpoint for issues entity as a minimal invariant for now
-    checkpoint = upsert_checkpoint(
-        db_conn=db_conn,
-        project={"tool_integration_id": None, "project_id": project.project_id},
-        load_info=load_info,
-        entity_type="issues",
-    )
-
     status = "ok" if validation.get("status") == "ok" else "warning"
+
+    # optional metrics insert (best-effort; non-blocking)
+    try:
+        record_project_run_metrics(
+            pipeline_name="jira_sync",
+            project_id=str(project.project_id),
+            window=window,
+            load_info=load_info,
+            status=status,
+        )
+    except Exception:
+        pass
 
     return {
         "project_id": str(project.project_id),
@@ -82,5 +110,4 @@ def project_sync_subflow(
         "window": window,
         "load_info": load_info,
         "validation": validation,
-        "checkpoint": checkpoint,
     }

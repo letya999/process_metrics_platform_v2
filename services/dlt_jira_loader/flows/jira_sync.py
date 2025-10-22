@@ -25,7 +25,7 @@ from services.dlt_jira_loader.utils.db import (
 
 
 @flow(name="jira_sync_flow")
-def jira_sync_flow(db_conn: Any, config: JiraSyncConfig) -> Dict[str, Any]:
+def jira_sync_flow(db_conn: Any | None = None, config: JiraSyncConfig | None = None) -> Dict[str, Any]:
     """Run Jira sync for a list of projects defined in `config`.
 
     Args:
@@ -46,9 +46,11 @@ def jira_sync_flow(db_conn: Any, config: JiraSyncConfig) -> Dict[str, Any]:
         pipeline_run_id = create_pipeline_run(
             db_conn if isinstance(db_conn, dict) else {},
             pipeline_name="jira_sync",
-            config=config.model_dump()
-            if hasattr(config, "model_dump")
-            else dict(config),
+            config=(
+                config.model_dump()  # type: ignore[union-attr]
+                if (config is not None and hasattr(config, "model_dump"))
+                else (dict(config) if isinstance(config, dict) else {})
+            ),
         )
     except Exception:
         pipeline_run_id = None
@@ -60,10 +62,17 @@ def jira_sync_flow(db_conn: Any, config: JiraSyncConfig) -> Dict[str, Any]:
         for p in all_projects
     }
 
+    # If no project list provided, default to all discovered active projects
+    target_project_ids: List[str] = (
+        [str(pid) for pid in getattr(config, "project_uuids", [])]
+        if config is not None and getattr(config, "project_uuids", None)
+        else [str(p["project_id"]) if isinstance(p, dict) else str(p.project_id) for p in all_projects]
+    )
+
     summaries: List[Dict[str, Any]] = []
     failures = 0
 
-    for project_uuid in config.project_uuids:
+    for project_uuid in target_project_ids:
         project_key = str(project_uuid)
         proj_raw = projects_by_id.get(project_key)
         if proj_raw is None:
@@ -80,8 +89,14 @@ def jira_sync_flow(db_conn: Any, config: JiraSyncConfig) -> Dict[str, Any]:
             project_model = proj_raw  # already a ProjectWithCredentials
 
         try:
+            # Provide a minimal run_config; if none passed, construct one
+            run_cfg = (
+                config
+                if config is not None
+                else JiraSyncConfig(project_uuids=[])
+            )
             summary = project_sync_subflow(
-                db_conn=db_conn, project=project_model, run_config=config
+                db_conn=db_conn, project=project_model, run_config=run_cfg
             )
             summaries.append(summary)
         except Exception as exc:  # continue on project failures
@@ -109,7 +124,7 @@ def jira_sync_flow(db_conn: Any, config: JiraSyncConfig) -> Dict[str, Any]:
 
     return {
         "status": overall_status,
-        "total_projects": len(config.project_uuids),
+        "total_projects": len(target_project_ids),
         "failures": failures,
         "summaries": summaries,
     }

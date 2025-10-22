@@ -1,4 +1,4 @@
-FROM prefecthq/prefect:2.14-python3.11
+FROM prefecthq/prefect:3.4-python3.11
 
 USER root
 WORKDIR /app
@@ -12,4 +12,4 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 COPY . /app
 
 # Default command kept for worker images; overridden by docker-compose when used as worker
-CMD ["python", "-c", "import dlt, prefect; print('DLT & Prefect OK')"]
+CMD ["python", "-c", "import dlt, prefect; print('DLT & Prefect 3 OK')"]

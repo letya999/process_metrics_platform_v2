@@ -57,11 +57,16 @@ docker-down:
 
 up-core:
 	@echo "Starting core services: postgres, redis, prefect"
-	docker-compose up -d postgres redis prefect-server prefect-worker dlt_jira_worker
+	docker-compose up -d postgres redis prefect-server prefect-worker dlt_jira_worker prefect-deploy-init
 
 deploy-jira:
 	@echo "Registering Prefect deployments for Jira sync"
-	cd services/dlt_jira_loader && python deployments/deploy.py
+	cd services/dlt_jira_loader && \
+		PREFECT_API_URL=http://localhost:4200/api \
+		PREFECT_WORK_POOL=$${PREFECT_WORK_POOL:-default} \
+		python deployments/deploy.py
+
+prefect-register: deploy-jira
 
 reset-db:
 	@echo "=== DESTROYING DATABASE AND RECREATING ==="
