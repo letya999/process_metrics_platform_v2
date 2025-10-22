@@ -15,6 +15,7 @@ class ProjectWithCredentials(BaseModel):
     """Representation of a project joined with its integration credentials."""
 
     project_id: UUID
+    tool_integration_id: Optional[UUID] = None
     external_id: str
     external_key: str
     name: Optional[str] = None

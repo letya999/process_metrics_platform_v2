@@ -81,7 +81,13 @@ services:
     environment:
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: INFO
-    command: ["prefect", "worker", "start", "--pool", "default"]
+      PREFECT_WORK_POOL: ${PREFECT_WORK_POOL:-default}
+      PREFECT_WORK_QUEUE: ${PREFECT_WORK_QUEUE:-default}
+      DB_HOST: postgres
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+    command: ["prefect", "worker", "start", "--pool", "${PREFECT_WORK_POOL:-default}", "--concurrency", "2"]
     volumes:
       - prefect_data:/root/.prefect
     networks:
@@ -96,7 +102,8 @@ services:
     environment:
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: INFO
-      PREFECT_WORK_QUEUE: default
+      PREFECT_WORK_POOL: ${PREFECT_WORK_POOL:-default}
+      PREFECT_WORK_QUEUE: ${PREFECT_WORK_QUEUE:-default}
       # DLT real run can be enabled by setting to 1
       DLT_ENABLE_REAL_RUN: "0"
       # Postgres creds for DLT pipeline when enabled
@@ -104,9 +111,29 @@ services:
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
-    command: ["prefect", "worker", "start", "--pool", "default"]
+    command: ["prefect", "worker", "start", "--pool", "${PREFECT_WORK_POOL:-default}", "--concurrency", "2"]
     volumes:
       - prefect_data:/root/.prefect
+    networks:
+      - process_metrics_network
+
+  # One-shot init to auto-register Prefect deployments for Jira flows
+  prefect-deploy-init:
+    build: ./services/dlt_jira_loader
+    container_name: prefect-deploy-init
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_WORK_POOL: ${PREFECT_WORK_POOL:-default}
+      PREFECT_WORK_QUEUE: ${PREFECT_WORK_QUEUE:-default}
+      DB_HOST: postgres
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+    command: ["python", "deployments/deploy.py"]
+    restart: "no"
     networks:
       - process_metrics_network
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict
+import os
 
 from prefect import flow, get_run_logger
 from prefect.exceptions import MissingContextError
@@ -65,13 +66,19 @@ def project_sync_subflow(
     )
     validation = validate_load(load_info)
 
-    # checkpoint for issues entity as a minimal invariant for now
-    checkpoint = upsert_checkpoint(
-        db_conn=db_conn,
-        project={"tool_integration_id": None, "project_id": project.project_id},
-        load_info=load_info,
-        entity_type="issues",
-    )
+    # Optional legacy checkpoint write. Prefer DLT internal state as primary.
+    checkpoint_enabled = os.getenv("ENABLE_LEGACY_CHECKPOINTS", "0") == "1"
+    checkpoint = None
+    if checkpoint_enabled:
+        checkpoint = upsert_checkpoint(
+            db_conn=db_conn,
+            project={
+                "tool_integration_id": getattr(project, "tool_integration_id", None),
+                "project_id": project.project_id,
+            },
+            load_info=load_info,
+            entity_type="issues",
+        )
 
     status = "ok" if validation.get("status") == "ok" else "warning"
 

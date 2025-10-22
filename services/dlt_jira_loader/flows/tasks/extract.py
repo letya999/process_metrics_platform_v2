@@ -14,6 +14,7 @@ from prefect import task
 from prefect.exceptions import MissingContextError
 
 from services.dlt_jira_loader.dlt_sources.jira_cloud import jira_source
+from services.dlt_jira_loader.utils.db import resolve_integration_secret
 from services.dlt_jira_loader.models.config import ProjectWithCredentials
 
 
@@ -41,6 +42,16 @@ def prepare_resources(
     except MissingContextError:
         _logger = logging.getLogger(__name__)
     cfg = dict(project.credentials or {})
+    # Resolve secret strictly from env when tool_integration_id present
+    if getattr(project, "tool_integration_id", None):
+        try:
+            token = resolve_integration_secret(str(project.tool_integration_id))
+            # do not log token; only inject into config for dlt source
+            cfg["api_token"] = token
+        except Exception:
+            # Keep behavior deterministic for tests: if resolver fails and token
+            # is not provided via credentials/env, jira_source will raise.
+            pass
     if config_overrides:
         cfg.update(config_overrides)
 

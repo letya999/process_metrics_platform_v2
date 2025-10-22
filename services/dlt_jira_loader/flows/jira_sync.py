@@ -25,7 +25,7 @@ from services.dlt_jira_loader.utils.db import (
 
 
 @flow(name="jira_sync_flow")
-def jira_sync_flow(db_conn: Any, config: JiraSyncConfig) -> Dict[str, Any]:
+def jira_sync_flow(db_conn: Any | None = None, config: JiraSyncConfig | None = None) -> Dict[str, Any]:
     """Run Jira sync for a list of projects defined in `config`.
 
     Args:
@@ -39,6 +39,10 @@ def jira_sync_flow(db_conn: Any, config: JiraSyncConfig) -> Dict[str, Any]:
         logger = get_run_logger()
     except MissingContextError:
         logger = logging.getLogger(__name__)
+
+    # Ensure config present (Prefect parameters may be omitted for manual triggers)
+    if config is None:
+        raise ValueError("config is required")
 
     # Create pipeline_run entry (in-memory helper for unit/integration tests)
     pipeline_run_id = None
@@ -54,7 +58,7 @@ def jira_sync_flow(db_conn: Any, config: JiraSyncConfig) -> Dict[str, Any]:
         pipeline_run_id = None
 
     # Discover projects (for now rely on provided db_conn fixtures or minimal utils)
-    all_projects = fetch_projects_with_credentials(db_conn)
+    all_projects = fetch_projects_with_credentials(db_conn if db_conn is not None else {})
     projects_by_id = {
         str(p["project_id"]) if isinstance(p, dict) else str(p.project_id): p
         for p in all_projects

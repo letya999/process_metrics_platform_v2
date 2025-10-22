@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+import asyncio
 from uuid import uuid4
 
 
@@ -37,6 +38,95 @@ def resolve_api_token(tool_integration_row: Dict[str, Any]) -> str:
         return token
 
     raise ValueError("No API token available for integration")
+
+
+def resolve_integration_secret(tool_integration_id: str) -> str:
+    """Resolve secret for a tool integration strictly via env provider.
+
+    Contract:
+    - Read platform.tool_integrations row by id (placeholder here);
+    - If secret_provider == 'env', use secret_reference as env var name;
+    - Never log or persist the token; raise if missing.
+
+    Note: This version is a scaffold: when real DB access is added, implement
+    an asyncpg query to fetch the row. For now, we accept an override via
+    environment variable name pattern `INTEGRATION_SECRET_REF_<ID>` that
+    points to the actual env var holding the token. This avoids embedding
+    secrets in tests and keeps behavior deterministic.
+    """
+    # 1) Determine env var that contains the secret reference
+    # Example: INTEGRATION_SECRET_REF_<uuid> = JIRA_API_TOKEN__ACME
+    ref_env = f"INTEGRATION_SECRET_REF_{tool_integration_id}"
+    secret_ref = os.getenv(ref_env)
+    if not secret_ref:
+        # As a convenience for local/dev, allow direct var name convention
+        # TOKEN_<id> to be the actual token (not recommended). Only used in tests.
+        direct = os.getenv(f"TOKEN_{tool_integration_id}")
+        if direct:
+            return direct
+        raise ValueError("Missing secret reference for integration")
+
+    token = os.getenv(secret_ref)
+    if not token:
+        raise ValueError("Secret reference present but token env is empty")
+    return token
+
+
+async def _upsert_pipeline_prefect_ids_async(
+    *, pipeline_name: str, prefect_flow_id: Optional[str], prefect_deployment_id: Optional[str]
+) -> None:
+    """Async upsert using asyncpg; silently no-ops if asyncpg unavailable."""
+    try:
+        import asyncpg  # type: ignore
+    except Exception:
+        return
+
+    db_host = os.getenv("DB_HOST", "postgres")
+    db_name = os.getenv("DB_NAME") or os.getenv("POSTGRES_DB")
+    db_user = os.getenv("DB_USER") or os.getenv("POSTGRES_USER")
+    db_pass = os.getenv("DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD")
+    db_port = int(os.getenv("DB_PORT", "5432"))
+
+    if not (db_name and db_user and db_pass):
+        return
+
+    conn = await asyncpg.connect(
+        user=db_user, password=db_pass, database=db_name, host=db_host, port=db_port
+    )
+    try:
+        # Ensure pipeline row exists and update IDs
+        await conn.execute(
+            """
+            INSERT INTO platform.pipelines (name, description, is_active, prefect_flow_id, prefect_deployment_id)
+            VALUES ($1, 'Jira Cloud data synchronization pipeline (Prefect + DLT)', TRUE, $2, $3)
+            ON CONFLICT (name) DO UPDATE SET
+                prefect_flow_id = EXCLUDED.prefect_flow_id,
+                prefect_deployment_id = EXCLUDED.prefect_deployment_id,
+                updated_at = now();
+            """,
+            pipeline_name,
+            prefect_flow_id,
+            prefect_deployment_id,
+        )
+    finally:
+        await conn.close()
+
+
+def upsert_pipeline_prefect_ids(
+    *, pipeline_name: str, prefect_flow_id: Optional[str], prefect_deployment_id: Optional[str]
+) -> None:
+    """Best-effort upsert of Prefect IDs into platform.pipelines using asyncpg."""
+    try:
+        asyncio.run(
+            _upsert_pipeline_prefect_ids_async(
+                pipeline_name=pipeline_name,
+                prefect_flow_id=prefect_flow_id,
+                prefect_deployment_id=prefect_deployment_id,
+            )
+        )
+    except Exception:
+        # Silent best-effort; do not fail init on DB errors
+        pass
 
 
 def fetch_projects_with_credentials(db_conn) -> list:
