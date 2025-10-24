@@ -10,122 +10,108 @@ globs:
 ## 1. What This Platform Is
 
 **Name:** Process Metrics Platform v2
-**Type:** Open-source, self-hosted metrics collection and analytics platform
-**Purpose:** Automated collection, normalization, storage, and visualization of development and project management metrics from external tools (Jira, GitLab, etc.)
-**Deployment:** Single docker-compose stack, fully local, no SaaS or cloud dependencies
+**Type:** Open-source ETL + BI platform for calculating and visualizing software development team metrics
+**Purpose:** Provide a free, customizable tool for automated collection, processing, and analysis of development metrics
+**Deployment:** Runs locally on a personal computer or company server via a single Docker container, without any external cloud dependencies
 
 ---
 
 ## 2. Business Context
 
 ### Target Users
-- Project managers
-- Delivery managers
-- Agile coaches
-- Team leads
-- Process owners
+Project managers, delivery managers, agile coaches, team leads, and technical leads
 
 ### Problems Solved
-- No unified metrics storage across projects and teams
-- Manual data consolidation from multiple systems
-- Difficult team performance comparison over time
-- External cloud/SaaS usage prohibited by policy
-- Complex BI integration and expensive maintenance
-- No historical reporting capability
+- High cost of existing solutions with limited customization options
+- Lack of a simple tool to connect multiple corporate systems as data sources
+- Inability to define custom metrics or visualizations
+- Cloud/SaaS usage is restricted or undesirable due to internal policies
+- Complex BI integrations and expensive maintenance
+- Most existing tools cannot properly import historical data
 
 ### Key Differentiators
-- **Self-hosted:** Full data control, no vendor lock-in
-- **Open-source:** Transparent, customizable, no licensing costs
-- **Modular architecture:** Easy to extend with new connectors
-- **No external dependencies:** Runs entirely locally
+- **Self-hosted:** Full control over data, structure, and visualization
+- **Open-source:** Transparent, flexible, and license-free
+- **Modular architecture:** Easily extendable with new connectors and metrics
+- **No external dependencies:** Runs entirely locally or closely
+- **Modern, maintainable stack:** Built on current ETL and BI technologies
 
 ---
 
 ## 3. Core Features
 
-### Data Import
-- Connect to Jira (Cloud/Server) and GitLab (Cloud/Self-hosted)
-- Scheduled automatic imports via Prefect
-- Full change history storage (raw → clean → bi)
+### Data Import and Processing
+- Connect to Jira Cloud via REST API — [https://www.atlassian.com/software/jira]
+- Load raw data using **dlt** — [https://github.com/dlt-hub/dlt-dbt-jira] & [https://dlthub.com/docs/dlt-ecosystem/verified-sources/jira]
+- Transform data using **dbt** — [https://github.com/dbt-labs/dbt-core]
+- Orchestrate tasks using **Prefect** — [https://github.com/PrefectHQ/prefect] & [https://docs.prefect.io/v3/get-started]
+- Maintain full change history across data layers: `raw → clean → bi`
 
 ### Metrics Supported
-- **Little's Law:** Lead time, throughput, WIP
+- **Kanban:** Lead time, throughput, WIP
 - **DORA:** Deployment frequency, lead time for changes, MTTR, change failure rate
-- **Agile/Scrum:** Velocity, burndown, sprint predictability
-- **Custom metrics:** Extensible via ETL service
+- **Scrum:** Velocity, burndown, sprint predictability
+- **Custom:** Extensible via the ETL service
 
-### Analytics Access
-- REST APIs (all services expose `/api/v1/...`)
-- Metabase dashboards (self-service BI)
-- Grafana monitoring (system health)
-- Prometheus metrics (performance)
-
----
-
-## 4. Architecture Principles
-
-### Repository Structure
-- **Monorepo:** All code in `/services/`, shared utilities in `/common/`
-- **Service isolation:** Each service has own `pyproject.toml`, `Dockerfile`, database schema
-- **Single database:** PostgreSQL with 15 schemas, dedicated user per service
-- **Data flow:** raw → clean → bi (via ETL service)
-
-### Service Categories
-
-| Category | Services | Purpose |
-|----------|----------|---------|
-| **Platform** | auth, etl, admin, monitoring, bi_layer | Core business logic |
-| **Connectors** | jira_cloud_dlt, jira_cloud_rest, jira_server_rest, gitlab_cloud_api, gitlab_selfhosted_db | Data import from external systems |
-| **Background** | prefect_server, prefect_agent, celery_worker, celery_flower | Orchestration and task processing |
-| **Monitoring** | prometheus, grafana, metabase | Observability and BI |
-| **Infrastructure** | postgres, redis | Data storage and cache |
+### User Interaction
+- **Metabase:** Self-service dashboards with customizable charts — [https://github.com/metabase/metabase] & [https://www.metabase.com/]
+- **Admin panel:** Configure metric calculations, schedules, and access management
+- **Grafana + Prometheus:** System monitoring and performance metrics — [https://github.com/grafana/grafana]&[https://grafana.com/], [https://github.com/prometheus/prometheus] &(https://prometheus.io/)
+- **Prefect UI:** Visual management of data pipelines — [https://docs.prefect.io/ui]
 
 ---
 
-## 5. Database Schemas (15 Total)
+## 4. Typical Local Use Case
 
-## 5. Database Schemas (5 Total - Jira Only)
+A typical local installation and usage scenario:
 
-| Type | Count | Schemas | Owner |
-|------|-------|---------|-------|
-| **Platform** | 1 | `platform` | auth_service, admin_service, monitoring_service, orchestrator |
-| **Raw** | 1 | `raw_jira` | jira_cloud_dlt, jira_cloud_rest, jira_server_rest |
-| **Clean** | 1 | `clean_jira` | etl_service |
-| **BI** | 1 | `bi_analytics` | etl_service, bi_layer |
-| **External** | 1 | `metabase` | metabase |
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/<org>/process-metrics-v2.git
+   cd process-metrics-v2
+   ```
 
-### Schema Access Rules
-- Service groups share domain schemas
-- Platform services can all access `platform` schema
-- All jira connectors write to `raw_jira` schema
-- ETL service reads from `raw_jira`, writes to `clean_jira` and `bi_analytics`
-- BI layer reads from `bi_analytics`
+2. **Start the stack with Docker:**
+   ```bash
+   docker-compose up -d
+   ```
+   This command launches all services — PostgreSQL, ETL, admin panel, Metabase, Grafana, Prefect, etc.
+
+3. **Open the admin panel:**
+   Navigate to `http://localhost:8000` (or the configured port).
+   Log in using the preconfigured admin credentials (`admin@example.com / admin123`, configurable in `.env`).
+
+4. **Add a data source:**
+   - Go to “Integrations → Add Source”
+   - Select **Jira Cloud**
+   - Enter API credentials and authentication token
+   - Specify the list of Jira projects to load
+
+5. **Configure data loading and metrics:**
+   - Choose which data fields and metrics to import
+   - Define refresh intervals and ETL schedule
+   - Save the configuration
+
+6. **Run initial data load:**
+   - Trigger the “Initial Load” job manually from the admin panel
+   - Wait until Prefect reports that extraction, transformation, and loading have completed successfully
+
+7. **Explore metrics in Metabase:**
+   - Open [http://localhost:3000]
+   - Log in to Metabase
+   - Access the prebuilt dashboard to immediately view charts such as Lead Time, Throughput, and Deployment Frequency
+
+Once the setup is complete, the platform automatically updates data according to the configured schedule, keeping all dashboards current.
 
 ---
 
-## 6. Hard Boundaries
+## 5. Related Documentation
 
-These rules define system integrity and MUST be followed:
-
-- ❌ **No secrets in code, configs, or Dockerfiles** (only in `.env`)
-- ❌ **No cross-service imports** (except `/common/` utilities).
-- **Domain groups:** Services sharing schema can import from each other via `/common/domain/`
-- ❌ **No business logic in `/common/`** (only infrastructure utilities)
-- ❌ **No direct external API access** (use connector services)
-- ❌ **`/common/` never imports from `/services/`** (one-way dependency only)
-
----
-
-## 7. Related Rules
-
-Read these files for detailed implementation guidance:
-
-- **10-core.mdc** — Agent workflow, guardrails, quality standards
-- **20-structure-and-style.mdc** — Code structure, naming conventions, "where does X go?"
-- **30-dependencies.mdc** — PDM workflow, Docker builds, license policy
-- **35-security.mdc** — Secrets management, authentication, security rules
-- **40-testing-and-workflow.mdc** — Testing requirements, Git workflow, CI/CD
-- **50-observability.mdc** — Logging format, metrics, health checks
-- **55-infrastructure.mdc** — Docker network, port exposure, service dependencies
+For detailed implementation guidelines, see:
+- **10-core.mdc** — AI agent workflow and behavioral rules
+- **20-architecture-and-code-style.mdc** — Architecture and code style standards
+- **30-infrastructure.mdc** — Build, dependencies, and CI configuration
+- **40-security.mdc** — Secrets management, authentication, and security policies
+- **50-testing-and-workflow.mdc** — Testing and CI/CD workflow requirements
 
 ---

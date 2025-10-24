@@ -12,7 +12,7 @@ git switch main
 git pull  # If working with a remote repository
 
 # 2. Create a new feature branch (use descriptive names with date)
-git switch -c feature/day-work-MMDD  # Example: feature/day-work-1019 or chore branch
+git switch -c feature/day-work-MMDD main  # Example: feature/day-work-1019 or chore branch
 
 # 3. Verify you're on the correct branch
 git branch --show-current
@@ -39,13 +39,14 @@ git log --oneline --graph --decorate -10
 
 ```bash
 # 8. Switch back to main
-git switch main
+git checkout main
 
 # 9. Update main (if working with remote)
 git pull
 
 # 10. Merge your feature branch into main
-git merge feature/day-work-MMDD
+git merge --no-ff feature/day-work-MMDD
+git push origin main
 
 # 11. If conflicts occur, resolve them and then:
 git add .
