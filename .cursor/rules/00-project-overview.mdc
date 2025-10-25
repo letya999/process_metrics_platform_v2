@@ -7,7 +7,7 @@ globs:
 
 # Project Overview
 
-## 1. What This Platform Is
+## **1. What This Platform Is**
 
 **Name:** Process Metrics Platform v2
 **Type:** Open-source ETL + BI platform for calculating and visualizing software development team metrics
@@ -16,7 +16,7 @@ globs:
 
 ---
 
-## 2. Business Context
+## **2. Business Context**
 
 ### Target Users
 Project managers, delivery managers, agile coaches, team leads, and technical leads
@@ -38,7 +38,7 @@ Project managers, delivery managers, agile coaches, team leads, and technical le
 
 ---
 
-## 3. Core Features
+## **3. Core Features**
 
 ### Data Import and Processing
 - Connect to Jira Cloud via REST API — [https://www.atlassian.com/software/jira]
@@ -61,7 +61,7 @@ Project managers, delivery managers, agile coaches, team leads, and technical le
 
 ---
 
-## 4. Typical Local Use Case
+## **4. Typical Local Use Case**
 
 A typical local installation and usage scenario:
 
@@ -105,13 +105,12 @@ Once the setup is complete, the platform automatically updates data according to
 
 ---
 
-## 5. Related Documentation
+## **5. Related Documentation**
 
 For detailed implementation guidelines, see:
 - **10-core.mdc** — AI agent workflow and behavioral rules
 - **20-architecture-and-code-style.mdc** — Architecture and code style standards
 - **30-infrastructure.mdc** — Build, dependencies, and CI configuration
-- **40-security.mdc** — Secrets management, authentication, and security policies
-- **50-testing-and-workflow.mdc** — Testing and CI/CD workflow requirements
+- **40-testing-and-security.mdc** — Testing and CI/CD workflow requirements
 
 ---

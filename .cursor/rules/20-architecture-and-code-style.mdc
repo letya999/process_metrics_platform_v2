@@ -1,0 +1,201 @@
+---
+description: "Architecture, service structure, code style, API standards. Always applies."
+alwaysApply: true
+globs:
+  - "services/**/*.py"
+  - "common/**/*.py"
+---
+
+---
+
+## **1. Technical Stack & Versions**
+
+### Base Environment
+| Component | Version / Range | Notes |
+|------------|----------------|-------|
+| **Python** | 3.11 | Required runtime |
+| **Prefect** | `>=3.4.24,<4.0.0` | Workflow orchestration |
+| **dlt** | `>=1.17.0,<2.0.0` | Data ingestion framework |
+| **dbt** | 1.10.13 | Data transformations |
+| **PostgreSQL** | 15-alpine | Primary database |
+| **Redis** | 7-alpine | Cache & broker |
+| **SQLAlchemy** | 2.0.36 | ORM layer |
+| **Alembic** | 1.14.0 | DB migrations |
+| **asyncpg** | `>=0.30.0,<0.31.0` | Async PostgreSQL driver |
+| **FastAPI** | 0.110.0 | API framework |
+| **Pydantic** | `>=2.9.0,!=2.10.0,<3.0.0` | Validation & schema management |
+| **requests** | `>=2.32.2,<3.0.0` | HTTP client (sync only for tooling) |
+| **python-dotenv** | `>=1.0.0,<2.0.0` | Env configuration |
+| **PyYAML** | `>=6.0,<7.0` | Config parsing |
+| **griffe** | `>=0.45.0,<1.0.0` | Docstring extraction |
+| **pytest** | `>=8.4.2` | Testing framework |
+| **pre-commit** | `>=4.3.0` | Code hooks |
+
+**Infrastructure Tools:**
+- **pdm** — dependency management
+- **docker-compose** — orchestration
+- **make** — automation shortcuts
+*(detailed in `30-infrastructure.mdc`)*
+
+---
+
+## **2. Repository Structure**
+
+**Type:** Monorepository
+**Principle:** One directory = one responsibility, no mixing logic.
+
+```
+/                             # Root configs
+├── .gitignore
+├── docker-compose.yml
+├── pytest.ini
+├── README.md
+│
+├── /common/                  # Shared infrastructure utilities
+├── /services/                # All microservices
+├── /db/                      # Init scripts, Alembic migrations
+├── /docker/                  # Prometheus / Grafana configs
+├── /tracking/                # Temporary dev plans
+└── /tests/                   # Global integration tests
+```
+
+> Shared configs (`.gitignore`, `pytest.ini`, `docker-compose.yml`) always live in the repository root.
+
+---
+
+## **3. Service Structure**
+
+```
+services/<service_name>/
+├── app/
+│   ├── api/              # FastAPI routes (optional)
+│   ├── domain/           # Business logic (pure functions)
+│   ├── infra/            # DB repositories, external clients
+│   ├── models/
+│   │   ├── orm/          # SQLAlchemy models
+│   │   └── schemas/      # Pydantic models
+│   ├── flows/            # Prefect flows (only for orchestrator)
+│   ├── clients/          # HTTP clients (optional)
+│   └── utils/            # Service utilities
+│
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   └── fixtures/
+│
+├── Dockerfile
+├── pyproject.toml
+├── requirements.txt       # auto-generated from pyproject.toml
+└── README.md
+```
+
+---
+
+## **4. `/common/` Directory**
+
+Contains only **infrastructure-level utilities** shared across services.
+
+| Folder | Responsibility |
+|---------|----------------|
+| `loggers/` | JSON logging setup |
+| `errors/` | Base error classes |
+| `middleware/` | JWT, tracing, unified error handling |
+| `constants/` | Error codes, HTTP statuses |
+| `types/` | Shared type definitions |
+| `domain/` *(optional)* | Shared lightweight models |
+
+**Rules:**
+- ✅ Used only by services
+- ❌ No business logic or ORM models
+- ❌ No REST routes
+- ❌ No imports from `/services/`
+
+---
+
+## **5. Naming Rules**
+
+| Entity | Format | Example |
+|---------|---------|----------|
+| Files, dirs, vars, funcs | `snake_case` | `user_service.py`, `calculate_velocity()` |
+| Classes | `PascalCase` | `UserCreate`, `BaseServiceError` |
+| Constants | `UPPER_CASE` | `MAX_RETRIES` |
+| DB Schemas | `snake_case` | `auth`, `raw_jira_cloud`, `clean_jira`, `bi_metrics` |
+| Tables | `snake_case` | `users`, `projects` |
+| Columns | `snake_case` | `user_id`, `created_at` |
+| Foreign Keys | `<table>_id` | `project_id`, `user_id` |
+| Indexes | `idx_<table>_<column>` | `idx_users_email` |
+| Celery Tasks | `verb_noun_task` | `import_jira_issues_task` |
+| Prefect Flows | `verb_noun_flow` | `transform_etl_pipeline_flow` |
+| API Endpoints | plural, `snake_case` | `/api/v1/users`, `/api/v1/projects/{id}/issues` |
+
+---
+
+## **6. Code Style**
+
+### Core Principles
+- Use **async I/O** for all database and external API operations.
+- Follow **RORO** pattern (Receive Object → Return Object).
+- Prefer **functional** and **declarative** code over OOP.
+- Always use **type hints** and meaningful variable names.
+- Document all non-trivial logic via **docstrings**.
+- Enforce code style automatically: **black**, **isort**, **ruff**.
+- Separate ORM and Pydantic models into distinct files.
+- Keep code small: **≤500 lines per file**, **≤50 lines per function**.
+
+### Additional Guidelines
+- Follow **Clean Code** principles: clarity over cleverness, explicit over implicit.
+- Adhere to **SOLID**, **DRY**, and **KISS** design rules.
+- Minimize side effects; prefer pure functions.
+- No global state or logic at import time.
+- Use dependency injection for services and repositories.
+- Apply **single responsibility** for all functions and modules.
+- Comments explain *why*, not *what*.
+
+### Testing & Validation
+- All I/O operations covered by integration tests.
+- All business logic covered by unit tests.
+- Type validation enforced by Pydantic.
+- Use `pytest`, `pytest-asyncio`, and `pytest-cov` for test suites.
+
+---
+
+## **7. Error Handling**
+
+**Validation:**
+- Use Pydantic for all input/output validation.
+- Strict validation; reject partial or malformed data.
+
+**Strict Failure Policy:**
+- ❌ No silent exceptions.
+- ❌ No default fallbacks that mask missing data.
+- ❌ No chained `a or b or c` expressions in business logic.
+- ❌ No hidden retries — only explicit, idempotent, logged ones.
+- ✅ Fail fast on invalid input or inconsistent state.
+
+**Implementation:**
+- Centralized middleware for error handling and structured logging.
+- Traceback with context preserved.
+- Integrated monitoring (Prometheus + Grafana).
+
+---
+
+## **8. Microservices & Contexts**
+
+| Service | Database Schemas Used | Purpose |
+|----------|----------------------|----------|
+| **connectors/** | `raw_jira_cloud` | dlt-based data ingestion from external sources |
+| **orchestrator** | `platform_schema.sql` | Prefect orchestration, flow execution |
+| **cleaner** | `raw_jira_cloud`, `clean_jira_schema.sql` | Data transformation & cleaning |
+| **metrics** | `bi_analytics` | BI-ready metric computation |
+| **dashboard** | `metabase` | Metabase analytics dashboards |
+| **admin** | — | UI, configuration, user management |
+
+---
+
+## **9. Related Documents**
+- **00-project-overview.mdc** → Business context and use case
+- **10-core.mdc** → AI agent workflow and behavioral rules
+- **30-infrastructure.mdc** — Build, dependencies, and CI configuration
+- **40-testing-and-security.mdc** — Testing and CI/CD workflow requirements
+
+---

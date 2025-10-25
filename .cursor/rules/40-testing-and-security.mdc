@@ -1,0 +1,183 @@
+---
+description: "Security: secrets, auth, network, database, Docker. Always applies."
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+## **1. Core Principles**
+- Applies to all services and environments.
+- Single `docker-compose.yml` orchestrates the full system.
+- One PostgreSQL instance with schema separation.
+- Automated security validation and test checks run on startup and CI.
+
+---
+
+## **2. Secrets Management**
+- All secrets stored in **`.env`** (gitignored).
+- Integration credentials (e.g., Jira, GitLab) can be stored in:
+  - `.env` files,
+  - Encrypted database tables,
+  - External vaults (HashiCorp Vault, Doppler, AWS Secrets Manager).
+- Secrets must **never** appear in code, Dockerfiles, logs, or CI configs.
+
+---
+
+## **3. Secret Requirements**
+- **Minimum length:**
+  - JWT ≥ 32 chars
+  - DB password ≥ 16 chars
+  - API keys ≥ 24 chars
+- **Naming:** uppercase (`POSTGRES_PASSWORD`, `JWT_SECRET_KEY`).
+- **Generation:** cryptographically secure only.
+  ```bash
+  openssl rand -hex 32
+  python -c "import secrets; print(secrets.token_hex(32))"
+  ```
+- **Rotation:** every 90 days; old values forbidden.
+- Services validate secret length and format on startup.
+
+---
+
+## **4. Database**
+- One PostgreSQL instance shared by all services.
+- Main user: `process_metrics_admin` (superuser privileges for schema management).
+- Other services may use limited-scope users.
+- Connection example:
+  ```bash
+  postgresql+asyncpg://process_metrics_admin:${PASSWORD}@postgres:5432/process_metrics
+  ```
+- Schema layout:
+  | Service | Schemas | Purpose |
+  |----------|----------|----------|
+  | connectors | `raw_jira_cloud` | Data ingestion via dlt |
+  | orchestrator | `platform_schema` | Prefect orchestration |
+  | cleaner | `raw_jira_cloud`, `clean_jira_schema` | Data cleaning |
+  | metrics | `bi_analytics` | Metric computation |
+  | dashboard | `metabase` | Analytics dashboards |
+  | admin | — | UI, user config |
+
+---
+
+## **5. API**
+- Input validation via **Pydantic** (`extra="forbid"`).
+- Authorization: JWT in `Authorization: Bearer <token>` only.
+- Token expiry: access 60m, refresh 30d.
+- Rate limiting: `@limiter.limit("100/minute")`.
+- Request size limits: body ≤ 10MB, file uploads ≤ 50MB.
+- All responses follow a unified JSON format.
+
+---
+
+## **6. Network**
+- Only 6 user-facing services expose ports.
+- Internal communication via Docker network `process_metrics_network`.
+- Use `expose:` for internal containers; no direct external ports for DB, Redis, or Celery.
+- CORS: explicit domain whitelist; `*` forbidden.
+- Headers: `Authorization`, `X-Trace-Id`.
+
+---
+
+## **7. Secret Compromise**
+- Never log or expose secrets.
+- `.env*` excluded via `.gitignore`, `.dockerignore`, `.prefectignore`, `.cursorignore`.
+- Ignore patterns:
+  ```
+  .env*
+  __pycache__/
+  .venv/
+  node_modules/
+  *.pem *.key *.crt
+  ```
+- If compromised:
+  1. Revoke immediately.
+  2. Generate new secret.
+  3. Restart dependent services.
+
+---
+
+## **8. Vulnerability Scanning**
+| Tool | Purpose | Example | Integration |
+|------|----------|----------|-------------|
+| **Trivy** | Docker image and dependency scanning | `trivy image process_metrics:latest` | Part of `make ci` |
+| **Bandit** | Python static security analysis | `bandit -r services/` | pre-commit + CI |
+| **Safety** | Dependency vulnerability check | `safety check --full-report` | in `make lint` |
+
+Makefile target:
+```makefile
+security-scan:
+	trivy image process_metrics:latest
+	bandit -r services/
+	safety check
+```
+All findings must be resolved before merge or release.
+
+---
+
+## **9. Test Coverage**
+- Minimum 80%, 90% for critical modules.
+- Test types:
+  - **Unit** — logic and functions.
+  - **Integration** — service interactions and APIs.
+  - **DBT** — data quality and schema integrity.
+- Coverage reports generated with `pytest-cov` into `/reports/coverage`.
+
+---
+
+## **10. Test Design**
+- Cover: main flow, happy path, unhappy path, edge cases.
+- Each test is atomic and independent.
+- Follow **AAA** pattern (Arrange-Act-Assert).
+- Organized by type: `tests/unit/`, `tests/integration/`, `tests/dbt/`.
+
+---
+
+## **11. Linting**
+```toml
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "C", "I"]
+
+[build-system]
+requires = ["pdm-pep517"]
+build-backend = "pdm.pep517.api"
+```
+- `black` — formatting
+- `isort` — import order
+- `ruff` — linting
+- Run via `make lint` or `pre-commit run --all-files`.
+
+---
+
+## **12. Test Style**
+- File names: `test_<module>.py`.
+- Function names: `test_<function>_<case>`.
+- One file per logic block.
+- Simple, declarative test logic; no conditionals.
+- Common fixtures in `/tests/common/`.
+
+---
+
+## **13. Test Infrastructure**
+- Fixtures and test data in `/tests/fixtures/`.
+- Dedicated test DB reset before each run.
+- Data generated via factories (e.g., `factory_boy`, `faker`).
+- Results and coverage reports stored in `/reports/`.
+
+---
+
+## **14. Related Documents**
+- **00-project-overview.mdc** → Business context and use case
+- **10-core.mdc** — AI agent workflow and behavioral rules
+- **20-architecture-and-code-style.mdc** — Architecture and code style standards
+- **30-infrastructure.mdc** — Build, dependencies, and CI configuration
+
+---

@@ -2,46 +2,25 @@
 description: "Agent philosophy, workflow cycle, guardrails. Always applies."
 alwaysApply: true
 globs:
-  - "services/**/*.py"
-  - "common/**/*.py"
-  - "db/**/*.sql"
-  - "**/*.md"
-  - ".cursor/rules/*.mdc"
+  - "**/*"
 ---
 
-# Agent Core
-
-## 1. Purpose
-
-This file defines the operational philosophy for AI agents working on the platform.
-
-**Goal:** Predictable, atomic, reversible changes with minimal entropy.
-
----
-
-## 2. Workflow Cycle
+## **2. Workflow Cycle**
 
 ### Recon → Plan → Execute → Verify → Report
 
-#### Recon (Reconnaissance)
-Before any code change:
-- Read relevant `.cursor/rules/*.mdc` files
-- Identify affected services and schemas
-- Scan existing code in relevant modules (targeted, not exhaustive)
-- Check for existing utilities in `/common/`
-- Answer: What is current state? What dependencies exist? Are there similar patterns?
+#### Recon
+Before any change:
+- Read relevant `.cursor/rules/*.mdc` files.
+- Identify affected services and schemas.
+- Check for reusable utilities and existing patterns.
+- Understand current state, dependencies, and context.
 
-#### Plan (Planning)
-For major changes (>10 files, new service, schema changes), write explicit plan:
-- **Current state:** What exists now
-- **Target state:** Desired outcome
-- **File list:** All files to create/modify/delete
-- **Task list:** Ordered steps
-- **Risk assessment:** Breaking changes, dependencies, migrations
+#### Plan
+Each task must be **atomic** and **useful** — it should provide clear business or technical value (bug fix, optimization, metric, API addition, etc.).
+A plan is required for any task that changes more than 3 files.
 
-Save plan to `tracking/<task_name>_<date>.md`
-
-**Example plan structure:**
+**Plan structure:**
 ```markdown
 ## Current State
 ETL service calculates DORA metrics only
@@ -55,186 +34,77 @@ Add sprint velocity calculation
 - services/etl_service/tests/unit/test_sprint_velocity.py (create)
 
 ## Tasks
-1. Create calculation logic
-2. Add migration
-3. Write tests (≥80% coverage)
+1. Implement metric calculation
+2. Add Alembic migration
+3. Add tests (≥80% coverage)
+4. Update docs
 
-## Risks
-None (additive change)
+## Acceptance Criteria
+- [ ] Feature or fix delivers measurable value
+- [ ] All tests pass locally (pytest)
+- [ ] Code coverage ≥80% (≥90% for critical modules)
+- [ ] Docker image builds successfully (`docker build -t <service>:test .`)
+- [ ] Linting and formatting pass (`make lint`)
+- [ ] No unrelated files changed
+- [ ] Clear and documented logic
+- [ ] Compliant with structure and layering rules
+- [ ] CI pipeline passes without errors
 ```
 
-#### Execute (Execution)
-When writing code:
-- Change ONLY files listed in plan
-- Follow structure rules (see `20-structure-and-style.mdc`)
-- Write tests in same session as code
-- One atomic commit per logical change
+#### Execute
+- Modify **only** the files listed in the plan.
+- Follow structural and naming conventions.
+- Write tests in the same session as code.
+- One commit per logical change.
 
-**Rules:**
-- ❌ Do NOT change unrelated files
-- ❌ Do NOT refactor existing code unless task requires it
-- ❌ Do NOT skip tests or documentation
-- ✅ Add new files to appropriate layers
-- ✅ Keep changes minimal and focused
-
-#### Verify (Verification)
+#### Verify
 Before committing:
-1. Run linters: `make lint` (black, isort, ruff)
-2. Run tests: `make test`
-3. Check coverage: `pytest --cov` (≥80%, ≥90% for critical)
-4. Build Docker image: `docker build -t <service>:test .`
+- Run: `make lint`, `make test`, `pytest --cov`.
+- Build Docker image: `docker build -t <service>:test .`.
+- Ensure all checks pass, coverage is within target, and build succeeds.
 
-All checks must pass. If any fail, fix immediately.
-
-#### Report (Reporting)
-After completing task:
-- List all changed files
-- Confirm tests pass and coverage meets threshold
-- Note any deviations from plan with justification
+#### Report
+- List all changed files.
+- Confirm all acceptance criteria are met.
+- Document any deviations with reasons.
 
 ---
 
-## 3. Context Management
+## **3. Context Management**
 
-### Load Priority
-**Always load first:**
-1. Relevant `.cursor/rules/*.mdc` files
-2. Task description/requirements
-3. `services/<affected_service>/README.md`
-
-**Load if needed:**
-4. Files explicitly mentioned in task
-5. Direct dependencies (imports)
-6. Related models (ORM/Pydantic)
-
-**Never load:**
-- ❌ Entire service directories
-- ❌ Unrelated services
-- ❌ Generated files (`pdm.lock`, migrations)
-- ❌ Log files
-
-### Multi-File Changes
-For tasks affecting 5+ files:
-1. **Break into phases:** Models → Logic → API → Tests
-2. **Complete one phase, verify, then next**
-3. **Use `tracking/` for progress**
-4. **If context full:** Commit current phase, clear context, reload next phase
+- Load only files directly related to the task.
+- Do **not** load entire services or unrelated modules.
+- For multi-file tasks (>5 files): split into phases (*models → logic → API → tests*).
+- If context is full: commit, clear, reload, and continue with the next phase.
 
 ---
 
-## 4. Guardrails
+## **4. Guardrails**
 
-### Scope Limits (Per Task)
-- **Max 10 files changed** (if more, split into multiple tasks)
-- **Max 500 lines changed** (if more, re-evaluate approach)
-- **Max 1 service affected** (unless explicitly multi-service task)
-
-### File Limits
-- **Max 500 lines per file** (split if exceeded)
-- **Max 50 lines per function** (refactor if exceeded)
-- **One responsibility per file** (no mixing concerns)
-
-### Documentation Requirements
-- Every new API endpoint → OpenAPI docs
-- Every new model → docstring
-- Complex logic → inline comments explaining why
+- ≤10 files per task
+- ≤500 total changed lines
+- ≤1 affected service (unless defined as multi-service)
+- ≤500 lines per file
+- ≤50 lines per function
+- One logical responsibility per task
+- No refactors unless explicitly required
+- All new APIs and models must include documentation
+- Every change tracked in `tracking/<task>.md`
 
 ---
 
-## 5. Quality Standards
+## **5. Environment and Execution Rules**
 
-### Type Hints (Required)
-```python
-# ✅ Good: full type hints
-async def fetch_user(user_id: int) -> UserOut:
-    user = await user_repo.get_by_id(user_id)
-    return UserOut.model_validate(user)
-
-# ❌ Bad: no types
-async def fetch_user(user_id):
-    user = await user_repo.get_by_id(user_id)
-    return user
-```
-
-### Documentation (Required)
-Public functions must have docstrings:
-```python
-def calculate_cycle_time(issue: Issue) -> timedelta:
-    """
-    Calculate cycle time for an issue.
-
-    Cycle time is time from first "In Progress" to "Done".
-
-    Args:
-        issue: Issue with status history
-
-    Returns:
-        Time duration in timedelta
-
-    Raises:
-        ValueError: If issue missing required transitions
-    """
-    ...
-```
+- Development environment: **Windows 11**
+- Commands executed via **PowerShell**
+- **Docker Desktop (WSL backend)** required for local setup
 
 ---
 
-## 6. Absolute Prohibitions
-
-Never do these (zero tolerance):
-- ❌ Change files outside task scope
-- ❌ Skip tests or documentation
-- ❌ Commit with failing tests
-- ❌ Add secrets to code
-- ❌ Import business logic into `/common/`
-- ❌ Cross-service imports (except `/common/`)
-- ❌ Run services as root in Docker
-- ❌ Use GPL/AGPL licensed packages
-- ❌ Load entire codebase into context
-
----
-
-## 7. Quick Reference
-
-### Before Task
-- [ ] Read relevant `.mdc` files
-- [ ] Recon: scan affected code (targeted)
-- [ ] Plan: write explicit plan for major changes
-- [ ] Context: identify 3-5 core files needed
-
-### During Task
-- [ ] Execute: follow plan exactly
-- [ ] Write tests alongside code
-- [ ] Update docs if API/contract changes
-- [ ] Context: unload completed files, load next phase
-
-### After Task
-- [ ] Verify: lint, test, coverage, build
-- [ ] Report: list changes, test results
-- [ ] Commit: proper format (see `40-testing-and-workflow.mdc`)
-- [ ] Clean: delete temp files from `tracking/`
-
-### If Stuck
-- [ ] Re-read relevant `.mdc` file
-- [ ] Check existing code for patterns (one example)
-- [ ] Document blocker in `tracking/blockers.md`
-- [ ] Ask for help
-
-### If Context Full
-- [ ] Commit current progress
-- [ ] Clear all context
-- [ ] Re-load only next phase files
-- [ ] Resume from verified state
-
----
-
-## 8. Related Rules
-
-- **Structure & style** → `20-structure-and-style.mdc`
-- **Dependencies** → `30-dependencies.mdc`
-- **Security** → `35-security.mdc`
-- **Testing & Git** → `40-testing-and-workflow.mdc`
-- **Logging & metrics** → `50-observability.mdc`
-- **Infrastructure** → `55-infrastructure.mdc`
+## **6. Related Rules**
+- **00-project-overview.mdc** → Business context and use case
+- **20-architecture-and-code-style.mdc** — Architecture and code style standards
+- **30-infrastructure.mdc** — Build, dependencies, and CI configuration
+- **40-testing-and-security.mdc** — Testing and CI/CD workflow requirements
 
 ---
