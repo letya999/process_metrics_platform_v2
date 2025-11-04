@@ -185,52 +185,20 @@ def run_for_project(project: Dict[str, Any], dataset_name: str) -> None:
 
     cfg = {"instance_url": instance_url, "user_email": user_email, "api_token": token}
     print(f"Running DLT for {project_key} -> dataset {dataset_name}")
-    issues_res, sprints_res, comments_res, releases_res, boards_res = jira_source(
-        project_key, cfg
-    )
+    (
+        issues_res,
+        sprints_res,
+        comments_res,
+        releases_res,
+        boards_res,
+        projects_res,
+    ) = jira_source(project_key, cfg)
 
     # Build resource callables (do NOT call them). Use wrappers to pre-bind args
     # while preserving function metadata so DLT can infer resource names.
 
-    resource_callables = []
-
-    # issues (no args)
-    resource_callables.append(issues_res)
-
-    # releases (bind project_key) using dlt resource binding
-    try:
-        resource_callables.append(releases_res.bind(project_key=project_key))
-    except Exception:
-        resource_callables.append(releases_res)
-
-    # boards (no args)
-    resource_callables.append(boards_res)
-
-    # sprints: create one resource callable per board that binds board_id
-    try:
-        boards_list = list(boards_res())
-        board_ids = [
-            b.get("board_id")
-            for b in boards_list
-            if isinstance(b, dict) and b.get("board_id")
-        ]
-        for bid in board_ids:
-            try:
-                resource_callables.append(sprints_res.bind(board_id=bid))
-            except Exception:
-                # fallback to unbound if bind not supported
-                resource_callables.append(sprints_res)
-    except Exception:
-        # fallback: include sprints_res unbound
-        resource_callables.append(sprints_res)
-
-    # comments resource (may require issue_key but safe to include unbound)
-    resource_callables.append(comments_res)
-
-    # run DLT
-    # Create a dlt pipeline (ensures destination is provided) and run using a small
-    # dlt.source wrapper that returns our instantiated resources. This mirrors
-    # the working example script `run_dlt_import.py`.
+    # Run DLT using the jira_source directly so DLT registers each resource
+    # with its explicit `table_name` and creates separate tables per resource.
     try:
         db_url_env = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
         pipeline_name = f"jira_manual_{project_key}"
@@ -240,12 +208,10 @@ def run_for_project(project: Dict[str, Any], dataset_name: str) -> None:
             db_url_env=db_url_env,
         )
 
-        @dlt.source
-        def _manual_source():
-            # Return resource callables for dlt to consume
-            return tuple(resource_callables)
+        # create the dlt source (returns resource callables defined in jira_source)
+        source = jira_source(project_key, cfg)
 
-        result = pipeline.run(_manual_source)
+        result = pipeline.run(source)
         print("DLT run result:", result)
     except Exception as e:
         print(f"DLT run failed for project {project_key}: {e}")

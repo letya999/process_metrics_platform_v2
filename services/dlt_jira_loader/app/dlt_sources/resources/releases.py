@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, Iterator, Optional
 
@@ -36,11 +37,11 @@ def make_releases_resource(client) -> dlt.Resource:
         for v in versions:
             yield {
                 "release_id": v.get("id"),
-                "name": v.get("name"),
-                "description": v.get("description"),
-                "released": v.get("released"),
-                "release_date": v.get("releaseDate"),
-                "raw": v,
+                "release_name": v.get("name"),
+                "release_description": v.get("description"),
+                "release_released": v.get("released", False),
+                "release_release_date": v.get("releaseDate"),
+                "raw_json": json.dumps(v, default=str),
             }
 
     return releases

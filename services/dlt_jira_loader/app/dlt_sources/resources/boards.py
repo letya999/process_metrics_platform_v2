@@ -1,6 +1,7 @@
 # ruff: noqa: E501
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, Iterator, Optional
 
@@ -40,12 +41,14 @@ def make_boards_resource(client, project_key: Optional[str] = None) -> dlt.Resou
             # each item should be a dict; guard when it's not
             if not isinstance(b, dict):
                 continue
+            location = b.get("location") or {}
+            location_name = location.get("displayName") or None
             yield {
                 "board_id": b.get("id"),
                 "name": b.get("name"),
                 "type": b.get("type"),
-                "location": b.get("location"),
-                "raw": b,
+                "location_name": location_name,
+                "raw_json": json.dumps(b, default=str),
             }
 
     return boards

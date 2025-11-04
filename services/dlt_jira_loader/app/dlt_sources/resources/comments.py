@@ -1,6 +1,7 @@
 # ruff: noqa: E501
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, Iterator, Optional
 
@@ -34,13 +35,15 @@ def make_comments_resource(client) -> dlt.Resource:
             if not comments_batch:
                 break
             for c in comments_batch:
+                author = c.get("author") or {}
+                author_display_name = author.get("displayName") or None
                 yield {
                     "issue_key": issue_key,
                     "comment_id": c.get("id"),
-                    "author": c.get("author", {}),
+                    "author_display_name": author_display_name,
                     "body": c.get("body"),
                     "created": c.get("created"),
-                    "raw": c,
+                    "raw_json": json.dumps(c, default=str),
                 }
             start_at += len(comments_batch)
             if len(comments_batch) < max_results:
