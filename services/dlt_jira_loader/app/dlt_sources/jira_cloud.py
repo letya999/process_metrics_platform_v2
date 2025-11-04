@@ -18,21 +18,27 @@ from typing import Any, Dict, Iterable
 
 import dlt
 
-from services.dlt_jira_loader.clients.jira_client import (
+from services.dlt_jira_loader.app.clients.jira_client import (
     JiraClient,
     resolve_from_env_or_config,
 )
-from services.dlt_jira_loader.dlt_sources.resources.boards import make_boards_resource
-from services.dlt_jira_loader.dlt_sources.resources.comments import (
+from services.dlt_jira_loader.app.dlt_sources.resources.boards import (
+    make_boards_resource,
+)
+from services.dlt_jira_loader.app.dlt_sources.resources.comments import (
     make_comments_resource,
 )
-from services.dlt_jira_loader.dlt_sources.resources.issues import make_issues_resource
-from services.dlt_jira_loader.dlt_sources.resources.releases import (
+from services.dlt_jira_loader.app.dlt_sources.resources.issues import (
+    make_issues_resource,
+)
+from services.dlt_jira_loader.app.dlt_sources.resources.releases import (
     make_releases_resource,
 )
-from services.dlt_jira_loader.dlt_sources.resources.sprints import make_sprints_resource
+from services.dlt_jira_loader.app.dlt_sources.resources.sprints import (
+    make_sprints_resource,
+)
 
-# credentials in services/dlt_jira_loader/clients/jira_client.py
+# credentials in services/dlt_jira_loader/app/clients/jira_client.py
 
 
 def jira_source(project_key: str, config: Dict[str, Any]) -> Iterable[dlt.Resource]:
@@ -58,11 +64,14 @@ def jira_source(project_key: str, config: Dict[str, Any]) -> Iterable[dlt.Resour
         instance_url=instance_url, api_token=api_token, email=user_email
     )
 
+    # resource factories (leave parametrization/binding to caller script)
     issues = make_issues_resource(project_key=project_key, client=client)
-    sprints = make_sprints_resource(client=client)
+    sprints = make_sprints_resource(
+        client=client
+    )  # expects board_id when bound by caller
     comments = make_comments_resource(client=client)
     releases = make_releases_resource(client=client)
     boards = make_boards_resource(client=client, project_key=project_key)
 
-    # return resource callables to DLT (additions: releases, boards)
+    # return resource callables in the order expected by run_dlt_from_db.py
     return issues, sprints, comments, releases, boards

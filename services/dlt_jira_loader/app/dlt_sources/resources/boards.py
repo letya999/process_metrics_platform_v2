@@ -1,12 +1,24 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Iterator, Optional
 
 import dlt
 
 
 def make_boards_resource(client, project_key: Optional[str] = None) -> dlt.Resource:
-    @dlt.resource(write_disposition="merge", primary_key=["board_id"])
+    WRITE_DISPOSITION = (
+        "append"
+        if os.getenv("DLT_FORCE_APPEND", "0") in ("1", "true", "True")
+        else "merge"
+    )
+
+    @dlt.resource(
+        write_disposition=WRITE_DISPOSITION,
+        table_name="boards",
+        primary_key=["board_id"],
+    )
     def boards() -> Iterator[Dict[str, Any]]:
         # Jira boards can be searched by project key via the agile API.
         # Example path: /rest/agile/1.0/board?projectKeyOrId={key}

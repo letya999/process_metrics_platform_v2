@@ -2,11 +2,11 @@ from uuid import UUID
 
 import pytest
 
-from services.dlt_jira_loader.models.config import (
+from services.dlt_jira_loader.app.models.config import (
     JiraSyncConfig,
     ProjectWithCredentials,
 )
-from services.dlt_jira_loader.utils.db import resolve_api_token
+from services.dlt_jira_loader.app.utils.db import resolve_api_token
 
 
 def test_project_with_credentials_model_roundtrip():

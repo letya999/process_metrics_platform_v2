@@ -1,4 +1,4 @@
-from services.dlt_jira_loader.flows.tasks.validation import validate_load
+from dlt_jira_loader.app.flows.tasks.validation import validate_load
 
 
 def test_validate_load_empty_rows():

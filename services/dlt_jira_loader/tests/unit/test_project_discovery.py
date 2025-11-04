@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from services.dlt_jira_loader.models.config import ProjectWithCredentials
-from services.dlt_jira_loader.utils import project_discovery
+from services.dlt_jira_loader.app.models.config import ProjectWithCredentials
+from services.dlt_jira_loader.app.utils import project_discovery
 
 
 def _now_iso(days: int = 0) -> str:

@@ -1,15 +1,27 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Iterator
 
 import dlt
 
 
 def make_sprints_resource(client) -> dlt.Resource:
-    @dlt.resource(write_disposition="merge", primary_key=["sprint_id"])
+    WRITE_DISPOSITION = (
+        "append"
+        if os.getenv("DLT_FORCE_APPEND", "0") in ("1", "true", "True")
+        else "merge"
+    )
+
+    @dlt.resource(
+        write_disposition=WRITE_DISPOSITION,
+        table_name="sprints",
+        primary_key=["sprint_id"],
+    )
     def sprints(board_id: int) -> Iterator[Dict[str, Any]]:
         start_at = 0
-        max_results = 50
+        max_results = 100
         while True:
             payload = client.get_sprints(
                 board_id=board_id, start_at=start_at, max_results=max_results

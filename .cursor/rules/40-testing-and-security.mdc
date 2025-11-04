@@ -50,7 +50,7 @@ globs:
 - Schema layout:
   | Service | Schemas | Purpose |
   |----------|----------|----------|
-  | connectors | `raw_jira_cloud` | Data ingestion via dlt |
+  | connectors | `raw_jira_cloud_dlt` | Data ingestion via dlt |
   | orchestrator | `platform_schema` | Prefect orchestration |
   | cleaner | `raw_jira_cloud`, `clean_jira_schema` | Data cleaning |
   | metrics | `bi_analytics` | Metric computation |

@@ -5,7 +5,7 @@ networks:
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: pmp_v2
+    container_name: postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-process_metrics_v2}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -15,6 +15,8 @@ services:
       - ./db:/docker-entrypoint-initdb.d
     expose:
       - "5432"
+    ports:
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -40,8 +42,9 @@ services:
   auth_service:
     build: ./services/auth_service
     container_name: auth_service
-    ports:
-      - "8001:8001"
+    # Make auth_service internal-only: expose port to compose network but do not publish to host
+    expose:
+      - "8001"
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     depends_on:
@@ -54,7 +57,7 @@ services:
       - process_metrics_network
 
   prefect-server:
-    image: prefecthq/prefect:2.14-python3.11
+    image: prefecthq/prefect:3.4.25-python3.11
     container_name: prefect-server
     command: ["prefect", "server", "start", "--host", "0.0.0.0", "--ui", "--log-level", "INFO"]
     ports:
@@ -62,7 +65,8 @@ services:
     volumes:
       - prefect_data:/root/.prefect
     environment:
-      PREFECT_API_URL: http://0.0.0.0:4200/api
+      # Expose API to the host UI as localhost so the browser can reach it
+      PREFECT_API_URL: http://localhost:4200/api
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health', timeout=5)\""]
       interval: 15s
@@ -73,19 +77,43 @@ services:
       - process_metrics_network
 
   prefect-worker:
-    image: prefecthq/prefect:2.14-python3.11
+    image: prefecthq/prefect:3.4.25-python3.11
     container_name: prefect-worker
     depends_on:
       prefect-server:
         condition: service_healthy
+    env_file: .env
     environment:
+      DATABASE_URL: ${DATABASE_URL}
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: INFO
+      # Ensure Python can import the service `app` package from mounted code
+      PYTHONPATH: /opt/prefect/services/dlt_jira_loader
     command: ["prefect", "worker", "start", "--pool", "default"]
     volumes:
       - prefect_data:/root/.prefect
+      # Mount the entire service to ensure all packages are present at runtime
+      - ./services/dlt_jira_loader:/opt/prefect/services/dlt_jira_loader:ro
     networks:
       - process_metrics_network
+
+  orchestrator:
+    build: ./services/orchestrator
+    container_name: orchestrator
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    restart: on-failure
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      PREFECT_API_URL: http://prefect-server:4200/api
+    env_file: .env
+    volumes:
+      - ./services/dlt_jira_loader:/opt/prefect/services/dlt_jira_loader:ro
+    networks:
+      - process_metrics_network
+    profiles:
+      - registration
 
   alembic:
     image: python:3.11-slim
@@ -103,6 +131,22 @@ services:
       - process_metrics_network
     profiles:
       - migration
+
+  tmp_runner:
+    build: ./services/dlt_jira_loader
+    container_name: tmp_runner
+    env_file: .env
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - ./:/app
+    working_dir: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - process_metrics_network
+    entrypoint: ["python", "/app/services/dlt_jira_loader/scripts/run_dlt_from_db.py"]
 
 volumes:
   postgres_data:

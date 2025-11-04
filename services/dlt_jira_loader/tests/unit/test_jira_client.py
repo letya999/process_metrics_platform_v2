@@ -1,6 +1,6 @@
 import pytest
 
-from services.dlt_jira_loader.clients.jira_client import (
+from services.dlt_jira_loader.app.clients.jira_client import (
     JiraClient,
     JiraHTTPError,
     resolve_from_env_or_config,

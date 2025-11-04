@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from services.dlt_jira_loader.flows.scheduled import jira_sync_scheduled_wrapper
+from dlt_jira_loader.app.flows import scheduled
+from dlt_jira_loader.app.flows.scheduled import jira_sync_scheduled_wrapper
 
 
 def _make_proj(key: str, last_synced: dict | None = None, is_active: bool = True):
@@ -29,8 +30,7 @@ def test_wrapper_batches_and_filtering(monkeypatch):
 
     # stub out the actual jira_sync_flow to avoid Prefect runtime during unit test
     monkeypatch.setattr(
-        "services.dlt_jira_loader.flows.scheduled.jira_sync_flow",
-        lambda db_conn, config: {"status": "started"},
+        scheduled, "jira_sync_flow", lambda *args, **kwargs: {"status": "started"}
     )
 
     # run with batch_size 3 -> 3 batches (3,3,1)

@@ -13,7 +13,7 @@ globs:
 
 - The entire system is deployed through a single **`docker-compose.yml`** at the repository root.
 - A single physical **PostgreSQL** instance is used, separated into schemas:
-  - `raw_jira_cloud` — raw data from connectors
+  - `raw_jira_cloud_dlt` — raw data from connectors
   - `clean_jira_schema` — cleaned and normalized data
   - `bi_analytics` — aggregated BI data
   - `platform` — platform service tables

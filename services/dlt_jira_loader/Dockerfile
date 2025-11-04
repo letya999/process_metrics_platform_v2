@@ -1,4 +1,4 @@
-FROM prefecthq/prefect:2.14-python3.11
+FROM prefecthq/prefect:3.4.25-python3.11
 
 USER root
 WORKDIR /app

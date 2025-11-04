@@ -1,19 +1,31 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Iterator, Optional
 
 import dlt
 
 
 def make_comments_resource(client) -> dlt.Resource:
-    @dlt.resource(write_disposition="merge", primary_key=["issue_key", "comment_id"])
+    WRITE_DISPOSITION = (
+        "append"
+        if os.getenv("DLT_FORCE_APPEND", "0") in ("1", "true", "True")
+        else "merge"
+    )
+
+    @dlt.resource(
+        write_disposition=WRITE_DISPOSITION,
+        table_name="comments",
+        primary_key=["issue_key", "comment_id"],
+    )
     def comments(issue_key: Optional[str] = None) -> Iterator[Dict[str, Any]]:
         # allow being called without an issue_key during DLT pipeline introspection
         # (DLT may call the resource with no args); return empty iterator in that case.
         if issue_key is None:
             return iter(())
         start_at = 0
-        max_results = 50
+        max_results = 100
         while True:
             payload = client.get_comments(
                 issue_key=issue_key, start_at=start_at, max_results=max_results

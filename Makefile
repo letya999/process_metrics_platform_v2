@@ -1,4 +1,5 @@
 .PHONY: help lint test docker-build docker-up docker-down ci clean migrate up-core gen-env setup
+.PHONY: security-scan
 
 DOCKER_BUILDKIT ?= 1
 export DOCKER_BUILDKIT
@@ -41,25 +42,44 @@ gen-env:
 
 docker-build:
 	@echo "Building docker images (DOCKER_BUILDKIT=$(DOCKER_BUILDKIT))"
-	docker build -t auth_service:local services/auth_service
+# Build all service images in parallel using docker-compose for consistency
+	@echo "Building all service images via docker-compose"
+# Cross-platform: use PowerShell on Windows to set env var, POSIX-style for others
+ifeq ($(OS),Windows_NT)
+	@echo "Using PowerShell to set DOCKER_BUILDKIT for Windows"
+	@powershell -NoProfile -Command "$env:DOCKER_BUILDKIT='$(DOCKER_BUILDKIT)'; docker compose build --parallel --no-cache"
+else
+	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker compose build --parallel --no-cache
+endif
+
+migrate:
+	@echo "Running Alembic migrations (upgrade head)"
+	docker compose run --rm alembic sh -c "alembic -c db/migrations/alembic.ini upgrade head"
+
+security-scan:
+	@echo "Running security scans: trivy, bandit, safety"
+# Fail the CI on HIGH/CRITICAL findings
+	trivy fs --exit-code 1 --severity HIGH,CRITICAL --format table .
+	bandit -r services/ -lll
+	safety check --full-report
 
 docker-up:
 	@echo "Starting all services"
-	docker-compose up -d
+	docker compose up -d
 
 docker-down:
 	@echo "Stopping all services"
-	docker-compose down
+	docker compose down
 
 up-core:
 	@echo "Starting core services: postgres, redis, prefect"
-	docker-compose up -d postgres redis prefect-server prefect-worker
+	docker compose up -d postgres redis prefect-server prefect-worker
 
 reset-db:
 	@echo "=== DESTROYING DATABASE AND RECREATING ==="
-	docker-compose down
+	docker compose down
 	docker volume rm process_metrics_platform_v2_postgres_data || true
-	docker-compose up -d postgres redis
+	docker compose up -d postgres redis
 	@echo "Waiting for postgres to initialize..."
 	@$(SLEEP_CMD)
 	@$(MAKE) debug-db
@@ -67,13 +87,13 @@ reset-db:
 # Check what's in the database
 debug-db:
 	@echo "=== CHECKING DATABASE STATE ==="
-	@docker-compose exec postgres psql -U postgres -d process_metrics_v2 -c "\dn" || echo "Failed to connect"
-	@docker-compose exec postgres psql -U postgres -d process_metrics_v2 -c "SELECT schemaname FROM pg_tables WHERE schemaname = 'platform';" || echo "Failed to query"
+	@docker compose exec postgres psql -U postgres -d process_metrics_v2 -c "\dn" || echo "Failed to connect"
+	@docker compose exec postgres psql -U postgres -d process_metrics_v2 -c "SELECT schemaname FROM pg_tables WHERE schemaname = 'platform';" || echo "Failed to query"
 
 setup: up-core
 	@echo "Setting up database and migrations..."
 	@$(MAKE) debug-db
-	@docker-compose run --rm alembic sh -c "\
+	@docker compose run --rm alembic sh -c "\
 		apt-get update -qq && apt-get install -y -qq postgresql-client && \
 		pip install -q alembic asyncpg psycopg2-binary && \
 		echo 'Waiting for postgres...' && \
@@ -82,8 +102,8 @@ setup: up-core
 		alembic -c db/migrations/alembic.ini upgrade head"
 	@echo "Setup complete!"
 
-ci: lint test docker-build
-	@echo "CI pipeline completed"
+ci: lint security-scan test docker-build docker-up
+	@echo "CI pipeline completed (lint -> security-scan -> test -> build -> up)"
 
 clean:
 	@echo "Cleaning build artifacts"
@@ -92,13 +112,13 @@ clean:
 force-reset:
 	@echo "=== FORCE RESET DATABASE (REMOVES ALL DATA) ==="
 	@echo "Stopping all containers..."
-	docker-compose down -v
+	docker compose down -v
 	@echo "Removing ALL volumes..."
 	docker volume prune -f
 	@echo "Removing specific postgres volume..."
 	- docker volume rm process_metrics_platform_v2_postgres_data
 	@echo "Starting fresh postgres..."
-	docker-compose up -d postgres
+	docker compose up -d postgres
 	@echo "Waiting 30 seconds for initialization..."
 	@powershell -NoProfile -Command "Start-Sleep -Seconds 30" || sleep 30
 	@echo "Checking database state..."

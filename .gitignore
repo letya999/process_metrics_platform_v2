@@ -11,3 +11,4 @@ tracking/*.md
 .ruff_cache
 .audit
 .pytest_cache
+.dlt/

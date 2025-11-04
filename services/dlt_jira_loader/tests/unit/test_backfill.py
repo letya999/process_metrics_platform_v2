@@ -3,8 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-
-from services.dlt_jira_loader.flows import backfill
+from dlt_jira_loader.app.flows import backfill
 
 
 def test_split_date_ranges_even():
@@ -26,9 +25,8 @@ def test_backfill_projects_invokes_jira_sync(monkeypatch):
     def fake_jira_sync(db_conn, config):
         calls.append(config)
 
-    monkeypatch.setattr(
-        "services.dlt_jira_loader.flows.backfill.jira_sync_flow", fake_jira_sync
-    )
+    # Patch the imported module directly instead of relying on module name strings
+    monkeypatch.setattr(backfill, "jira_sync_flow", fake_jira_sync)
 
     db_conn = {"pipelines": []}
     project_uuids = [uuid4(), uuid4()]

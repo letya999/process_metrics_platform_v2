@@ -1,6 +1,6 @@
 import pytest
 
-from services.dlt_jira_loader.clients.jira_client import JiraClient, JiraHTTPError
+from services.dlt_jira_loader.app.clients.jira_client import JiraClient, JiraHTTPError
 
 
 class FakeResp:

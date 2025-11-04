@@ -185,7 +185,7 @@ Contains only **infrastructure-level utilities** shared across services.
 |----------|----------------------|----------|
 | **connectors/** | `raw_jira_cloud` | dlt-based data ingestion from external sources |
 | **orchestrator** | `platform_schema.sql` | Prefect orchestration, flow execution |
-| **cleaner** | `raw_jira_cloud`, `clean_jira_schema.sql` | Data transformation & cleaning |
+| **cleaner** | `raw_jira_cloud_dlt`, `clean_jira_schema.sql` | Data transformation & cleaning |
 | **metrics** | `bi_analytics` | BI-ready metric computation |
 | **dashboard** | `metabase` | Metabase analytics dashboards |
 | **admin** | — | UI, configuration, user management |

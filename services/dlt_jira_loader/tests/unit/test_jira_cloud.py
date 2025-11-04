@@ -4,7 +4,7 @@ import pytest
 import requests
 import responses
 
-from services.dlt_jira_loader.dlt_sources import jira_cloud
+from services.dlt_jira_loader.app.dlt_sources import jira_cloud
 
 
 @pytest.fixture

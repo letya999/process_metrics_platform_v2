@@ -1,8 +1,8 @@
 from uuid import UUID
 
-from services.dlt_jira_loader.dlt_sources.jira_cloud import jira_source
-from services.dlt_jira_loader.flows.tasks.extract import prepare_resources
-from services.dlt_jira_loader.models.config import ProjectWithCredentials
+from services.dlt_jira_loader.app.dlt_sources.jira_cloud import jira_source
+from services.dlt_jira_loader.app.flows.tasks.extract import prepare_resources
+from services.dlt_jira_loader.app.models.config import ProjectWithCredentials
 
 
 class DummyClient:
@@ -32,7 +32,7 @@ def test_jira_source_and_prepare(monkeypatch):
         return mapping[key]
 
     monkeypatch.setattr(
-        "services.dlt_jira_loader.dlt_sources.jira_cloud.resolve_from_env_or_config",
+        "services.dlt_jira_loader.app.dlt_sources.jira_cloud.resolve_from_env_or_config",
         fake_resolve,
     )
 
@@ -49,7 +49,7 @@ def test_jira_source_and_prepare(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "services.dlt_jira_loader.dlt_sources.jira_cloud.JiraClient",
+        "services.dlt_jira_loader.app.dlt_sources.jira_cloud.JiraClient",
         lambda instance_url, api_token, email: DummyClient(),
     )
 

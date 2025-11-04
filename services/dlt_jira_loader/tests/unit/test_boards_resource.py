@@ -1,4 +1,6 @@
-from services.dlt_jira_loader.dlt_sources.resources.boards import make_boards_resource
+from services.dlt_jira_loader.app.dlt_sources.resources.boards import (
+    make_boards_resource,
+)
 
 
 def test_boards_resource_with_values_dict():
