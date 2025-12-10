@@ -7,110 +7,121 @@ globs:
 
 # Project Overview
 
-## **1. What This Platform Is**
+## 1. What This Platform Is
 
 **Name:** Process Metrics Platform v2
-**Type:** Open-source ETL + BI platform for calculating and visualizing software development team metrics
-**Purpose:** Provide a free, customizable tool for automated collection, processing, and analysis of development metrics
-**Deployment:** Runs locally on a personal computer or company server via a single Docker container, without any external cloud dependencies
+**Type:** Open-source self-hosted ETL + BI platform for development team metrics
+**Architecture:** Monolith (not microservices)
+**Deployment:** Single `docker-compose up` on personal computer or company server
 
 ---
 
-## **2. Business Context**
+## 2. Business Context
 
 ### Target Users
-Project managers, delivery managers, agile coaches, team leads, and technical leads
+Project managers, delivery managers, agile coaches, team leads, and technical leads.
 
 ### Problems Solved
-- High cost of existing solutions with limited customization options
-- Lack of a simple tool to connect multiple corporate systems as data sources
+- High cost of existing solutions with limited customization
+- Lack of simple tool to connect multiple data sources
 - Inability to define custom metrics or visualizations
-- Cloud/SaaS usage is restricted or undesirable due to internal policies
+- Cloud/SaaS restrictions due to internal policies
 - Complex BI integrations and expensive maintenance
-- Most existing tools cannot properly import historical data
+- Most tools cannot properly import historical data
 
 ### Key Differentiators
-- **Self-hosted:** Full control over data, structure, and visualization
-- **Open-source:** Transparent, flexible, and license-free
-- **Modular architecture:** Easily extendable with new connectors and metrics
-- **No external dependencies:** Runs entirely locally or closely
-- **Modern, maintainable stack:** Built on current ETL and BI technologies
+- **Self-hosted:** Full control over data and visualization
+- **Open-source:** Transparent, flexible, license-free
+- **Simple architecture:** Monolith, not microservices
+- **Extensible:** Easy to add new data sources (dlt connectors)
+- **Modern stack:** Dagster + dlt + FastAPI + Metabase
 
 ---
 
-## **3. Core Features**
+## 3. Core Features
 
-### Data Import and Processing
-- Connect to Jira Cloud via REST API — [https://www.atlassian.com/software/jira]
-- Load raw data using **dlt** — [https://github.com/dlt-hub/dlt-dbt-jira] & [https://dlthub.com/docs/dlt-ecosystem/verified-sources/jira]
-- Transform data using **dbt** — [https://github.com/dbt-labs/dbt-core]
-- Orchestrate tasks using **Prefect** — [https://github.com/PrefectHQ/prefect] & [https://docs.prefect.io/v3/get-started]
-- Maintain full change history across data layers: `raw → clean → bi`
+### Data Import (dlt)
+- Jira Cloud — issues, sprints, changelogs
+- GitLab — MRs, pipelines, deployments (planned)
+- Slack — messages, reactions (planned)
+- Google Workspace — calendar, docs (planned)
+
+### Data Layers (Medallion Architecture)
+```
+Raw (Bronze)     →    Clean (Silver)    →    Metrics (Gold)
+─────────────         ──────────────         ─────────────
+append-only           normalized             materialized views
+JSON as-is            untangled structure    ready for BI
+full history          typed columns          aggregated
+```
 
 ### Metrics Supported
-- **Kanban:** Lead time, throughput, WIP
-- **DORA:** Deployment frequency, lead time for changes, MTTR, change failure rate
-- **Scrum:** Velocity, burndown, sprint predictability
-- **Custom:** Extensible via the ETL service
+- **Kanban:** Lead Time, Cycle Time, Throughput, WIP
+- **Scrum:** Velocity, Burndown, Sprint Predictability
+- **DORA:** Deployment Frequency, Lead Time for Changes, MTTR, CFR
+- **Custom:** Extensible via SQL views
 
 ### User Interaction
-- **Metabase:** Self-service dashboards with customizable charts — [https://github.com/metabase/metabase] & [https://www.metabase.com/]
-- **Admin panel:** Configure metric calculations, schedules, and access management
-- **Grafana + Prometheus:** System monitoring and performance metrics — [https://github.com/grafana/grafana]&[https://grafana.com/], [https://github.com/prometheus/prometheus] &(https://prometheus.io/)
-- **Prefect UI:** Visual management of data pipelines — [https://docs.prefect.io/ui]
+- **Dagster UI** (http://localhost:3000) — Pipeline monitoring, scheduling, manual triggers
+- **Admin Panel** (http://localhost:8000) — Configure integrations and metrics
+- **Metabase** (http://localhost:3001) — Self-service dashboards
 
 ---
 
-## **4. Typical Local Use Case**
+## 4. Typical Use Case
 
-A typical local installation and usage scenario:
-
-1. **Clone the repository:**
+1. **Clone and start:**
    ```bash
    git clone https://github.com/<org>/process-metrics-v2.git
    cd process-metrics-v2
-   ```
-
-2. **Start the stack with Docker:**
-   ```bash
    docker-compose up -d
    ```
-   This command launches all services — PostgreSQL, ETL, admin panel, Metabase, Grafana, Prefect, etc.
 
-3. **Open the admin panel:**
-   Navigate to `http://localhost:8000` (or the configured port).
-   Log in using the preconfigured admin credentials (`admin@example.com / admin123`, configurable in `.env`).
+2. **Open Admin Panel** (http://localhost:8000):
+   - Add Jira integration (URL + API token)
+   - Select projects to sync
+   - Configure metrics (commitment points, estimation fields)
 
-4. **Add a data source:**
-   - Go to “Integrations → Add Source”
-   - Select **Jira Cloud**
-   - Enter API credentials and authentication token
-   - Specify the list of Jira projects to load
+3. **Dagster syncs data automatically:**
+   - Raw layer: append-only JSON from Jira
+   - Clean layer: normalized tables
+   - Metrics: materialized views refresh
 
-5. **Configure data loading and metrics:**
-   - Choose which data fields and metrics to import
-   - Define refresh intervals and ETL schedule
-   - Save the configuration
-
-6. **Run initial data load:**
-   - Trigger the “Initial Load” job manually from the admin panel
-   - Wait until Prefect reports that extraction, transformation, and loading have completed successfully
-
-7. **Explore metrics in Metabase:**
-   - Open [http://localhost:3000]
-   - Log in to Metabase
-   - Access the prebuilt dashboard to immediately view charts such as Lead Time, Throughput, and Deployment Frequency
-
-Once the setup is complete, the platform automatically updates data according to the configured schedule, keeping all dashboards current.
+4. **View dashboards in Metabase** (http://localhost:3001):
+   - Lead Time distribution
+   - Velocity trends
+   - Throughput charts
 
 ---
 
-## **5. Related Documentation**
+## 5. Architecture Principles
 
-For detailed implementation guidelines, see:
-- **10-core.mdc** — AI agent workflow and behavioral rules
-- **20-architecture-and-code-style.mdc** — Architecture and code style standards
-- **30-infrastructure.mdc** — Build, dependencies, and CI configuration
-- **40-testing-and-security.mdc** — Testing and CI/CD workflow requirements
+### Why Monolith (not Microservices)
+- **Target:** Self-hosted on laptop/small server
+- **Team size:** 1-3 developers
+- **Simplicity:** One codebase, one deploy, easy debugging
+- **Resources:** ~512MB RAM vs 2-4GB for microservices
+
+### Why Dagster (not Airflow/Prefect)
+- **Lighter:** ~200MB vs ~500MB+ Airflow
+- **Asset-based:** Think about data, not tasks
+- **Built-in UI:** Scheduling, lineage, logs
+- **dlt integration:** Native `dagster-dlt` package
+
+### Why dlt (not custom ETL)
+- **30+ connectors:** Jira, GitLab, Slack, Google...
+- **Incremental loading:** Built-in state management
+- **Schema inference:** Automatic typing
+- **Active community:** Quick updates
+
+---
+
+## 6. Related Documentation
+
+- **10-core.mdc** — Development workflow and guardrails
+- **20-architecture-and-code-style.mdc** — Code structure and style
+- **30-infrastructure.mdc** — Docker, database, dependencies
+- **40-testing-and-security.mdc** — Testing and security requirements
+- **CLAUDE.md** — Quick reference for AI assistants
 
 ---

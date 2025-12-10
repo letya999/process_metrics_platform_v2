@@ -1,183 +1,391 @@
 ---
-description: "Security: secrets, auth, network, database, Docker. Always applies."
+description: "Testing requirements, security practices. Always applies."
 alwaysApply: true
 globs:
   - "**/*"
 ---
 
-## **1. Core Principles**
-- Applies to all services and environments.
-- Single `docker-compose.yml` orchestrates the full system.
-- One PostgreSQL instance with schema separation.
-- Automated security validation and test checks run on startup and CI.
+# Testing and Security
 
----
+## 1. Testing Philosophy
 
-## **2. Secrets Management**
-- All secrets stored in **`.env`** (gitignored).
-- Integration credentials (e.g., Jira, GitLab) can be stored in:
-  - `.env` files,
-  - Encrypted database tables,
-  - External vaults (HashiCorp Vault, Doppler, AWS Secrets Manager).
-- Secrets must **never** appear in code, Dockerfiles, logs, or CI configs.
+### Principles
+- **Test what matters:** Focus on business logic and data transformations
+- **Fast feedback:** Unit tests run in <10 seconds
+- **Reliable:** No flaky tests, deterministic results
+- **Pragmatic coverage:** 80% minimum, not 100% at all costs
 
----
+### Test Pyramid
 
-## **3. Secret Requirements**
-- **Minimum length:**
-  - JWT ≥ 32 chars
-  - DB password ≥ 16 chars
-  - API keys ≥ 24 chars
-- **Naming:** uppercase (`POSTGRES_PASSWORD`, `JWT_SECRET_KEY`).
-- **Generation:** cryptographically secure only.
-  ```bash
-  openssl rand -hex 32
-  python -c "import secrets; print(secrets.token_hex(32))"
-  ```
-- **Rotation:** every 90 days; old values forbidden.
-- Services validate secret length and format on startup.
-
----
-
-## **4. Database**
-- One PostgreSQL instance shared by all services.
-- Main user: `process_metrics_admin` (superuser privileges for schema management).
-- Other services may use limited-scope users.
-- Connection example:
-  ```bash
-  postgresql+asyncpg://process_metrics_admin:${PASSWORD}@postgres:5432/process_metrics
-  ```
-- Schema layout:
-  | Service | Schemas | Purpose |
-  |----------|----------|----------|
-  | connectors | `raw_jira_cloud_dlt` | Data ingestion via dlt |
-  | orchestrator | `platform_schema` | Prefect orchestration |
-  | cleaner | `raw_jira_cloud`, `clean_jira_schema` | Data cleaning |
-  | metrics | `bi_analytics` | Metric computation |
-  | dashboard | `metabase` | Analytics dashboards |
-  | admin | — | UI, user config |
-
----
-
-## **5. API**
-- Input validation via **Pydantic** (`extra="forbid"`).
-- Authorization: JWT in `Authorization: Bearer <token>` only.
-- Token expiry: access 60m, refresh 30d.
-- Rate limiting: `@limiter.limit("100/minute")`.
-- Request size limits: body ≤ 10MB, file uploads ≤ 50MB.
-- All responses follow a unified JSON format.
-
----
-
-## **6. Network**
-- Only 6 user-facing services expose ports.
-- Internal communication via Docker network `process_metrics_network`.
-- Use `expose:` for internal containers; no direct external ports for DB, Redis, or Celery.
-- CORS: explicit domain whitelist; `*` forbidden.
-- Headers: `Authorization`, `X-Trace-Id`.
-
----
-
-## **7. Secret Compromise**
-- Never log or expose secrets.
-- `.env*` excluded via `.gitignore`, `.dockerignore`, `.prefectignore`, `.cursorignore`.
-- Ignore patterns:
-  ```
-  .env*
-  __pycache__/
-  .venv/
-  node_modules/
-  *.pem *.key *.crt
-  ```
-- If compromised:
-  1. Revoke immediately.
-  2. Generate new secret.
-  3. Restart dependent services.
-
----
-
-## **8. Vulnerability Scanning**
-| Tool | Purpose | Example | Integration |
-|------|----------|----------|-------------|
-| **Trivy** | Docker image and dependency scanning | `trivy image process_metrics:latest` | Part of `make ci` |
-| **Bandit** | Python static security analysis | `bandit -r services/` | pre-commit + CI |
-| **Safety** | Dependency vulnerability check | `safety check --full-report` | in `make lint` |
-
-Makefile target:
-```makefile
-security-scan:
-	trivy image process_metrics:latest
-	bandit -r services/
-	safety check
 ```
-All findings must be resolved before merge or release.
+        ┌─────────┐
+        │   E2E   │  ← Few, slow, high-value
+        ├─────────┤
+        │  Integ  │  ← Some, medium speed
+        ├─────────┤
+        │   Unit  │  ← Many, fast
+        └─────────┘
+```
 
 ---
 
-## **9. Test Coverage**
-- Minimum 80%, 90% for critical modules.
-- Test types:
-  - **Unit** — logic and functions.
-  - **Integration** — service interactions and APIs.
-  - **DBT** — data quality and schema integrity.
-- Coverage reports generated with `pytest-cov` into `/reports/coverage`.
+## 2. Test Structure
+
+```
+tests/
+├── conftest.py              # Shared fixtures
+├── unit/
+│   ├── test_jira_client.py
+│   ├── test_lead_time.py
+│   └── test_velocity.py
+├── integration/
+│   ├── test_api_integrations.py
+│   └── test_dagster_assets.py
+└── fixtures/
+    ├── jira_responses.json
+    └── sample_issues.json
+```
 
 ---
 
-## **10. Test Design**
-- Cover: main flow, happy path, unhappy path, edge cases.
-- Each test is atomic and independent.
-- Follow **AAA** pattern (Arrange-Act-Assert).
-- Organized by type: `tests/unit/`, `tests/integration/`, `tests/dbt/`.
+## 3. Unit Tests
+
+### What to Test
+- Pure functions (calculations, transformations)
+- Data validation logic
+- Business rules
+- Error handling
+
+### Example
+
+```python
+# tests/unit/test_lead_time.py
+import pytest
+from datetime import datetime, timedelta
+from app.services.metrics import calculate_lead_time
+
+class TestLeadTime:
+    def test_calculate_lead_time_simple(self):
+        created = datetime(2024, 1, 1, 10, 0)
+        resolved = datetime(2024, 1, 3, 10, 0)
+
+        result = calculate_lead_time(created, resolved)
+
+        assert result == 2.0  # 2 days
+
+    def test_calculate_lead_time_with_hours(self):
+        created = datetime(2024, 1, 1, 10, 0)
+        resolved = datetime(2024, 1, 2, 22, 0)  # 1.5 days
+
+        result = calculate_lead_time(created, resolved)
+
+        assert result == 1.5
+
+    def test_calculate_lead_time_not_resolved(self):
+        created = datetime(2024, 1, 1, 10, 0)
+
+        result = calculate_lead_time(created, None)
+
+        assert result is None
+```
+
+### Naming Convention
+- File: `test_<module>.py`
+- Class: `Test<Feature>`
+- Method: `test_<function>_<scenario>`
 
 ---
 
-## **11. Linting**
+## 4. Integration Tests
+
+### What to Test
+- API endpoints
+- Database operations
+- Dagster asset execution
+- External service mocking
+
+### Example
+
+```python
+# tests/integration/test_api_integrations.py
+import pytest
+from httpx import AsyncClient
+from app.main import app
+
+@pytest.fixture
+async def client():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        yield ac
+
+@pytest.mark.asyncio
+async def test_create_integration(client, db_session):
+    response = await client.post(
+        "/api/v1/integrations",
+        json={
+            "type": "jira",
+            "config": {
+                "base_url": "https://test.atlassian.net",
+                "projects": ["PROJ"]
+            }
+        }
+    )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["type"] == "jira"
+
+@pytest.mark.asyncio
+async def test_list_integrations(client, db_session, sample_integration):
+    response = await client.get("/api/v1/integrations")
+
+    assert response.status_code == 200
+    assert len(response.json()["data"]) >= 1
+```
+
+---
+
+## 5. Fixtures
+
+### conftest.py
+
+```python
+# tests/conftest.py
+import pytest
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+
+TEST_DATABASE_URL = "postgresql+asyncpg://postgres:test@localhost:5432/test_db"
+
+@pytest.fixture(scope="session")
+def event_loop():
+    import asyncio
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+@pytest.fixture
+async def db_session():
+    engine = create_async_engine(TEST_DATABASE_URL)
+    async_session = sessionmaker(engine, class_=AsyncSession)
+
+    async with async_session() as session:
+        yield session
+        await session.rollback()
+
+@pytest.fixture
+def sample_jira_issue():
+    return {
+        "id": "10001",
+        "key": "PROJ-1",
+        "fields": {
+            "summary": "Test issue",
+            "status": {"name": "Done"},
+            "created": "2024-01-01T10:00:00.000+0000",
+            "resolutiondate": "2024-01-03T10:00:00.000+0000"
+        }
+    }
+```
+
+---
+
+## 6. Running Tests
+
+```bash
+# All tests
+pytest
+
+# With coverage
+pytest --cov=app --cov=pipelines --cov-report=html
+
+# Unit tests only
+pytest tests/unit/
+
+# Specific test file
+pytest tests/unit/test_lead_time.py
+
+# Specific test
+pytest tests/unit/test_lead_time.py::TestLeadTime::test_calculate_lead_time_simple
+
+# Verbose with print output
+pytest -v -s
+```
+
+---
+
+## 7. Coverage Requirements
+
+| Module | Minimum Coverage |
+|--------|-----------------|
+| `app/services/` | 80% |
+| `pipelines/assets/` | 80% |
+| `app/api/` | 70% |
+| Overall | 75% |
+
+### Exclude from Coverage
+```ini
+# pyproject.toml or .coveragerc
+[tool.coverage.run]
+omit = [
+    "tests/*",
+    "*/migrations/*",
+    "*/__init__.py",
+]
+```
+
+---
+
+## 8. Security Practices
+
+### Secrets Management
+
+```bash
+# .env (gitignored)
+POSTGRES_PASSWORD=secure_password_here
+JIRA_API_TOKEN=secret_token
+JWT_SECRET=32_char_minimum_secret_key_here
+```
+
+### Secret Requirements
+| Secret | Min Length |
+|--------|-----------|
+| Database password | 16 chars |
+| API tokens | 24 chars |
+| JWT secret | 32 chars |
+
+### Generate Secure Secrets
+```bash
+# Python
+python -c "import secrets; print(secrets.token_hex(32))"
+
+# OpenSSL
+openssl rand -hex 32
+```
+
+---
+
+## 9. Gitignore Patterns
+
+```gitignore
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Coverage
+htmlcov/
+.coverage
+
+# Build
+dist/
+*.egg-info/
+```
+
+---
+
+## 10. Security Checklist
+
+### Code Review
+- [ ] No hardcoded credentials
+- [ ] No secrets in logs
+- [ ] Input validation on all endpoints
+- [ ] SQL injection prevention (use ORM)
+- [ ] Proper error messages (no stack traces in production)
+
+### API Security
+- [ ] Authentication required for all non-public endpoints
+- [ ] Rate limiting configured
+- [ ] CORS properly configured
+- [ ] Request size limits set
+
+### Database
+- [ ] Connection via environment variables
+- [ ] No raw SQL with user input
+- [ ] Migrations tested (up and down)
+
+---
+
+## 11. Linting Configuration
+
 ```toml
-[tool.black]
-line-length = 88
-target-version = ['py311']
-
-[tool.isort]
-profile = "black"
-line_length = 88
+# pyproject.toml
 
 [tool.ruff]
 line-length = 88
-select = ["E", "F", "W", "C", "I"]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "S",   # flake8-bandit (security)
+]
+ignore = [
+    "S101",  # assert usage (OK in tests)
+]
 
-[build-system]
-requires = ["pdm-pep517"]
-build-backend = "pdm.pep517.api"
+[tool.black]
+line-length = 88
+target-version = ["py311"]
 ```
-- `black` — formatting
-- `isort` — import order
-- `ruff` — linting
-- Run via `make lint` or `pre-commit run --all-files`.
+
+### Running Linters
+```bash
+# Check
+ruff check app/ pipelines/
+black --check app/ pipelines/
+
+# Fix
+ruff check --fix app/ pipelines/
+black app/ pipelines/
+```
 
 ---
 
-## **12. Test Style**
-- File names: `test_<module>.py`.
-- Function names: `test_<function>_<case>`.
-- One file per logic block.
-- Simple, declarative test logic; no conditionals.
-- Common fixtures in `/tests/common/`.
+## 12. Pre-commit Hooks
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.3.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+```
+
+### Setup
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files  # Run manually
+```
 
 ---
 
-## **13. Test Infrastructure**
-- Fixtures and test data in `/tests/fixtures/`.
-- Dedicated test DB reset before each run.
-- Data generated via factories (e.g., `factory_boy`, `faker`).
-- Results and coverage reports stored in `/reports/`.
+## 13. Related Documents
 
----
-
-## **14. Related Documents**
-- **00-project-overview.mdc** → Business context and use case
-- **10-core.mdc** — AI agent workflow and behavioral rules
-- **20-architecture-and-code-style.mdc** — Architecture and code style standards
-- **30-infrastructure.mdc** — Build, dependencies, and CI configuration
+- **00-project-overview.mdc** — Business context
+- **10-core.mdc** — Workflow and guardrails
+- **20-architecture-and-code-style.mdc** — Code structure
+- **30-infrastructure.mdc** — Docker, dependencies
 
 ---
