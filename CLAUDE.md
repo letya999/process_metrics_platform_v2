@@ -107,31 +107,221 @@ process_metrics/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
+├── Makefile
+├── ROADMAP.md                    # MVP plan and tasks
 └── CLAUDE.md                     # This file
 ```
 
 ## Common Commands
 
-```bash
-# Development
-make dev                    # Start dev environment
-make test                   # Run all tests
-make lint                   # Run linters (ruff, black)
-make format                 # Auto-format code
+### Development Workflow (use make!)
 
-# Database
+```bash
+# BEFORE COMMIT - run all checks at once
+make check                  # Runs: lint + test + validate
+
+# Individual commands
+make dev                    # Start dev environment (docker-compose up -d)
+make test                   # Run pytest with coverage
+make lint                   # Run ruff + black check
+make format                 # Auto-format code (ruff --fix + black)
+make validate               # Validate data integrity (raw → clean → metrics)
+```
+
+### Database
+
+```bash
 make migrate                # Run Alembic migrations
 make migrate-create MSG="description"  # Create new migration
+make migrate-down           # Rollback one migration
+```
 
-# Dagster
+### Dagster
+
+```bash
 dagster dev                 # Start Dagster dev server
 dagster job execute -j jira_sync_job  # Run job manually
+```
 
-# Docker
+### Docker
+
+```bash
 docker-compose up -d        # Start all services
 docker-compose logs -f app  # View logs
 docker-compose down         # Stop services
 ```
+
+## Testing
+
+### Test Structure
+
+```
+tests/
+├── conftest.py             # Shared fixtures
+├── unit/                   # Fast, no DB required
+│   ├── test_jira_client.py
+│   ├── test_transformations.py
+│   └── test_metrics_calc.py
+├── integration/            # Requires DB
+│   ├── test_api.py
+│   └── test_dagster_assets.py
+└── validation/             # Data quality checks
+    └── test_data_integrity.py
+```
+
+### Running Tests
+
+```bash
+# All tests with coverage
+make test
+
+# Or manually:
+pytest tests/ -v --cov=app --cov=pipelines --cov-report=term-missing
+
+# Unit tests only (fast)
+pytest tests/unit/ -v
+
+# Integration tests
+pytest tests/integration/ -v
+
+# Specific test
+pytest tests/unit/test_jira_client.py::test_parse_issue -v
+```
+
+### Coverage Requirements
+
+| Module | Minimum |
+|--------|---------|
+| `app/services/` | 80% |
+| `pipelines/assets/` | 80% |
+| `app/api/` | 70% |
+| **Overall** | **75%** |
+
+## Linting
+
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| **ruff** | Fast linter (replaces flake8, isort, pyupgrade) |
+| **black** | Code formatter |
+
+### Running Linters
+
+```bash
+# Check only (CI mode)
+make lint
+
+# Or manually:
+ruff check app/ pipelines/ tests/
+black --check app/ pipelines/ tests/
+
+# Auto-fix
+make format
+
+# Or manually:
+ruff check --fix app/ pipelines/ tests/
+black app/ pipelines/ tests/
+```
+
+### Configuration (pyproject.toml)
+
+```toml
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I", "B", "S"]
+ignore = ["S101"]  # Allow assert in tests
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+```
+
+## Data Validation
+
+### What is Validated
+
+1. **Raw layer integrity** — dlt load completed, no missing required fields
+2. **Clean layer consistency** — FK relationships valid, no orphan records
+3. **Metrics correctness** — Views refresh successfully, no NULL in required columns
+
+### Validation Commands
+
+```bash
+# Run all data validations
+make validate
+
+# What it does:
+# 1. Check raw tables have data after last load
+# 2. Check clean tables FK integrity
+# 3. Refresh materialized views and check for errors
+# 4. Run data quality assertions
+```
+
+### Validation in Dagster Assets
+
+```python
+from dagster import asset, AssetCheckResult, asset_check
+
+@asset
+def clean_jira_issues(...):
+    """Transform raw to clean."""
+    pass
+
+@asset_check(asset=clean_jira_issues)
+def check_no_orphan_issues(context, db):
+    """Ensure all issues have valid project_id."""
+    orphans = db.execute("""
+        SELECT count(*) FROM clean_jira.issues i
+        WHERE NOT EXISTS (
+            SELECT 1 FROM clean_jira.projects p
+            WHERE p.id = i.project_id
+        )
+    """).scalar()
+
+    return AssetCheckResult(
+        passed=orphans == 0,
+        metadata={"orphan_count": orphans}
+    )
+```
+
+## Makefile Reference
+
+```makefile
+# Main commands
+check:      lint test validate     # Run all checks before commit
+dev:        docker-compose up -d   # Start development environment
+test:       pytest with coverage   # Run all tests
+lint:       ruff + black check     # Check code style
+format:     ruff fix + black       # Auto-format code
+validate:   data integrity checks  # Validate data pipeline
+
+# Database
+migrate:    alembic upgrade head
+migrate-create: alembic revision --autogenerate
+migrate-down: alembic downgrade -1
+
+# Docker
+docker-build: docker-compose build
+docker-up:    docker-compose up -d
+docker-down:  docker-compose down -v
+docker-logs:  docker-compose logs -f
+```
+
+## Pre-commit Checklist
+
+Before every commit, run:
+
+```bash
+make check
+```
+
+This ensures:
+- [ ] Code is formatted (black)
+- [ ] No linting errors (ruff)
+- [ ] All tests pass (pytest)
+- [ ] Coverage >= 75%
+- [ ] Data validations pass
 
 ## Key Concepts
 
@@ -205,29 +395,10 @@ DAGSTER_HOME=/app/.dagster
 1. Create dlt source in `pipelines/assets/{source}/raw.py`
 2. Create clean transformation in `pipelines/assets/{source}/clean.py`
 3. Add SQL schema in `db/schemas/clean_{source}.sql`
-4. Update metrics views if needed
-5. Register assets in `pipelines/definitions.py`
-
-## Code Style
-
-- Python 3.11+ with type hints
-- Formatting: `black` (88 chars), `isort`
-- Linting: `ruff`
-- Testing: `pytest`, `pytest-asyncio`
-- SQL: lowercase keywords, snake_case names
-
-## Testing
-
-```bash
-# Unit tests (fast, no DB)
-pytest tests/unit/
-
-# Integration tests (with DB)
-pytest tests/integration/
-
-# With coverage
-pytest --cov=app --cov=pipelines
-```
+4. Add data validation checks
+5. Update metrics views if needed
+6. Register assets in `pipelines/definitions.py`
+7. Write tests (unit + integration)
 
 ## Troubleshooting
 
@@ -244,4 +415,13 @@ pytest --cov=app --cov=pipelines
 ### Materialized view stale
 ```sql
 REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_lead_time;
+```
+
+### Tests failing
+```bash
+# Run with verbose output
+pytest -v -s --tb=short
+
+# Run specific failing test
+pytest tests/unit/test_example.py::test_name -v
 ```
