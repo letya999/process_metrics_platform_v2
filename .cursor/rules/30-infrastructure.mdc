@@ -1,168 +1,406 @@
 ---
-description: "Build & run ,dependency management, networks and service dependencies"
+description: "Docker, database, dependencies, deployment"
 alwaysApply: true
 globs:
   - "**/*"
 ---
 
-# **Infrastructure and Core Principles**
+# Infrastructure
+
+## 1. Core Principles
+
+- **Single `docker-compose.yml`** deploys entire system
+- **Single PostgreSQL** with schema separation (raw, clean, metrics, platform)
+- **No microservices** — one app container + supporting services
+- **Secrets in `.env`** — never in code or Dockerfiles
+- **Deterministic builds** — locked dependencies, pinned versions
 
 ---
 
-## **1. Core Principles**
+## 2. Docker Compose Services
 
-- The entire system is deployed through a single **`docker-compose.yml`** at the repository root.
-- A single physical **PostgreSQL** instance is used, separated into schemas:
-  - `raw_jira_cloud_dlt` — raw data from connectors
-  - `clean_jira_schema` — cleaned and normalized data
-  - `bi_analytics` — aggregated BI data
-  - `platform` — platform service tables
-  - `metabase` — internal Metabase schema
-- Data flow is strictly **one-way: `raw → clean → bi`**. Direct modifications are forbidden.
-- Every db-empty contains uuid-4.
-- All builds, migrations, and dependencies must be **deterministic and reproducible**.
-- **Credentials, tokens, and secrets** are never exposed in `Dockerfile` or `Makefile` — only loaded from `.env` (ignored in Git).
-- All services communicate via container names inside a single **`process_metrics_network`** (bridge driver).
+```yaml
+services:
+  app:           # FastAPI admin + shared code
+  dagster:       # Dagster webserver + daemon
+  postgres:      # PostgreSQL 15
+  metabase:      # BI dashboards
+```
 
----
+### Ports
 
-## **2. Dependency Management**
+| Service | Port | Purpose |
+|---------|------|---------|
+| **app** | 8000 | Admin API |
+| **dagster** | 3000 | Dagster UI |
+| **metabase** | 3001 | BI dashboards |
+| **postgres** | 5432 | Database (internal) |
 
-### Python Services
-- Package manager: **PDM (`2.25.5`)**.
-- Files:
-  - `pyproject.toml` — dependency declaration
-  - `pdm.lock` — frozen versions
-  - `requirements.txt` — auto-export for Docker
-- Export command:
-  ```bash
-  pdm export --prod --without-hashes -o requirements.txt
-  ```
-- Only open-source licenses allowed (MIT, Apache-2.0, BSD, PSF).
+### docker-compose.yml Template
 
-### Admin Panel (Frontend)
-- Stack: **React + Vite**, managed via **npm**.
-- Dependencies locked in `package-lock.json`.
-- Production build via `npm run build`, integrated into Docker.
+```yaml
+version: "3.8"
 
----
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-process_metrics}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-## **3. Docker**
+  app:
+    build: .
+    container_name: app
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
 
-### General
-- All containers defined in the root `docker-compose.yml`.
-- Network: `process_metrics_network` (bridge).
-- `DOCKER_BUILDKIT=1` enabled.
-- Services run under a non-root `appuser`.
-- Secrets and credentials loaded from `.env`.
+  dagster:
+    build:
+      context: .
+      dockerfile: Dockerfile.dagster
+    container_name: dagster
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    command: dagster dev -h 0.0.0.0 -p 3000
 
-### PostgreSQL
-- Image: `postgres:15-alpine`
-- Volume: `postgres_data`
-- Automatic first-time initialization:
-  ```sql
-  -- Bootstrap init runner for Postgres entrypoint
-  \set ON_ERROR_STOP on
-  \echo '=== Running DB init scripts ==='
-  \ir init/01_create_schemas.sql
-  \echo '=== DB init scripts completed ==='
-  ```
-- Directory structure:
-  ```
-  db/
-  ├── init/01_create_schemas.sql
-  ├── schemas/
-  │   ├── 00_bootstrap.sql
-  │   ├── platform_schema.sql
-  │   ├── clean_jira_schema.sql
-  │   └── bi_analytics_schema.sql
-  └── migrations/
-      ├── alembic.ini
-      ├── env.py
-      ├── script.py.mako
-      └── versions/
-  ```
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3001:3000"
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: postgres
+      MB_DB_PORT: 5432
+      MB_DB_DBNAME: ${POSTGRES_DB:-process_metrics}
+      MB_DB_USER: ${POSTGRES_USER:-postgres}
+      MB_DB_PASS: ${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
-### Prefect
-- Image: `prefecthq/prefect:3.4.24`
-- Containers:
-  - `prefect-server` — API and UI
-  - `prefect-worker` — task executor
-- Shared volumes mounted from services:
-  ```yaml
-  volumes:
-    - ./services/connectors:/app/connectors
-    - ./services/etl:/app/etl
-    - ./services/metrics:/app/metrics
-  ```
-- Prefect Worker can execute flows and tasks from these services.
-
----
-
-## **4. Makefile**
-
-### Key Commands
-| Command | Purpose |
-|----------|----------|
-| `make test` | Run pytest |
-| `make docker-build` | Build all containers |
-| `make docker-up` | Start docker-compose |
-| `make migrate` | Run Alembic migrations |
-
-### Notes
-- Cross-platform (Windows/Linux) support.
-- `DOCKER_BUILDKIT=1` enabled.
-- No secrets hardcoded — always loaded from `.env`.
+volumes:
+  postgres_data:
+  dagster_home:
+```
 
 ---
 
-## **5. Alembic**
+## 3. Database Schemas
 
-- Single migration tool across all services.
-- All migrations in `/db/migrations`.
-- Version files named `<timestamp>_<description>.py`.
-- Each migration defines both `upgrade()` and `downgrade()`.
-- Run via container:
-  ```bash
-  docker-compose run --rm alembic alembic upgrade head
-  ```
-- Migrations modify schema only (DDL), never data.
+### Schema Layout
+
+| Schema | Purpose | Managed By |
+|--------|---------|------------|
+| `raw_jira` | Raw data from Jira (append-only) | dlt |
+| `raw_gitlab` | Raw data from GitLab | dlt |
+| `clean_jira` | Normalized Jira data | Dagster assets |
+| `clean_gitlab` | Normalized GitLab data | Dagster assets |
+| `metrics` | Materialized views for BI | SQL views |
+| `platform` | Users, integrations, configs | FastAPI/Alembic |
+
+### Initialization
+
+```
+db/
+├── init/
+│   └── 01_create_schemas.sql     # CREATE SCHEMA statements
+├── schemas/
+│   ├── platform.sql              # Platform tables
+│   └── clean_jira.sql            # Clean layer tables
+├── views/
+│   └── metrics.sql               # Materialized views
+└── migrations/
+    ├── alembic.ini
+    ├── env.py
+    └── versions/
+```
+
+### Schema Creation (db/init/01_create_schemas.sql)
+
+```sql
+-- Create all schemas
+CREATE SCHEMA IF NOT EXISTS platform;
+CREATE SCHEMA IF NOT EXISTS raw_jira;
+CREATE SCHEMA IF NOT EXISTS clean_jira;
+CREATE SCHEMA IF NOT EXISTS metrics;
+
+-- Grant permissions
+GRANT ALL ON SCHEMA platform TO postgres;
+GRANT ALL ON SCHEMA raw_jira TO postgres;
+GRANT ALL ON SCHEMA clean_jira TO postgres;
+GRANT ALL ON SCHEMA metrics TO postgres;
+```
 
 ---
 
-## **6. Network & Security**
+## 4. Dependency Management
 
-- All containers in `process_metrics_network` (bridge).
-- Internal communication via container names.
-- External access only for:
-  - Metabase (`3000`)
-  - Prefect UI (`4200`)
-  - Grafana (`3100`)
-  - Prometheus (`9090`)
-  - Admin Panel (`8003`)
-- API services are internal-only.
-- CORS allowed for `localhost`, `127.0.0.1`, and admin domains.
-- Authentication handled via JWT.
+### Python (PDM)
+
+```bash
+# Install dependencies
+pdm install
+
+# Add new dependency
+pdm add <package>
+
+# Export for Docker
+pdm export --prod --without-hashes -o requirements.txt
+
+# Update lock file
+pdm lock
+```
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `pyproject.toml` | Dependency declaration |
+| `pdm.lock` | Locked versions |
+| `requirements.txt` | For Docker (auto-generated) |
+
+### pyproject.toml Template
+
+```toml
+[project]
+name = "process-metrics"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "dagster>=1.6.0",
+    "dagster-webserver>=1.6.0",
+    "dagster-dlt>=0.23.0",
+    "dlt[postgres]>=1.0.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.14.0",
+    "asyncpg>=0.29.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.3.0",
+    "black>=24.0.0",
+]
+
+[tool.pdm]
+distribution = false
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+```
 
 ---
 
-## **7. External Integrations**
+## 5. Makefile
 
-| Tool | Purpose | Deployment |
-|-------|----------|-------------|
-| **Prefect 3.4.24** | ETL and workflow orchestration | Containers `prefect-server` and `prefect-worker` |
-| **Metabase** | BI dashboards | Connected to `bi_analytics` schema |
-| **Prometheus** | Metrics collection | Pulls from `/metrics` endpoints |
-| **Grafana** | Visualization | Dashboards connected to Prometheus |
-| **Redis 7-alpine** | Cache and task broker | Internal network only |
+```makefile
+.PHONY: dev test lint format migrate
+
+# Development
+dev:
+	docker-compose up -d
+
+down:
+	docker-compose down
+
+logs:
+	docker-compose logs -f
+
+# Testing
+test:
+	pytest tests/ -v
+
+test-cov:
+	pytest tests/ --cov=app --cov=pipelines --cov-report=html
+
+# Linting
+lint:
+	ruff check app/ pipelines/
+	black --check app/ pipelines/
+
+format:
+	ruff check --fix app/ pipelines/
+	black app/ pipelines/
+
+# Database
+migrate:
+	alembic upgrade head
+
+migrate-create:
+	alembic revision --autogenerate -m "$(MSG)"
+
+migrate-down:
+	alembic downgrade -1
+
+# Dependencies
+deps-export:
+	pdm export --prod --without-hashes -o requirements.txt
+
+# Docker
+docker-build:
+	docker-compose build
+
+docker-up:
+	docker-compose up -d
+
+docker-down:
+	docker-compose down -v
+```
 
 ---
 
-## 8. **Related Documents**
+## 6. Dockerfile
 
-- **00-project-overview.mdc** → Business context and use case
-- **10-core.mdc** — AI agent workflow and behavioral rules
-- **20-architecture-and-code-style.mdc** — Architecture and code style standards
-- **40-testing-and-security.mdc** — Testing and CI/CD workflow requirements
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY app/ app/
+COPY pipelines/ pipelines/
+
+# Create non-root user
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Run FastAPI
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+---
+
+## 7. Alembic Migrations
+
+### Setup
+
+```bash
+# Initialize (already done)
+alembic init db/migrations
+
+# Create migration
+alembic revision --autogenerate -m "add users table"
+
+# Run migrations
+alembic upgrade head
+
+# Rollback
+alembic downgrade -1
+```
+
+### Configuration (db/migrations/env.py)
+
+```python
+from alembic import context
+from sqlalchemy import create_engine
+from app.models.orm import Base
+import os
+
+config = context.config
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+def run_migrations_online():
+    engine = create_engine(DATABASE_URL)
+    with engine.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=Base.metadata,
+            include_schemas=True,
+            version_table_schema="platform"
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+
+run_migrations_online()
+```
+
+---
+
+## 8. Environment Variables
+
+### Required (.env)
+
+```bash
+# Database
+POSTGRES_DB=process_metrics
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_secure_password
+DATABASE_URL=postgresql://postgres:your_secure_password@localhost:5432/process_metrics
+
+# Jira
+JIRA_BASE_URL=https://your-company.atlassian.net
+JIRA_USER_EMAIL=your-email@company.com
+JIRA_API_TOKEN=your_api_token
+
+# Dagster
+DAGSTER_HOME=/opt/dagster/dagster_home
+```
+
+### .env.example
+
+Keep `.env.example` in repo with placeholder values for documentation.
+
+---
+
+## 9. Related Documents
+
+- **00-project-overview.mdc** — Business context
+- **10-core.mdc** — Workflow and guardrails
+- **20-architecture-and-code-style.mdc** — Code structure
+- **40-testing-and-security.mdc** — Testing requirements
 
 ---
