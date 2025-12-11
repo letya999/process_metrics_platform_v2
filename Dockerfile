@@ -17,18 +17,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Copy dependency metadata first for better caching
 COPY pyproject.toml .
+COPY pdm.lock .
 
-# Install Python dependencies
+# Install Python dependencies (runtime only)
 RUN pip install --upgrade pip && \
-    pip install . && \
-    pip install .[dev]
+    pip install .
 
 # Copy application code
 COPY app/ ./app/
 COPY db/ ./db/
-COPY common/ ./common/
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser && \

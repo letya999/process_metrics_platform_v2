@@ -1,8 +1,0 @@
-__pycache__/
-*.py[cod]
-.venv/
-__pypackages__/
-.pytest_cache/
-.coverage
-.env
-logs/

@@ -1,15 +1,15 @@
 """Add metrics schema with materialized views
 
-Revision ID: 0004_metrics_schema
-Revises: 0003_pipeline_runs_jira
+Revision ID: 0002_metrics_schema
+Revises: 0001_initial
 Create Date: 2025-12-11
 """
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "0004_metrics_schema"
-down_revision = "0003_pipeline_runs_jira"
+revision = "0002_metrics_schema"
+down_revision = "0001_initial"
 branch_labels = None
 depends_on = None
 
@@ -42,12 +42,14 @@ def upgrade() -> None:
             i.jira_resolved_at,
             CASE
                 WHEN i.jira_resolved_at IS NOT NULL THEN
-                    EXTRACT(EPOCH FROM (i.jira_resolved_at - i.jira_created_at)) / 86400.0
+                    EXTRACT(EPOCH FROM (i.jira_resolved_at - i.jira_created_at)) /
+                    86400.0
                 ELSE NULL
             END AS lead_time_days,
             CASE
                 WHEN i.jira_resolved_at IS NOT NULL THEN
-                    EXTRACT(EPOCH FROM (i.jira_resolved_at - i.jira_created_at)) / 3600.0
+                    EXTRACT(EPOCH FROM (i.jira_resolved_at - i.jira_created_at)) /
+                    3600.0
                 ELSE NULL
             END AS lead_time_hours,
             i.db_updated_at
@@ -96,23 +98,30 @@ def upgrade() -> None:
             s.end_date,
             s.complete_date,
             COUNT(DISTINCT si.issue_id) AS total_issues,
-            COUNT(DISTINCT CASE WHEN ist.category = 'done' THEN si.issue_id END) AS completed_issues,
+            COUNT(
+                DISTINCT CASE WHEN ist.category = 'done' THEN si.issue_id END
+            ) AS completed_issues,
             CASE
                 WHEN COUNT(DISTINCT si.issue_id) > 0 THEN
                     ROUND(
-                        COUNT(DISTINCT CASE WHEN ist.category = 'done' THEN si.issue_id END)::NUMERIC /
-                        COUNT(DISTINCT si.issue_id) * 100,
+                        COUNT(
+                            DISTINCT CASE
+                                WHEN ist.category = 'done' THEN si.issue_id
+                            END
+                        )::NUMERIC
+                        / COUNT(DISTINCT si.issue_id) * 100,
                         2
                     )
                 ELSE 0
             END AS completion_rate_pct
         FROM clean_jira.sprints s
         JOIN clean_jira.projects p ON s.project_id = p.id
-        LEFT JOIN clean_jira.sprint_issues si ON s.id = si.sprint_id AND si.is_active = true
+        LEFT JOIN clean_jira.sprint_issues si
+            ON s.id = si.sprint_id AND si.is_active = true
         LEFT JOIN clean_jira.issues i ON si.issue_id = i.id
         LEFT JOIN clean_jira.issue_statuses ist ON i.status_id = ist.id
-        GROUP BY s.id, s.external_id, s.name, s.project_id, p.external_key, p.name,
-                 s.status, s.start_date, s.end_date, s.complete_date
+        GROUP BY s.id, s.external_id, s.name, s.project_id, p.external_key,
+                 p.name, s.status, s.start_date, s.end_date, s.complete_date
         WITH DATA;
         """
     )
@@ -150,7 +159,10 @@ def upgrade() -> None:
             it.hierarchy_level,
             COUNT(*) AS issues_completed,
             ROUND(
-                AVG(EXTRACT(EPOCH FROM (i.jira_resolved_at - i.jira_created_at)) / 86400.0)::NUMERIC,
+                AVG(
+                    EXTRACT(EPOCH FROM (i.jira_resolved_at - i.jira_created_at)) /
+                    86400.0
+                )::NUMERIC,
                 2
             ) AS avg_lead_time_days
         FROM clean_jira.issues i
