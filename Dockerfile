@@ -19,15 +19,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy dependency metadata first for better caching
 COPY pyproject.toml .
-COPY pdm.lock .
-
-# Install Python dependencies (runtime only)
-RUN pip install --upgrade pip && \
-    pip install .
 
 # Copy application code
 COPY app/ ./app/
+COPY pipelines/ ./pipelines/
 COPY db/ ./db/
+
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install .
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser && \

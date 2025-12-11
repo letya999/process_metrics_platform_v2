@@ -21,14 +21,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first for better caching
 COPY pyproject.toml .
 
+# Copy application code (required for pip install .)
+COPY app/ ./app/
+COPY pipelines/ ./pipelines/
+COPY db/ ./db/
+
 # Install Python dependencies
 RUN pip install --upgrade pip && \
     pip install . && \
     pip install .[dev]
-
-# Copy pipelines code
-COPY pipelines/ ./pipelines/
-COPY common/ ./common/
 
 # Create Dagster home directory
 RUN mkdir -p ${DAGSTER_HOME}
