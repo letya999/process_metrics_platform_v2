@@ -1,58 +1,13 @@
 # Dagster instance configuration
 # https://docs.dagster.io/deployment/dagster-instance
 
-# Run launcher configuration
+# Use ephemeral storage for dev mode
+# In production, configure PostgreSQL persistence as shown below
+
+# Run launcher - use default in-process launcher
 run_launcher:
   module: dagster._core.launcher
   class: DefaultRunLauncher
-
-# Run storage - stores run metadata
-run_storage:
-  module: dagster_postgres.run_storage
-  class: PostgresRunStorage
-  config:
-    postgres_db:
-      hostname:
-        env: DAGSTER_POSTGRES_HOST
-      username:
-        env: DAGSTER_POSTGRES_USER
-      password:
-        env: DAGSTER_POSTGRES_PASSWORD
-      db_name:
-        env: DAGSTER_POSTGRES_DB
-      port: 5432
-
-# Event log storage - stores event logs
-event_log_storage:
-  module: dagster_postgres.event_log
-  class: PostgresEventLogStorage
-  config:
-    postgres_db:
-      hostname:
-        env: DAGSTER_POSTGRES_HOST
-      username:
-        env: DAGSTER_POSTGRES_USER
-      password:
-        env: DAGSTER_POSTGRES_PASSWORD
-      db_name:
-        env: DAGSTER_POSTGRES_DB
-      port: 5432
-
-# Schedule/sensor storage
-schedule_storage:
-  module: dagster_postgres.schedule_storage
-  class: PostgresScheduleStorage
-  config:
-    postgres_db:
-      hostname:
-        env: DAGSTER_POSTGRES_HOST
-      username:
-        env: DAGSTER_POSTGRES_USER
-      password:
-        env: DAGSTER_POSTGRES_PASSWORD
-      db_name:
-        env: DAGSTER_POSTGRES_DB
-      port: 5432
 
 # Compute logs - store in local filesystem
 compute_logs:
