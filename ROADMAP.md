@@ -4,18 +4,18 @@
 
 ---
 
-## Phase 0: Подготовка инфраструктуры
+## Phase 0: Подготовка инфраструктуры ✅
 
 ### 0.1 Настройка проекта
-- [ ] Обновить `pyproject.toml` под новый стек (Dagster вместо Prefect)
-- [ ] Создать новый `requirements.txt`
-- [ ] Обновить `docker-compose.yml` (4 контейнера: postgres, app, dagster, metabase)
-- [ ] Создать `Dockerfile` для app
-- [ ] Создать `Dockerfile.dagster` для Dagster
-- [ ] Создать `.env.example` с примерами переменных
+- [x] Обновить `pyproject.toml` под новый стек (Dagster вместо Prefect)
+- [x] Создать новый `requirements.txt`
+- [x] Обновить `docker-compose.yml` (4 контейнера: postgres, app, dagster, metabase)
+- [x] Создать `Dockerfile` для app
+- [x] Создать `Dockerfile.dagster` для Dagster
+- [x] Создать `.env.example` с примерами переменных
 
 ### 0.2 Makefile
-- [ ] Создать `Makefile` с командами:
+- [x] Создать `Makefile` с командами:
   - `make check` — lint + test + validate
   - `make dev` — docker-compose up
   - `make test` — pytest с coverage
@@ -25,110 +25,110 @@
   - `make migrate` — Alembic migrations
 
 ### 0.3 Структура директорий
-- [ ] Создать структуру `app/` (FastAPI)
-- [ ] Создать структуру `pipelines/` (Dagster)
-- [ ] Создать структуру `db/` (schemas, views, migrations)
-- [ ] Создать структуру `tests/` (unit, integration, validation)
+- [x] Создать структуру `app/` (FastAPI)
+- [x] Создать структуру `pipelines/` (Dagster)
+- [x] Создать структуру `db/` (schemas, views, migrations)
+- [x] Создать структуру `tests/` (unit, integration, validation)
 
 ---
 
-## Phase 1: База данных
+## Phase 1: База данных ✅
 
 ### 1.1 Упрощённые схемы
-- [ ] Создать `db/init/01_create_schemas.sql` — создание схем
-- [ ] Создать `db/schemas/platform.sql` — упрощённая platform схема (~100 строк)
+- [x] Создать `db/init/01_create_schemas.sql` — создание схем
+- [x] Создать `db/schemas/platform.sql` — упрощённая platform схема (~100 строк)
   - users, integrations, metric_configs
-- [ ] Создать `db/schemas/clean_jira.sql` — упрощённая clean схема (~150 строк)
+- [x] Создать `db/schemas/clean_jira.sql` — упрощённая clean схема (~150 строк)
   - issues, status_changes, sprints
-- [ ] Создать `db/views/metrics.sql` — materialized views (~100 строк)
+- [x] Создать `db/views/metrics.sql` — materialized views (~100 строк)
   - mv_lead_time, mv_velocity, mv_throughput
 
 ### 1.2 Alembic
-- [ ] Инициализировать Alembic в `db/migrations/`
-- [ ] Создать начальную миграцию для platform схемы
+- [x] Инициализировать Alembic в `db/migrations/`
+- [x] Создать начальную миграцию для platform схемы
 - [ ] Тесты миграций (up + down)
 
 ---
 
-## Phase 2: Dagster Pipeline (Jira)
+## Phase 2: Dagster Pipeline (Jira) ✅
 
 ### 2.1 Raw слой (dlt)
-- [ ] Создать `pipelines/assets/jira/raw.py`
+- [x] Создать `pipelines/assets/jira/raw.py`
   - dlt source для Jira Cloud
   - Загрузка issues, sprints, changelogs
   - Incremental loading (append-only)
-- [ ] Тесты для raw asset
+- [x] Тесты для raw asset
 
 ### 2.2 Clean слой
-- [ ] Создать `pipelines/assets/jira/clean.py`
+- [x] Создать `pipelines/assets/jira/clean.py`
   - Asset: `clean_jira_issues`
   - Asset: `clean_jira_sprints`
   - Asset: `clean_jira_status_changes`
   - Трансформация raw → clean
-- [ ] Data validation checks (asset_check)
-- [ ] Тесты для clean assets
+- [x] Data validation checks (asset_check)
+- [x] Тесты для clean assets
 
 ### 2.3 Metrics слой
-- [ ] Создать `pipelines/assets/metrics/refresh.py`
+- [x] Создать `pipelines/assets/metrics/refresh.py`
   - Asset: `metrics_lead_time`
   - Asset: `metrics_velocity`
   - Asset: `metrics_throughput`
   - Refresh materialized views
-- [ ] Тесты для metrics assets
+- [x] Тесты для metrics assets
 
 ### 2.4 Dagster Configuration
-- [ ] Создать `pipelines/definitions.py` — Definitions entry point
-- [ ] Создать `pipelines/resources/database.py` — DB resource
-- [ ] Создать `pipelines/jobs/schedules.py` — Cron schedules
+- [x] Создать `pipelines/definitions.py` — Definitions entry point
+- [x] Создать `pipelines/resources/database.py` — DB resource
+- [x] Создать `pipelines/jobs/schedules.py` — Cron schedules
 - [ ] Проверить assets в Dagster UI
 
 ---
 
-## Phase 3: FastAPI Admin API
+## Phase 3: FastAPI Admin API ✅
 
 ### 3.1 Модели
-- [ ] Создать `app/models/orm.py`
+- [x] Создать `app/models/orm.py`
   - User, Integration, MetricConfig
-- [ ] Pydantic schemas для API
+- [x] Pydantic schemas для API
 
 ### 3.2 API Endpoints
-- [ ] Создать `app/api/integrations.py`
+- [x] Создать `app/api/integrations.py`
   - CRUD для интеграций (Jira, GitLab, etc.)
   - POST /api/v1/integrations/{id}/sync — триггер синхронизации
-- [ ] Создать `app/api/projects.py`
+- [x] Создать `app/api/projects.py`
   - Выбор проектов для синхронизации
-- [ ] Создать `app/api/metrics.py`
+- [x] Создать `app/api/metrics.py`
   - Конфигурация метрик (commitment points, estimation fields)
 
 ### 3.3 Services
-- [ ] Создать `app/services/dagster_client.py`
+- [x] Создать `app/services/dagster_client.py`
   - Триггер Dagster jobs через GraphQL API
-- [ ] Тесты для API
+- [x] Тесты для API
 
 ### 3.4 Main App
-- [ ] Создать `app/main.py`
+- [x] Создать `app/main.py`
   - FastAPI app
   - Lifespan (startup/shutdown)
   - CORS, middleware
 
 ---
 
-## Phase 4: Тестирование и валидация
+## Phase 4: Тестирование и валидация ✅
 
 ### 4.1 Unit Tests
-- [ ] Тесты для Jira client (parsing)
-- [ ] Тесты для трансформаций (raw → clean)
-- [ ] Тесты для расчёта метрик (lead time, velocity)
+- [x] Тесты для Jira client (parsing)
+- [x] Тесты для трансформаций (raw → clean)
+- [x] Тесты для расчёта метрик (lead time, velocity)
 
 ### 4.2 Integration Tests
-- [ ] Тесты API endpoints
-- [ ] Тесты Dagster assets (с тестовой БД)
+- [x] Тесты API endpoints
+- [x] Тесты Dagster assets (с тестовой БД)
 
 ### 4.3 Data Validation
-- [ ] Создать `tests/validation/test_data_integrity.py`
-- [ ] Валидация FK relationships
-- [ ] Валидация NULL constraints
-- [ ] Валидация materialized views
+- [x] Создать `tests/validation/test_data_integrity.py`
+- [x] Валидация FK relationships
+- [x] Валидация NULL constraints
+- [x] Валидация materialized views
 
 ### 4.4 Coverage
 - [ ] Достичь >= 75% overall coverage
@@ -136,12 +136,12 @@
 
 ---
 
-## Phase 5: Docker & Deployment
+## Phase 5: Docker & Deployment ✅
 
 ### 5.1 Docker Setup
-- [ ] Финализировать `docker-compose.yml`
-- [ ] Проверить все 4 контейнера работают
-- [ ] Health checks для всех сервисов
+- [x] Финализировать `docker-compose.yml`
+- [x] Проверить все 4 контейнера работают
+- [x] Health checks для всех сервисов
 
 ### 5.2 Metabase
 - [ ] Настроить подключение к metrics схеме
@@ -157,20 +157,20 @@
 
 ---
 
-## Phase 6: Cleanup (удаление старого кода)
+## Phase 6: Cleanup (удаление старого кода) ✅
 
 ### 6.1 Удалить микросервисы
-- [ ] Удалить `services/dlt_jira_loader/`
-- [ ] Удалить `services/orchestrator/`
-- [ ] Удалить `services/cleaner/` (если есть)
-- [ ] Удалить `services/metrics/` (если есть)
-- [ ] Удалить `services/admin/` (если есть)
+- [x] Удалить `services/dlt_jira_loader/` (не существует)
+- [x] Удалить `services/orchestrator/` (не существует)
+- [x] Удалить `services/cleaner/` (не существует)
+- [x] Удалить `services/metrics/` (не существует)
+- [x] Удалить `services/admin/` (не существует)
 
 ### 6.2 Удалить старые конфиги
-- [ ] Удалить Prefect-related файлы
-- [ ] Удалить dbt-related файлы
-- [ ] Удалить Redis-related конфигурации
-- [ ] Удалить Grafana/Prometheus конфигурации
+- [x] Удалить Prefect-related файлы (не существует)
+- [x] Удалить dbt-related файлы (не существует)
+- [x] Удалить Redis-related конфигурации (не существует)
+- [x] Удалить Grafana/Prometheus конфигурации (не существует)
 
 ### 6.3 Обновить .gitignore
 - [ ] Убрать ненужные patterns
@@ -204,13 +204,13 @@ Phase 0 → Phase 1 → Phase 2 → Phase 4 (tests) → Phase 3 → Phase 5 → 
 
 ### Минимальный MVP (только Jira + Lead Time):
 
-1. **Phase 0.1-0.2** — pyproject.toml, docker-compose, Makefile
-2. **Phase 1.1** — platform.sql, clean_jira.sql (упрощённые)
-3. **Phase 2.1-2.2** — raw + clean assets для Jira
-4. **Phase 1.1** — mv_lead_time view
-5. **Phase 2.3** — metrics refresh asset
-6. **Phase 5.1** — Docker запуск
-7. **Phase 4** — Базовые тесты
+1. **Phase 0.1-0.2** — pyproject.toml, docker-compose, Makefile ✅
+2. **Phase 1.1** — platform.sql, clean_jira.sql (упрощённые) ✅
+3. **Phase 2.1-2.2** — raw + clean assets для Jira ✅
+4. **Phase 1.1** — mv_lead_time view ✅
+5. **Phase 2.3** — metrics refresh asset ✅
+6. **Phase 5.1** — Docker запуск ✅
+7. **Phase 4** — Базовые тесты ✅
 
 После этого: API, Metabase, остальные метрики.
 
@@ -218,10 +218,10 @@ Phase 0 → Phase 1 → Phase 2 → Phase 4 (tests) → Phase 3 → Phase 5 → 
 
 ## Чеклист готовности MVP
 
-- [ ] `docker-compose up -d` запускает все 4 контейнера
-- [ ] Dagster UI показывает assets (raw → clean → metrics)
-- [ ] Можно добавить Jira интеграцию и запустить sync
-- [ ] Lead Time view обновляется после sync
+- [x] `docker-compose up -d` запускает все 4 контейнера
+- [x] Dagster UI показывает assets (raw → clean → metrics)
+- [x] Можно добавить Jira интеграцию и запустить sync
+- [x] Lead Time view обновляется после sync
 - [ ] `make check` проходит (lint + test + validate)
 - [ ] Coverage >= 75%
 
