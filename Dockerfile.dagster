@@ -34,13 +34,20 @@ RUN pip install --upgrade pip && \
 # Create Dagster home directory and ensure it's fresh
 RUN rm -rf ${DAGSTER_HOME} && mkdir -p ${DAGSTER_HOME}
 
-# Copy Dagster configuration
-COPY dagster.yaml ${DAGSTER_HOME}/dagster.yaml
+# Copy Dagster configuration to app directory (will be copied to DAGSTER_HOME at runtime)
+COPY dagster.yaml /opt/dagster/app/dagster.yaml
+
+# Copy entrypoint script
+COPY docker-entrypoint-dagster.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint-dagster.sh
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash dagster && \
     chown -R dagster:dagster /opt/dagster
 USER dagster
+
+# Set entrypoint
+ENTRYPOINT ["docker-entrypoint-dagster.sh"]
 
 # Expose Dagster webserver port
 EXPOSE 3000
