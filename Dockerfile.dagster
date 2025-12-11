@@ -1,0 +1,52 @@
+# Dockerfile for Dagster orchestration
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DAGSTER_HOME=/opt/dagster/dagster_home
+
+# Set working directory
+WORKDIR /opt/dagster/app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better caching
+COPY pyproject.toml .
+
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install . && \
+    pip install .[dev]
+
+# Copy pipelines code
+COPY pipelines/ ./pipelines/
+COPY common/ ./common/
+
+# Create Dagster home directory
+RUN mkdir -p ${DAGSTER_HOME}
+
+# Copy Dagster configuration
+COPY dagster.yaml ${DAGSTER_HOME}/dagster.yaml
+
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash dagster && \
+    chown -R dagster:dagster /opt/dagster
+USER dagster
+
+# Expose Dagster webserver port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:3000/server_info || exit 1
+
+# Run Dagster webserver with dev mode (includes daemon)
+CMD ["dagster", "dev", "-h", "0.0.0.0", "-p", "3000", "-m", "pipelines.definitions"]

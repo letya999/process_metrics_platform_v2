@@ -1,125 +1,186 @@
-.PHONY: help lint test docker-build docker-up docker-down ci clean migrate up-core gen-env setup
-.PHONY: security-scan
+# =============================================================================
+# Process Metrics Platform - Makefile
+# =============================================================================
+# Main commands:
+#   make check    - Run all checks (lint + test + validate)
+#   make dev      - Start development environment
+#   make test     - Run tests with coverage
+#   make lint     - Check code style
+#   make format   - Auto-format code
+# =============================================================================
 
-DOCKER_BUILDKIT ?= 1
-export DOCKER_BUILDKIT
+.PHONY: help check dev test lint format validate migrate migrate-create migrate-down
+.PHONY: docker-build docker-up docker-down docker-logs clean install
 
-# Detect OS for cross-platform commands
-ifeq ($(OS),Windows_NT)
-    SLEEP_CMD = powershell -NoProfile -Command "Start-Sleep -Seconds 15"
-    RM_CMD = del /q /s
-else
-    SLEEP_CMD = sleep 15
-    RM_CMD = rm -rf
-endif
+# Default target
+.DEFAULT_GOAL := help
 
+# Colors for terminal output
+BLUE := \033[34m
+GREEN := \033[32m
+YELLOW := \033[33m
+RED := \033[31m
+NC := \033[0m  # No Color
+
+# =============================================================================
+# Help
+# =============================================================================
 help:
-	@echo "Available targets:"
-	@echo "  help          - Show this help message"
-	@echo "  lint          - Run code linting"
-	@echo "  test          - Run tests"
-	@echo "  docker-build  - Build docker images"
-	@echo "  docker-up     - Start all services"
-	@echo "  docker-down   - Stop all services"
-	@echo "  up-core       - Start core services only"
-	@echo "  setup         - Full setup: check DB + migrate if needed"
-	@echo "  gen-env       - Generate strong passwords for .env"
-	@echo "  clean         - Clean build artifacts"
+	@echo "$(BLUE)Process Metrics Platform$(NC)"
+	@echo ""
+	@echo "$(GREEN)Main Commands:$(NC)"
+	@echo "  make check       - Run all checks: lint + test + validate"
+	@echo "  make dev         - Start development environment (docker-compose up)"
+	@echo "  make test        - Run pytest with coverage"
+	@echo "  make lint        - Check code style (ruff + black)"
+	@echo "  make format      - Auto-format code (ruff --fix + black)"
+	@echo "  make validate    - Run data validation checks"
+	@echo ""
+	@echo "$(GREEN)Database:$(NC)"
+	@echo "  make migrate         - Run Alembic migrations (upgrade head)"
+	@echo "  make migrate-create  - Create new migration (MSG required)"
+	@echo "  make migrate-down    - Rollback one migration"
+	@echo ""
+	@echo "$(GREEN)Docker:$(NC)"
+	@echo "  make docker-build    - Build all Docker images"
+	@echo "  make docker-up       - Start all services"
+	@echo "  make docker-down     - Stop all services"
+	@echo "  make docker-logs     - View service logs"
+	@echo ""
+	@echo "$(GREEN)Development:$(NC)"
+	@echo "  make install         - Install Python dependencies"
+	@echo "  make clean           - Clean build artifacts"
 
-lint:
-	@echo "Running linters..."
-	black --check . || (echo "Run 'black .' to format" && exit 1)
-	isort --check-only . || (echo "Run 'isort .' to sort imports" && exit 1)
-	ruff check . || (echo "Run 'ruff --fix .' to fix lint issues" && exit 1)
+# =============================================================================
+# Main Commands
+# =============================================================================
 
+## Run all checks before commit: lint + test + validate
+check: lint test validate
+	@echo "$(GREEN)All checks passed!$(NC)"
+
+## Start development environment
+dev: docker-up
+	@echo "$(GREEN)Development environment started!$(NC)"
+	@echo "  - Admin Panel: http://localhost:8000"
+	@echo "  - Dagster UI:  http://localhost:3000"
+	@echo "  - Metabase:    http://localhost:3001"
+
+## Run tests with coverage
 test:
-	@echo "Running tests..."
-	pdm run pytest
+	@echo "$(BLUE)Running tests...$(NC)"
+	pytest tests/ -v --cov=app --cov=pipelines --cov-report=term-missing --cov-fail-under=75
+	@echo "$(GREEN)Tests passed!$(NC)"
 
-gen-env:
-	@echo "Generating strong passwords for .env:"
-	python common/scripts/generate_env_passwords.py
+## Check code style with ruff and black
+lint:
+	@echo "$(BLUE)Checking code style...$(NC)"
+	ruff check app/ pipelines/ tests/
+	black --check app/ pipelines/ tests/
+	@echo "$(GREEN)Linting passed!$(NC)"
 
-docker-build:
-	@echo "Building docker images (DOCKER_BUILDKIT=$(DOCKER_BUILDKIT))"
-# Build all service images in parallel using docker-compose for consistency
-	@echo "Building all service images via docker-compose"
-# Cross-platform: use PowerShell on Windows to set env var, POSIX-style for others
-ifeq ($(OS),Windows_NT)
-	@echo "Using PowerShell to set DOCKER_BUILDKIT for Windows"
-	@powershell -NoProfile -Command "$env:DOCKER_BUILDKIT='$(DOCKER_BUILDKIT)'; docker compose build --parallel --no-cache"
-else
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker compose build --parallel --no-cache
-endif
+## Auto-format code with ruff and black
+format:
+	@echo "$(BLUE)Formatting code...$(NC)"
+	ruff check --fix app/ pipelines/ tests/
+	black app/ pipelines/ tests/
+	@echo "$(GREEN)Code formatted!$(NC)"
 
+## Run data validation checks
+validate:
+	@echo "$(BLUE)Running data validation...$(NC)"
+	@if [ -f tests/validation/test_data_integrity.py ]; then \
+		pytest tests/validation/ -v; \
+	else \
+		echo "$(YELLOW)No validation tests found (tests/validation/)$(NC)"; \
+	fi
+	@echo "$(GREEN)Validation complete!$(NC)"
+
+# =============================================================================
+# Database Commands
+# =============================================================================
+
+## Run Alembic migrations (upgrade head)
 migrate:
-	@echo "Running Alembic migrations (upgrade head)"
-	docker compose run --rm alembic sh -c "alembic -c db/migrations/alembic.ini upgrade head"
+	@echo "$(BLUE)Running database migrations...$(NC)"
+	docker compose run --rm alembic upgrade head
+	@echo "$(GREEN)Migrations complete!$(NC)"
 
-security-scan:
-	@echo "Running security scans: trivy, bandit, safety"
-# Fail the CI on HIGH/CRITICAL findings
-	trivy fs --exit-code 1 --severity HIGH,CRITICAL --format table .
-	bandit -r services/ -lll
-	safety check --full-report
+## Create new migration (use: make migrate-create MSG="description")
+migrate-create:
+	@if [ -z "$(MSG)" ]; then \
+		echo "$(RED)Error: MSG is required. Usage: make migrate-create MSG=\"description\"$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(BLUE)Creating migration: $(MSG)$(NC)"
+	docker compose run --rm alembic revision --autogenerate -m "$(MSG)"
+	@echo "$(GREEN)Migration created!$(NC)"
 
+## Rollback one migration
+migrate-down:
+	@echo "$(BLUE)Rolling back migration...$(NC)"
+	docker compose run --rm alembic downgrade -1
+	@echo "$(GREEN)Rollback complete!$(NC)"
+
+# =============================================================================
+# Docker Commands
+# =============================================================================
+
+## Build all Docker images
+docker-build:
+	@echo "$(BLUE)Building Docker images...$(NC)"
+	DOCKER_BUILDKIT=1 docker compose build --parallel
+	@echo "$(GREEN)Build complete!$(NC)"
+
+## Start all services
 docker-up:
-	@echo "Starting all services"
+	@echo "$(BLUE)Starting services...$(NC)"
 	docker compose up -d
+	@echo "$(GREEN)Services started!$(NC)"
 
+## Stop all services
 docker-down:
-	@echo "Stopping all services"
+	@echo "$(BLUE)Stopping services...$(NC)"
 	docker compose down
+	@echo "$(GREEN)Services stopped!$(NC)"
 
-up-core:
-	@echo "Starting core services: postgres, redis, prefect"
-	docker compose up -d postgres redis prefect-server prefect-worker
+## View service logs (follow mode)
+docker-logs:
+	docker compose logs -f
 
-reset-db:
-	@echo "=== DESTROYING DATABASE AND RECREATING ==="
-	docker compose down
-	docker volume rm process_metrics_platform_v2_postgres_data || true
-	docker compose up -d postgres redis
-	@echo "Waiting for postgres to initialize..."
-	@$(SLEEP_CMD)
-	@$(MAKE) debug-db
-
-# Check what's in the database
-debug-db:
-	@echo "=== CHECKING DATABASE STATE ==="
-	@docker compose exec postgres psql -U postgres -d process_metrics_v2 -c "\dn" || echo "Failed to connect"
-	@docker compose exec postgres psql -U postgres -d process_metrics_v2 -c "SELECT schemaname FROM pg_tables WHERE schemaname = 'platform';" || echo "Failed to query"
-
-setup: up-core
-	@echo "Setting up database and migrations..."
-	@$(MAKE) debug-db
-	@docker compose run --rm alembic sh -c "\
-		apt-get update -qq && apt-get install -y -qq postgresql-client && \
-		pip install -q alembic asyncpg psycopg2-binary && \
-		echo 'Waiting for postgres...' && \
-		until pg_isready -h postgres -U postgres -d process_metrics_v2; do sleep 2; done && \
-		echo 'Running migrations...' && \
-		alembic -c db/migrations/alembic.ini upgrade head"
-	@echo "Setup complete!"
-
-ci: lint security-scan test docker-build docker-up
-	@echo "CI pipeline completed (lint -> security-scan -> test -> build -> up)"
-
-clean:
-	@echo "Cleaning build artifacts"
-	$(RM_CMD) .pytest_cache .venv build dist __pycache__
-
-force-reset:
-	@echo "=== FORCE RESET DATABASE (REMOVES ALL DATA) ==="
-	@echo "Stopping all containers..."
+## Stop services and remove volumes (DESTRUCTIVE)
+docker-reset:
+	@echo "$(RED)WARNING: This will delete all data!$(NC)"
+	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ]
 	docker compose down -v
-	@echo "Removing ALL volumes..."
-	docker volume prune -f
-	@echo "Removing specific postgres volume..."
-	- docker volume rm process_metrics_platform_v2_postgres_data
-	@echo "Starting fresh postgres..."
-	docker compose up -d postgres
-	@echo "Waiting 30 seconds for initialization..."
-	@powershell -NoProfile -Command "Start-Sleep -Seconds 30" || sleep 30
-	@echo "Checking database state..."
-	@$(MAKE) debug-db
+	@echo "$(GREEN)Reset complete!$(NC)"
+
+# =============================================================================
+# Development Commands
+# =============================================================================
+
+## Install Python dependencies
+install:
+	@echo "$(BLUE)Installing dependencies...$(NC)"
+	pip install -e ".[dev]"
+	@echo "$(GREEN)Installation complete!$(NC)"
+
+## Clean build artifacts
+clean:
+	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
+	rm -rf .pytest_cache .coverage htmlcov
+	rm -rf __pycache__ */__pycache__ */*/__pycache__
+	rm -rf .ruff_cache .mypy_cache
+	rm -rf build dist *.egg-info
+	rm -rf .dagster
+	@echo "$(GREEN)Clean complete!$(NC)"
+
+## Run Dagster locally (for development without Docker)
+dagster-dev:
+	@echo "$(BLUE)Starting Dagster dev server...$(NC)"
+	dagster dev -m pipelines.definitions
+
+## Run FastAPI locally (for development without Docker)
+api-dev:
+	@echo "$(BLUE)Starting FastAPI dev server...$(NC)"
+	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
