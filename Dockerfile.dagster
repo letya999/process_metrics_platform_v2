@@ -31,8 +31,8 @@ RUN pip install --upgrade pip && \
     pip install . && \
     pip install .[dev]
 
-# Create Dagster home directory
-RUN mkdir -p ${DAGSTER_HOME}
+# Create Dagster home directory and ensure it's fresh
+RUN rm -rf ${DAGSTER_HOME} && mkdir -p ${DAGSTER_HOME}
 
 # Copy Dagster configuration
 COPY dagster.yaml ${DAGSTER_HOME}/dagster.yaml
