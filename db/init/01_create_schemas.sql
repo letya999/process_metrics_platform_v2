@@ -40,17 +40,17 @@ GRANT USAGE ON SCHEMA platform TO orchestrator_user;
 
 COMMIT;
 
--- Load schema definitions with relative paths
+-- Load schema definitions with absolute paths
 \echo 'Loading platform schema...'
-\ir ../schemas/platform_schema.sql
+\ir /db/schemas/platform_schema.sql
 
 \echo 'Loading clean_jira schema...'
-\ir ../schemas/clean_jira_schema.sql
+\ir /db/schemas/clean_jira_schema.sql
 
 \echo 'Loading bi_analytics schema...'
-\ir ../schemas/bi_analytics_schema.sql
+\ir /db/schemas/bi_analytics_schema.sql
 
 \echo 'Loading metrics views...'
-\ir ../views/metrics.sql
+\ir /db/views/metrics.sql
 
 \echo 'Database initialization complete.'
