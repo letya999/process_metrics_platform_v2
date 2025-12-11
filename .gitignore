@@ -12,3 +12,4 @@ tracking/*.md
 .audit
 .pytest_cache
 .dlt/
+*.egg-info/

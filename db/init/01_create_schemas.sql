@@ -7,6 +7,7 @@ BEGIN;
 CREATE SCHEMA IF NOT EXISTS platform;
 CREATE SCHEMA IF NOT EXISTS raw_jira;
 CREATE SCHEMA IF NOT EXISTS clean_jira;
+CREATE SCHEMA IF NOT EXISTS metrics;
 CREATE SCHEMA IF NOT EXISTS bi_analytics;
 CREATE SCHEMA IF NOT EXISTS metabase;
 
@@ -48,5 +49,8 @@ COMMIT;
 
 \echo 'Loading bi_analytics schema...'
 \ir ../schemas/bi_analytics_schema.sql
+
+\echo 'Loading metrics views...'
+\ir ../views/metrics.sql
 
 \echo 'Database initialization complete.'
