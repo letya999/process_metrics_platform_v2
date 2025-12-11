@@ -15,7 +15,8 @@ class DatabaseResource(ConfigurableResource):
     def get_engine(self) -> Engine:
         """Get SQLAlchemy engine."""
         conn_str = self.connection_string or os.getenv(
-            "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/process_metrics"
+            "DATABASE_URL",
+            "postgresql://postgres:postgres@localhost:5432/process_metrics",
         )
         return create_engine(conn_str)
 

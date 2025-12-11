@@ -69,7 +69,8 @@ class Integration(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    sync_status: Mapped[Optional[str]] = mapped_column(String(50))  # success, failed, running
+    # success, failed, running
+    sync_status: Mapped[Optional[str]] = mapped_column(String(50))
     config: Mapped[Optional[dict]] = mapped_column(JSONB)  # Additional configuration
     created_by: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("platform.users.id")
