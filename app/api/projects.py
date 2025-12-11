@@ -1,26 +1,302 @@
 """API routes for project management."""
 
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.models.orm import Project, ProjectAccess, ToolIntegration, User
+from app.schemas.project import (
+    ProjectAccessCreate,
+    ProjectAccessResponse,
+    ProjectCreate,
+    ProjectResponse,
+    ProjectUpdate,
+)
 
 router = APIRouter()
 
 
-@router.get("/projects")
-async def list_projects():
+# Dependency for database session
+DBSession = Annotated[AsyncSession, Depends(get_db)]
+
+
+@router.get("/projects", response_model=list[ProjectResponse])
+async def list_projects(
+    db: DBSession,
+    user_id: Annotated[
+        UUID | None, Query(description="Filter by owner user ID")
+    ] = None,
+    integration_id: Annotated[
+        UUID | None, Query(description="Filter by integration ID")
+    ] = None,
+    is_active: Annotated[
+        bool | None, Query(description="Filter by active status")
+    ] = None,
+):
     """List all projects available for sync."""
-    # TODO: Implement with database
-    return {"projects": []}
+    query = select(Project)
+
+    if user_id is not None:
+        query = query.where(Project.owner_user_id == user_id)
+    if integration_id is not None:
+        query = query.where(Project.tool_integration_id == integration_id)
+    if is_active is not None:
+        query = query.where(Project.is_active == is_active)
+
+    result = await db.execute(query)
+    projects = result.scalars().all()
+    return projects
 
 
-@router.get("/projects/{project_id}")
-async def get_project(project_id: int):
+@router.post(
+    "/projects", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_project(
+    db: DBSession,
+    project_data: ProjectCreate,
+    user_id: Annotated[UUID, Query(description="User ID creating the project")],
+):
+    """Create a new project."""
+    # Verify user exists
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {user_id} not found",
+        )
+
+    # Verify integration exists
+    integration_result = await db.execute(
+        select(ToolIntegration).where(
+            ToolIntegration.id == project_data.tool_integration_id
+        )
+    )
+    integration = integration_result.scalar_one_or_none()
+    if not integration:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Integration {project_data.tool_integration_id} not found",
+        )
+
+    # Check if project with same external_id already exists for this integration
+    existing_result = await db.execute(
+        select(Project).where(
+            Project.tool_integration_id == project_data.tool_integration_id,
+            Project.external_id == project_data.external_id,
+        )
+    )
+    if existing_result.scalar_one_or_none():
+        ext_id = project_data.external_id
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Project with external_id {ext_id} already exists",
+        )
+
+    # Create project
+    project = Project(
+        owner_user_id=user_id,
+        tool_integration_id=project_data.tool_integration_id,
+        external_key=project_data.external_key,
+        external_id=project_data.external_id,
+        name=project_data.name,
+        external_url=project_data.external_url,
+    )
+
+    db.add(project)
+    await db.flush()
+    await db.refresh(project)
+
+    # Grant owner access
+    owner_access = ProjectAccess(
+        project_id=project.id,
+        user_id=user_id,
+        access_level="owner",
+        granted_by=user_id,
+    )
+    db.add(owner_access)
+
+    return project
+
+
+@router.get("/projects/{project_id}", response_model=ProjectResponse)
+async def get_project(db: DBSession, project_id: UUID):
     """Get project by ID."""
-    # TODO: Implement with database
-    raise HTTPException(status_code=501, detail="Not implemented")
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {project_id} not found",
+        )
+
+    return project
 
 
-@router.put("/projects/{project_id}")
-async def update_project(project_id: int):
+@router.put("/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    db: DBSession,
+    project_id: UUID,
+    update_data: ProjectUpdate,
+):
     """Update project sync settings."""
-    # TODO: Implement with database
-    raise HTTPException(status_code=501, detail="Not implemented")
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {project_id} not found",
+        )
+
+    # Update fields if provided
+    if update_data.name is not None:
+        project.name = update_data.name
+    if update_data.external_url is not None:
+        project.external_url = update_data.external_url
+    if update_data.is_active is not None:
+        project.is_active = update_data.is_active
+
+    await db.flush()
+    await db.refresh(project)
+
+    return project
+
+
+@router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(db: DBSession, project_id: UUID):
+    """Delete a project."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {project_id} not found",
+        )
+
+    await db.delete(project)
+    return None
+
+
+# Project Access Management
+
+
+@router.get("/projects/{project_id}/access", response_model=list[ProjectAccessResponse])
+async def list_project_access(db: DBSession, project_id: UUID):
+    """List all access grants for a project."""
+    # Verify project exists
+    project_result = await db.execute(select(Project).where(Project.id == project_id))
+    project = project_result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {project_id} not found",
+        )
+
+    result = await db.execute(
+        select(ProjectAccess).where(ProjectAccess.project_id == project_id)
+    )
+    access_list = result.scalars().all()
+    return access_list
+
+
+@router.post(
+    "/projects/{project_id}/access",
+    response_model=ProjectAccessResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def grant_project_access(
+    db: DBSession,
+    project_id: UUID,
+    access_data: ProjectAccessCreate,
+    granted_by: Annotated[UUID, Query(description="User ID granting access")],
+):
+    """Grant access to a project."""
+    # Verify project exists
+    project_result = await db.execute(select(Project).where(Project.id == project_id))
+    project = project_result.scalar_one_or_none()
+
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {project_id} not found",
+        )
+
+    # Verify user exists
+    user_result = await db.execute(select(User).where(User.id == access_data.user_id))
+    user = user_result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {access_data.user_id} not found",
+        )
+
+    # Check if access already exists
+    existing_result = await db.execute(
+        select(ProjectAccess).where(
+            ProjectAccess.project_id == project_id,
+            ProjectAccess.user_id == access_data.user_id,
+        )
+    )
+    existing_access = existing_result.scalar_one_or_none()
+
+    if existing_access:
+        # Update existing access level
+        existing_access.access_level = access_data.access_level.value
+        existing_access.granted_by = granted_by
+        await db.flush()
+        await db.refresh(existing_access)
+        return existing_access
+
+    # Create new access grant
+    access = ProjectAccess(
+        project_id=project_id,
+        user_id=access_data.user_id,
+        access_level=access_data.access_level.value,
+        granted_by=granted_by,
+    )
+
+    db.add(access)
+    await db.flush()
+    await db.refresh(access)
+
+    return access
+
+
+@router.delete(
+    "/projects/{project_id}/access/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def revoke_project_access(db: DBSession, project_id: UUID, user_id: UUID):
+    """Revoke access to a project."""
+    result = await db.execute(
+        select(ProjectAccess).where(
+            ProjectAccess.project_id == project_id,
+            ProjectAccess.user_id == user_id,
+        )
+    )
+    access = result.scalar_one_or_none()
+
+    if not access:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Access for user {user_id} on project {project_id} not found",
+        )
+
+    # Don't allow revoking owner access
+    if access.access_level == "owner":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot revoke owner access",
+        )
+
+    await db.delete(access)
+    return None
