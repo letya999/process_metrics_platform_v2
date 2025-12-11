@@ -1,1 +1,74 @@
-"""Dagster schedules - placeholder for Phase 2."""
+"""Dagster schedules for automated pipeline execution.
+
+This module defines cron schedules for running data sync jobs:
+- Daily Jira sync at 6:00 AM UTC
+- Hourly metrics refresh
+"""
+
+from dagster import (
+    AssetSelection,
+    DefaultScheduleStatus,
+    ScheduleDefinition,
+    define_asset_job,
+)
+
+# Define jobs for scheduling
+
+# Job: Full Jira sync (raw → clean → metrics)
+jira_sync_job = define_asset_job(
+    name="jira_sync_job",
+    selection=AssetSelection.groups("jira_raw", "jira_clean", "metrics"),
+    description="Full Jira data sync: raw → clean → metrics refresh",
+)
+
+# Job: Jira raw only (useful for incremental loads)
+jira_raw_job = define_asset_job(
+    name="jira_raw_job",
+    selection=AssetSelection.groups("jira_raw"),
+    description="Load raw data from Jira API",
+)
+
+# Job: Clean transformation only
+jira_clean_job = define_asset_job(
+    name="jira_clean_job",
+    selection=AssetSelection.groups("jira_clean"),
+    description="Transform raw Jira data to clean layer",
+)
+
+# Job: Metrics refresh only
+metrics_refresh_job = define_asset_job(
+    name="metrics_refresh_job",
+    selection=AssetSelection.groups("metrics"),
+    description="Refresh all metrics materialized views",
+)
+
+# Define schedules
+
+# Schedule: Daily full sync at 6 AM UTC
+daily_jira_sync_schedule = ScheduleDefinition(
+    job=jira_sync_job,
+    cron_schedule="0 6 * * *",  # 6:00 AM UTC daily
+    default_status=DefaultScheduleStatus.STOPPED,  # Start stopped, enable manually
+    execution_timezone="UTC",
+)
+
+# Schedule: Hourly metrics refresh
+hourly_metrics_refresh_schedule = ScheduleDefinition(
+    job=metrics_refresh_job,
+    cron_schedule="0 * * * *",  # Every hour at minute 0
+    default_status=DefaultScheduleStatus.STOPPED,
+    execution_timezone="UTC",
+)
+
+# Export all jobs and schedules
+jobs = [
+    jira_sync_job,
+    jira_raw_job,
+    jira_clean_job,
+    metrics_refresh_job,
+]
+
+schedules = [
+    daily_jira_sync_schedule,
+    hourly_metrics_refresh_schedule,
+]
