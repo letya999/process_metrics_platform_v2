@@ -1,4 +1,3 @@
-import asyncio
 import importlib
 import os
 import pkgutil
@@ -7,9 +6,8 @@ from logging.config import fileConfig
 from typing import Optional
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import create_engine, pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # This is the Alembic Config object.
 # It provides access to the values within the .ini file in use.
@@ -104,29 +102,25 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-async def run_migrations_online() -> None:
+def run_migrations_online() -> None:
     sections = config.get_section(config.config_ini_section)
-    connectable = async_engine_from_config(
-        {
-            **sections,
-            "sqlalchemy.url": _resolve_database_url(),
-        },
-        prefix="sqlalchemy.",
+    configuration = {
+        **sections,
+        "sqlalchemy.url": _resolve_database_url(),
+    }
+
+    connectable = create_engine(
+        configuration["sqlalchemy.url"],
         poolclass=pool.NullPool,
     )
 
-    async with connectable.connect() as connection:  # type: Connection
-        await connection.run_sync(do_run_migrations)
-
-
-def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
-
-    with context.begin_transaction():
-        context.run_migrations()
+    with connectable.connect() as connection:  # type: Connection
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
 
 
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    asyncio.run(run_migrations_online())
+    run_migrations_online()
