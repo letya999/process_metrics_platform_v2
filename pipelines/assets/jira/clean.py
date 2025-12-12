@@ -6,7 +6,13 @@ Data is transformed from raw_jira schema to clean_jira schema with normalization
 
 from typing import Any
 
-from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
+from dagster import (
+    AssetCheckExecutionContext,
+    AssetCheckResult,
+    AssetExecutionContext,
+    asset,
+    asset_check,
+)
 from sqlalchemy import text
 
 from pipelines.resources.database import DatabaseResource
@@ -33,28 +39,32 @@ def clean_jira_issues(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        # First, ensure platform project exists
-        context.log.info("Ensuring platform project exists...")
-        platform_project = conn.execute(
+        # Get or create default Jira integration for syncing
+        context.log.info("Getting system user and Jira integration...")
+        system_integration = conn.execute(
             text("""
-            SELECT id FROM platform.projects
+            SELECT ti.id FROM platform.tool_integrations ti
+            JOIN platform.users u ON ti.user_id = u.id
+            WHERE u.email = 'system@metrics.local'
+              AND ti.integration_type_id = (
+                  SELECT id FROM platform.integration_types WHERE name = 'jira_cloud'
+              )
             LIMIT 1
         """)
         ).first()
 
-        if not platform_project:
-            context.log.info("No platform project found, creating default one...")
-            platform_project_id = conn.execute(
-                text("""
-                INSERT INTO platform.projects (name, created_at, updated_at)
-                VALUES ('Default Jira Project', now(), now())
-                RETURNING id
-            """)
-            ).scalar()
-        else:
-            platform_project_id = platform_project[0]
+        if not system_integration:
+            raise RuntimeError(
+                "System Jira integration not found. "
+                "Please run: docker-compose exec app alembic upgrade head"
+            )
 
-        context.log.info(f"Using platform project: {platform_project_id}")
+        system_integration_id = system_integration[0]
+        context.log.info(f"Using system integration: {system_integration_id}")
+
+        # Use a fixed platform_project_id for grouping all Jira projects
+        # This represents the logical "Jira" platform project in clean layer
+        platform_project_id = "00000000-0000-0000-0000-000000000001"
 
         # Sync projects from raw to clean
         context.log.info("Syncing projects...")
@@ -69,7 +79,7 @@ def clean_jira_issues(
                 updated_at
             )
             SELECT
-                :platform_project_id as platform_project_id,
+                :platform_project_id::uuid as platform_project_id,
                 r.id::text as external_id,
                 r.key as external_key,
                 r.name,
@@ -342,7 +352,7 @@ def clean_jira_status_changes(
 
 @asset_check(asset=clean_jira_issues)
 def check_no_orphan_issues(
-    context: AssetExecutionContext,
+    context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
     """Ensure all issues have valid project_id."""
@@ -368,7 +378,7 @@ def check_no_orphan_issues(
 
 @asset_check(asset=clean_jira_issues)
 def check_issues_have_required_fields(
-    context: AssetExecutionContext,
+    context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
     """Ensure all issues have required fields populated."""
@@ -394,7 +404,7 @@ def check_issues_have_required_fields(
 
 @asset_check(asset=clean_jira_sprints)
 def check_sprint_dates_valid(
-    context: AssetExecutionContext,
+    context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
     """Ensure sprint dates are logically valid (start < end)."""
