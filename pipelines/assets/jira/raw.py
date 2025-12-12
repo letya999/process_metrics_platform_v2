@@ -39,20 +39,24 @@ def jira_source(
             project_list = ",".join(projects)
             jql = f"project in ({project_list})"
 
-        start_at = 0
         max_results = 100
+        next_page_token = None
 
         while True:
+            params = {
+                "jql": jql,
+                "maxResults": max_results,
+                "expand": "changelog,renderedFields",
+                "fields": "*all",
+            }
+            # Add nextPageToken only if we have one (not on first request)
+            if next_page_token:
+                params["nextPageToken"] = next_page_token
+
             response = requests.get(
-                f"{base_url}/rest/api/3/search",
+                f"{base_url}/rest/api/3/search/jql",
                 auth=(email, api_token),
-                params={
-                    "jql": jql,
-                    "startAt": start_at,
-                    "maxResults": max_results,
-                    "expand": "changelog,renderedFields",
-                    "fields": "*all",
-                },
+                params=params,
             )
             response.raise_for_status()
             data = response.json()
@@ -61,10 +65,14 @@ def jira_source(
             for issue in issues:
                 yield issue
 
-            # Check if there are more results
-            total = data.get("total", 0)
-            start_at += max_results
-            if start_at >= total:
+            # Check if there are more results using isLast flag
+            if data.get("isLast", True):
+                break
+
+            # Get nextPageToken for next iteration
+            # Note: nextPageToken might not be in response if isLast is True
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token:
                 break
 
     @dlt.resource(name="projects", write_disposition="merge", primary_key="id")
@@ -190,6 +198,24 @@ def run_jira_pipeline(
     Returns:
         Pipeline load info
     """
+    # Get PostgreSQL credentials from environment
+    db_host = os.getenv("DAGSTER_POSTGRES_HOST", "postgres")
+    db_port = os.getenv("DAGSTER_POSTGRES_PORT", "5432")
+    db_name = os.getenv(
+        "DAGSTER_POSTGRES_DB", os.getenv("POSTGRES_DB", "process_metrics")
+    )
+    db_user = os.getenv("DAGSTER_POSTGRES_USER", os.getenv("POSTGRES_USER", "postgres"))
+    db_password = os.getenv(
+        "DAGSTER_POSTGRES_PASSWORD", os.getenv("POSTGRES_PASSWORD", "postgres")
+    )
+
+    # Set dlt environment variables (dlt reads these automatically)
+    os.environ["DESTINATION__POSTGRES__CREDENTIALS__HOST"] = db_host
+    os.environ["DESTINATION__POSTGRES__CREDENTIALS__PORT"] = db_port
+    os.environ["DESTINATION__POSTGRES__CREDENTIALS__DATABASE"] = db_name
+    os.environ["DESTINATION__POSTGRES__CREDENTIALS__USERNAME"] = db_user
+    os.environ["DESTINATION__POSTGRES__CREDENTIALS__PASSWORD"] = db_password
+
     # Create dlt pipeline
     pipeline = dlt.pipeline(
         pipeline_name="jira_raw",
@@ -213,7 +239,9 @@ def run_jira_pipeline(
         "destination": str(pipeline.destination),
         "dataset_name": pipeline.dataset_name,
         "load_info": str(load_info),
-        "row_counts": load_info.load_packages[0].jobs if load_info.load_packages else {},
+        "row_counts": load_info.load_packages[0].jobs
+        if load_info.load_packages
+        else {},
     }
 
 
