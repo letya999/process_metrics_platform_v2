@@ -35,30 +35,6 @@ class IntegrationType(str, Enum):
     GITLAB = "gitlab"
 
 
-class ProjectAccessLevel(str, Enum):
-    """Project access levels."""
-
-    OWNER = "owner"
-    ADMIN = "admin"
-    VIEWER = "viewer"
-
-
-class ExternalToolType(str, Enum):
-    """External BI tool types."""
-
-    METABASE = "metabase"
-    SUPERSET = "superset"
-    GRAFANA = "grafana"
-
-
-class ExternalToolRole(str, Enum):
-    """User roles in external BI tools."""
-
-    ADMIN = "admin"
-    EDITOR = "editor"
-    VIEWER = "viewer"
-
-
 class User(Base):
     """User model for platform authentication."""
 
@@ -90,9 +66,6 @@ class User(Base):
     )
     owned_projects: Mapped[list["Project"]] = relationship(
         "Project", back_populates="owner"
-    )
-    project_access: Mapped[list["ProjectAccess"]] = relationship(
-        "ProjectAccess", back_populates="user", foreign_keys="ProjectAccess.user_id"
     )
 
 
@@ -180,13 +153,12 @@ class Project(Base):
     __table_args__ = {"schema": "platform"}
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    owner_user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("platform.users.id", ondelete="CASCADE"), nullable=False
+    owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid, ForeignKey("platform.users.id", ondelete="SET NULL")
     )
-    tool_integration_id: Mapped[uuid.UUID] = mapped_column(
+    tool_integration_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         Uuid,
-        ForeignKey("platform.tool_integrations.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("platform.tool_integrations.id", ondelete="SET NULL"),
     )
 
     external_key: Mapped[str] = mapped_column(Text, nullable=False)
@@ -207,43 +179,10 @@ class Project(Base):
     )
 
     # Relationships
-    owner: Mapped["User"] = relationship("User", back_populates="owned_projects")
-    tool_integration: Mapped["ToolIntegration"] = relationship(
+    owner: Mapped[Optional["User"]] = relationship("User", back_populates="owned_projects")
+    tool_integration: Mapped[Optional["ToolIntegration"]] = relationship(
         "ToolIntegration", back_populates="projects"
     )
-    access_list: Mapped[list["ProjectAccess"]] = relationship(
-        "ProjectAccess", back_populates="project"
-    )
-
-
-class ProjectAccess(Base):
-    """Granular project access control."""
-
-    __tablename__ = "project_access"
-    __table_args__ = {"schema": "platform"}
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("platform.projects.id", ondelete="CASCADE"), nullable=False
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("platform.users.id", ondelete="CASCADE"), nullable=False
-    )
-    access_level: Mapped[str] = mapped_column(String(20), nullable=False)
-
-    granted_by: Mapped[Optional[uuid.UUID]] = mapped_column(
-        Uuid, ForeignKey("platform.users.id", ondelete="SET NULL")
-    )
-    granted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
-    )
-
-    # Relationships
-    project: Mapped["Project"] = relationship("Project", back_populates="access_list")
-    user: Mapped["User"] = relationship(
-        "User", back_populates="project_access", foreign_keys=[user_id]
-    )
-    granter: Mapped[Optional["User"]] = relationship("User", foreign_keys=[granted_by])
 
 
 class AuditLog(Base):
@@ -272,123 +211,3 @@ class AuditLog(Base):
 
     # Relationships
     user: Mapped[Optional["User"]] = relationship("User")
-
-
-class Pipeline(Base):
-    """Pipeline definitions for orchestration."""
-
-    __tablename__ = "pipelines"
-    __table_args__ = {"schema": "platform"}
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text)
-
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    schedule_cron: Mapped[Optional[str]] = mapped_column(Text)
-
-    prefect_flow_id: Mapped[Optional[str]] = mapped_column(Text)
-    prefect_deployment_id: Mapped[Optional[str]] = mapped_column(Text)
-
-    config: Mapped[Optional[dict]] = mapped_column(JSONB)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
-    )
-
-    # Relationships
-    runs: Mapped[list["PipelineRun"]] = relationship(
-        "PipelineRun", back_populates="pipeline"
-    )
-
-
-class PipelineRun(Base):
-    """Pipeline execution history."""
-
-    __tablename__ = "pipeline_runs"
-    __table_args__ = {"schema": "platform"}
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    pipeline_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("platform.pipelines.id", ondelete="CASCADE"), nullable=False
-    )
-    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        Uuid, ForeignKey("platform.projects.id", ondelete="SET NULL")
-    )
-
-    status: Mapped[str] = mapped_column(Text, default="pending", nullable=False)
-
-    prefect_flow_run_id: Mapped[Optional[str]] = mapped_column(Text)
-    prefect_state: Mapped[Optional[dict]] = mapped_column(JSONB)
-
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    duration_seconds: Mapped[Optional[int]] = mapped_column()
-
-    error_message: Mapped[Optional[str]] = mapped_column(Text)
-    error_trace: Mapped[Optional[str]] = mapped_column(Text)
-
-    metrics: Mapped[Optional[dict]] = mapped_column(JSONB)
-    config: Mapped[Optional[dict]] = mapped_column(JSONB)
-
-    triggered_by: Mapped[Optional[uuid.UUID]] = mapped_column(
-        Uuid, ForeignKey("platform.users.id", ondelete="SET NULL")
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
-    )
-
-    # Relationships
-    pipeline: Mapped["Pipeline"] = relationship("Pipeline", back_populates="runs")
-    project: Mapped[Optional["Project"]] = relationship("Project")
-    triggered_by_user: Mapped[Optional["User"]] = relationship("User")
-    tasks: Mapped[list["PipelineTask"]] = relationship(
-        "PipelineTask", back_populates="pipeline_run"
-    )
-
-
-class PipelineTask(Base):
-    """Individual task execution within pipeline runs."""
-
-    __tablename__ = "pipeline_tasks"
-    __table_args__ = {"schema": "platform"}
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    pipeline_run_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        ForeignKey("platform.pipeline_runs.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-
-    task_name: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, default="pending", nullable=False)
-
-    prefect_task_run_id: Mapped[Optional[str]] = mapped_column(Text)
-    prefect_state: Mapped[Optional[dict]] = mapped_column(JSONB)
-
-    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    duration_seconds: Mapped[Optional[int]] = mapped_column()
-
-    error_message: Mapped[Optional[str]] = mapped_column(Text)
-    error_trace: Mapped[Optional[str]] = mapped_column(Text)
-
-    metrics: Mapped[Optional[dict]] = mapped_column(JSONB)
-    input_params: Mapped[Optional[dict]] = mapped_column(JSONB)
-    output_result: Mapped[Optional[dict]] = mapped_column(JSONB)
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
-    )
-
-    # Relationships
-    pipeline_run: Mapped["PipelineRun"] = relationship(
-        "PipelineRun", back_populates="tasks"
-    )

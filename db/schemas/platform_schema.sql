@@ -80,44 +80,8 @@ COMMENT ON COLUMN platform.users.is_admin IS 'Platform administrator flag';
 COMMENT ON COLUMN platform.users.last_password_change IS 'Track password sync status with external tools';
 
 -- ============================================================================
--- TABLE: external_tool_users
--- Purpose: User synchronization with external BI tools (Metabase, Grafana, etc.)
--- Access: admin_service (RW), auth_service (R)
--- Pattern: Pseudo-SSO - platform users synced to external tools with same credentials
+-- NOTE: external_tool_users table removed for MVP - can be added later
 -- ============================================================================
-
-CREATE TABLE platform.external_tool_users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES platform.users(id) ON DELETE CASCADE,
-
-    tool_type platform.external_tool_type NOT NULL,
-    tool_user_id TEXT NOT NULL,
-    tool_email TEXT NOT NULL,
-    tool_password_hash TEXT NOT NULL,
-    tool_role platform.external_tool_role NOT NULL DEFAULT 'viewer',
-
-    sync_status TEXT NOT NULL DEFAULT 'pending',
-    last_sync_at TIMESTAMPTZ,
-    sync_error TEXT,
-
-    is_active BOOLEAN NOT NULL DEFAULT true,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    UNIQUE(user_id, tool_type),
-    UNIQUE(tool_type, tool_user_id),
-    UNIQUE(tool_type, tool_email)
-);
-
-CREATE INDEX idx_external_tool_users_user_id ON platform.external_tool_users(user_id);
-CREATE INDEX idx_external_tool_users_tool_type ON platform.external_tool_users(tool_type);
-CREATE INDEX idx_external_tool_users_sync_status ON platform.external_tool_users(sync_status);
-
-COMMENT ON TABLE platform.external_tool_users IS 'Pseudo-SSO: sync platform users to external BI tools with matching credentials';
-COMMENT ON COLUMN platform.external_tool_users.tool_password_hash IS 'Password hash in external tool (typically matches platform.users.password_hash)';
-COMMENT ON COLUMN platform.external_tool_users.sync_status IS 'Sync state: pending, synced, failed';
-COMMENT ON COLUMN platform.external_tool_users.tool_user_id IS 'User ID in external tool (Metabase user_id, etc.)';
 
 -- ============================================================================
 -- TABLE: integration_types
@@ -216,8 +180,8 @@ COMMENT ON COLUMN platform.tool_integrations.last_sync_status IS 'Last sync resu
 
 CREATE TABLE platform.projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_user_id UUID NOT NULL REFERENCES platform.users(id) ON DELETE CASCADE,
-    tool_integration_id UUID NOT NULL REFERENCES platform.tool_integrations(id) ON DELETE CASCADE,
+    owner_user_id UUID REFERENCES platform.users(id) ON DELETE SET NULL,
+    tool_integration_id UUID REFERENCES platform.tool_integrations(id) ON DELETE SET NULL,
 
     external_key TEXT NOT NULL,
     external_id TEXT NOT NULL,
@@ -227,50 +191,25 @@ CREATE TABLE platform.projects (
     is_active BOOLEAN NOT NULL DEFAULT true,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    UNIQUE(tool_integration_id, external_id)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_projects_owner_user_id ON platform.projects(owner_user_id);
 CREATE INDEX idx_projects_tool_integration_id ON platform.projects(tool_integration_id);
 CREATE INDEX idx_projects_external_key ON platform.projects(external_key);
 CREATE INDEX idx_projects_is_active ON platform.projects(is_active);
-CREATE INDEX idx_projects_owner_active ON platform.projects(owner_user_id, is_active);
+CREATE INDEX idx_projects_owner_active ON platform.projects(owner_user_id, is_active) WHERE owner_user_id IS NOT NULL;
 
 COMMENT ON TABLE platform.projects IS 'Projects from external systems: Jira projects, GitLab projects, Linear teams, etc.';
-COMMENT ON COLUMN platform.projects.owner_user_id IS 'Project owner (denormalized from tool_integrations for fast access)';
+COMMENT ON COLUMN platform.projects.owner_user_id IS 'Project owner (optional for system/default projects)';
+COMMENT ON COLUMN platform.projects.tool_integration_id IS 'Integration source (optional for system/default projects)';
 COMMENT ON COLUMN platform.projects.external_key IS 'Project key in external system (e.g. PROJ, ENG)';
 COMMENT ON COLUMN platform.projects.external_id IS 'Project ID in external system';
 COMMENT ON COLUMN platform.projects.external_url IS 'Direct link to project in external system (may be NULL)';
 
 -- ============================================================================
--- TABLE: project_access
--- Purpose: Granular project access control
--- Access: admin_service (RW), bi_layer (R)
--- Pattern: owner = full access, admin = configure metrics, viewer = read-only
+-- NOTE: project_access table removed for MVP - can be added later for multi-user support
 -- ============================================================================
-
-CREATE TABLE platform.project_access (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id UUID NOT NULL REFERENCES platform.projects(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES platform.users(id) ON DELETE CASCADE,
-    access_level platform.project_access_level NOT NULL,
-
-    granted_by UUID REFERENCES platform.users(id) ON DELETE SET NULL,
-    granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-    UNIQUE(project_id, user_id)
-);
-
-CREATE INDEX idx_project_access_project_id ON platform.project_access(project_id);
-CREATE INDEX idx_project_access_user_id ON platform.project_access(user_id);
-CREATE INDEX idx_project_access_level ON platform.project_access(access_level);
-CREATE INDEX idx_project_access_user_level ON platform.project_access(user_id, access_level);
-
-COMMENT ON TABLE platform.project_access IS 'Granular project permissions: owner, admin, viewer';
-COMMENT ON COLUMN platform.project_access.access_level IS 'owner = full access, admin = configure metrics, viewer = read-only';
-COMMENT ON COLUMN platform.project_access.granted_by IS 'User who granted access';
 
 -- ============================================================================
 -- TABLE: audit_log
@@ -304,125 +243,10 @@ COMMENT ON COLUMN platform.audit_log.action IS 'Action format: entity.action (e.
 COMMENT ON COLUMN platform.audit_log.details IS 'Additional action details in JSON format';
 
 -- ============================================================================
--- TABLE: pipelines
--- Purpose: Pipeline definitions for orchestration
--- Access: orchestrator (RW), monitoring_service (R)
+-- NOTE: pipelines, pipeline_runs, pipeline_tasks tables removed for MVP
+--       We use Dagster for orchestration, not Prefect
+--       Can be added later if needed for execution auditing
 -- ============================================================================
-
-CREATE TABLE platform.pipelines (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT UNIQUE NOT NULL,
-    description TEXT,
-
-    is_active BOOLEAN NOT NULL DEFAULT true,
-    schedule_cron TEXT,
-
-    prefect_flow_id TEXT,
-    prefect_deployment_id TEXT,
-
-    config JSONB,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_pipelines_name ON platform.pipelines(name);
-CREATE INDEX idx_pipelines_is_active ON platform.pipelines(is_active);
-CREATE INDEX idx_pipelines_prefect_flow_id ON platform.pipelines(prefect_flow_id);
-
-COMMENT ON TABLE platform.pipelines IS 'Pipeline definitions for Prefect orchestration';
-COMMENT ON COLUMN platform.pipelines.schedule_cron IS 'Execution schedule in cron format';
-COMMENT ON COLUMN platform.pipelines.config IS 'Custom pipeline configuration in JSON format';
-COMMENT ON COLUMN platform.pipelines.prefect_flow_id IS 'Prefect flow identifier';
-COMMENT ON COLUMN platform.pipelines.prefect_deployment_id IS 'Prefect deployment identifier';
-
--- ============================================================================
--- TABLE: pipeline_runs
--- Purpose: Pipeline execution history
--- Access: orchestrator (RW), monitoring_service (R), bi_layer (R)
--- ============================================================================
-
-CREATE TABLE platform.pipeline_runs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    pipeline_id UUID NOT NULL REFERENCES platform.pipelines(id) ON DELETE CASCADE,
-    project_id UUID REFERENCES platform.projects(id) ON DELETE SET NULL,
-
-    status TEXT NOT NULL DEFAULT 'pending',
-
-    prefect_flow_run_id TEXT,
-    prefect_state JSONB,
-
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
-    duration_seconds INTEGER,
-
-    error_message TEXT,
-    error_trace TEXT,
-
-    metrics JSONB,
-    config JSONB,
-
-    triggered_by UUID REFERENCES platform.users(id) ON DELETE SET NULL,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_pipeline_runs_pipeline_id ON platform.pipeline_runs(pipeline_id);
-CREATE INDEX idx_pipeline_runs_project_id ON platform.pipeline_runs(project_id);
-CREATE INDEX idx_pipeline_runs_status ON platform.pipeline_runs(status);
-CREATE INDEX idx_pipeline_runs_created_at ON platform.pipeline_runs(created_at DESC);
-CREATE INDEX idx_pipeline_runs_prefect_flow_run_id ON platform.pipeline_runs(prefect_flow_run_id);
-CREATE INDEX idx_pipeline_runs_project_created ON platform.pipeline_runs(project_id, created_at DESC);
-
-COMMENT ON TABLE platform.pipeline_runs IS 'Pipeline execution history with Prefect integration';
-COMMENT ON COLUMN platform.pipeline_runs.status IS 'Execution status (format from Prefect)';
-COMMENT ON COLUMN platform.pipeline_runs.prefect_state IS 'Full Prefect state in JSON format';
-COMMENT ON COLUMN platform.pipeline_runs.metrics IS 'Execution metrics: rows processed, etc.';
-COMMENT ON COLUMN platform.pipeline_runs.triggered_by IS 'User who triggered (NULL for scheduled runs)';
-COMMENT ON COLUMN platform.pipeline_runs.prefect_flow_run_id IS 'Prefect flow run identifier';
-
--- ============================================================================
--- TABLE: pipeline_tasks
--- Purpose: Individual task execution within pipeline runs
--- Access: orchestrator (RW), monitoring_service (R)
--- ============================================================================
-
-CREATE TABLE platform.pipeline_tasks (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    pipeline_run_id UUID NOT NULL REFERENCES platform.pipeline_runs(id) ON DELETE CASCADE,
-
-    task_name TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-
-    prefect_task_run_id TEXT,
-    prefect_state JSONB,
-
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
-    duration_seconds INTEGER,
-
-    error_message TEXT,
-    error_trace TEXT,
-
-    metrics JSONB,
-    input_params JSONB,
-    output_result JSONB,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX idx_pipeline_tasks_pipeline_run_id ON platform.pipeline_tasks(pipeline_run_id);
-CREATE INDEX idx_pipeline_tasks_status ON platform.pipeline_tasks(status);
-CREATE INDEX idx_pipeline_tasks_task_name ON platform.pipeline_tasks(task_name);
-CREATE INDEX idx_pipeline_tasks_created_at ON platform.pipeline_tasks(created_at DESC);
-CREATE INDEX idx_pipeline_tasks_prefect_task_run_id ON platform.pipeline_tasks(prefect_task_run_id);
-
-COMMENT ON TABLE platform.pipeline_tasks IS 'Task execution history within pipeline runs';
-COMMENT ON COLUMN platform.pipeline_tasks.status IS 'Task status (format from Prefect)';
-COMMENT ON COLUMN platform.pipeline_tasks.prefect_state IS 'Full Prefect task state in JSON format';
-COMMENT ON COLUMN platform.pipeline_tasks.input_params IS 'Task input parameters';
-COMMENT ON COLUMN platform.pipeline_tasks.output_result IS 'Task execution result';
-COMMENT ON COLUMN platform.pipeline_tasks.prefect_task_run_id IS 'Prefect task run identifier';
 
 -- ============================================================================
 -- END OF SCHEMA: platform

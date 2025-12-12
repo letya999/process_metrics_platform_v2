@@ -6,19 +6,74 @@
 
 **Target users:** Project managers, delivery managers, agile coaches, team leads.
 
-## Quick Start
+## Quick Start (MVP)
 
+### 1. Start all services
 ```bash
-# Start all services
-docker-compose up -d
+docker compose up -d
+```
 
-# Run migrations
-docker-compose exec app alembic upgrade head
+### 2. Initialize database from scratch
+```bash
+# Option A: Let Docker Compose initialize via init script + migrations (recommended)
+docker compose exec app alembic upgrade head
 
-# Open services
-# - Admin Panel: http://localhost:8000
-# - Dagster UI: http://localhost:3000
-# - Metabase: http://localhost:3001
+# Option B: Clean reset if DB is corrupted
+docker compose down -v
+docker compose up -d
+docker compose exec app alembic upgrade head
+```
+
+### 3. Open services
+- **Admin Panel:** http://localhost:8000
+- **Dagster UI:** http://localhost:3000
+- **Metabase:** http://localhost:3001
+
+### 4. Verify everything works
+```bash
+# Check database migrations
+docker compose exec app alembic current
+
+# View Dagster assets
+# Go to Dagster UI → Assets → should see jira_raw_data, clean_jira_issues, etc.
+
+# Test a manual sync
+docker compose exec app dagster job execute -j jira_sync_job
+```
+
+## MVP Optimizations (v2)
+
+This version is optimized for MVP - single-user, Jira-only ETL platform:
+
+### Removed for MVP (can be added later)
+- ❌ `external_tool_users` — Multi-tool BI sync (Metabase, Grafana)
+- ❌ `project_access` — Multi-user role-based access control
+- ❌ `pipelines`, `pipeline_runs`, `pipeline_tasks` — Prefect orchestration (using Dagster instead)
+
+### Simplified for MVP
+- ✅ `platform.projects.owner_user_id` → Optional (NULL for system projects)
+- ✅ `platform.projects.tool_integration_id` → Optional (NULL for system projects)
+- ✅ Removed UNIQUE constraints dependent on removed fields
+- ✅ Default "Jira System Project" auto-created for clean_jira data grouping
+
+### Result
+- **565 lines of code removed** (database + API + ORM)
+- **Faster to market** for MVP phase
+- **Extensible design** — easy to add multi-user/multi-tool later
+
+### Schema Diagram (MVP)
+```
+platform.users (auth)
+    ↓
+platform.tool_integrations (Jira credentials)
+    ↓
+platform.projects (optional link)
+    ↓
+clean_jira.projects ← grouped by UUID
+    ↓
+clean_jira.issues/sprints/etc.
+    ↓
+metrics.* (materialized views)
 ```
 
 ## Architecture

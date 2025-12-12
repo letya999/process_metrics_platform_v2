@@ -19,8 +19,6 @@ from app.schemas.metrics import (
     VelocityResponse,
 )
 from app.schemas.project import (
-    ProjectAccessCreate,
-    ProjectAccessResponse,
     ProjectCreate,
     ProjectResponse,
     ProjectUpdate,
@@ -38,8 +36,6 @@ __all__ = [
     "ProjectCreate",
     "ProjectResponse",
     "ProjectUpdate",
-    "ProjectAccessCreate",
-    "ProjectAccessResponse",
     # Metrics schemas
     "MetricConfigResponse",
     "MetricConfigUpdate",

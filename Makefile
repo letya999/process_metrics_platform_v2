@@ -46,6 +46,9 @@ help:
 	@echo "  make docker-up       - Start all services"
 	@echo "  make docker-down     - Stop all services"
 	@echo "  make docker-logs     - View service logs"
+	@echo "  make docker-reset    - Remove volumes (DESTRUCTIVE)"
+	@echo "  make db-reset        - Full DB reset + init (DESTRUCTIVE)"
+	@echo "  make verify          - Verify MVP setup is correct"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
 	@echo "  make install         - Install Python dependencies"
@@ -154,6 +157,15 @@ docker-reset:
 	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ]
 	docker compose down -v
 	@echo "$(GREEN)Reset complete!$(NC)"
+
+## Full reset: delete volume, rebuild, and init database (DESTRUCTIVE)
+db-reset: docker-reset docker-build docker-up migrate
+	@echo "$(GREEN)Database fully reset and initialized!$(NC)"
+
+## Verify MVP setup is correct
+verify:
+	@echo "$(BLUE)Verifying MVP setup...$(NC)"
+	@bash scripts/verify_setup.sh
 
 # =============================================================================
 # Development Commands
