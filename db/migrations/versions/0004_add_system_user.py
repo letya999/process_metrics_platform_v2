@@ -72,9 +72,50 @@ def upgrade() -> None:
     """)
     )
 
+    # Create a default platform project for Jira (logical container)
+    op.execute(
+        text("""
+        INSERT INTO platform.projects (
+            id,
+            owner_user_id,
+            tool_integration_id,
+            external_key,
+            external_id,
+            name,
+            is_active
+        )
+        SELECT
+            '00000000-0000-0000-0000-000000000001'::uuid as id,
+            u.id as owner_user_id,
+            ti.id as tool_integration_id,
+            'JIRA' as external_key,
+            'jira-aggregated' as external_id,
+            'Jira - Aggregated Projects' as name,
+            true as is_active
+        FROM platform.users u, platform.tool_integrations ti, platform.integration_types it
+        WHERE u.email = 'system@metrics.local'
+          AND ti.user_id = u.id
+          AND ti.integration_type_id = it.id
+          AND it.name = 'jira_cloud'
+          AND NOT EXISTS (
+              SELECT 1 FROM platform.projects p
+              WHERE p.id = '00000000-0000-0000-0000-000000000001'::uuid
+          )
+        ON CONFLICT (id) DO NOTHING;
+    """)
+    )
+
 
 def downgrade() -> None:
     """Rollback: Remove system user and integration."""
+    # Remove default platform project
+    op.execute(
+        text("""
+        DELETE FROM platform.projects
+        WHERE id = '00000000-0000-0000-0000-000000000001'::uuid;
+    """)
+    )
+
     op.execute(
         text("""
         DELETE FROM platform.tool_integrations

@@ -63,19 +63,35 @@ ON CONFLICT (id) DO NOTHING;
 ## 3. Создание платформенного проекта
 
 ```sql
+-- Получите ID системной интеграции Jira
+SELECT id FROM platform.tool_integrations ti
+JOIN platform.users u ON ti.user_id = u.id
+WHERE u.email = 'system@metrics.local'
+  AND ti.integration_type_id = (
+      SELECT id FROM platform.integration_types WHERE name = 'jira_cloud'
+  );
+
 -- Создайте платформенный проект (логический контейнер для всех Jira проектов)
 INSERT INTO platform.projects (
     id,
+    owner_user_id,
+    tool_integration_id,
+    external_key,
+    external_id,
     name,
-    description,
-    created_at,
-    updated_at
+    is_active
 ) VALUES (
     '00000000-0000-0000-0000-000000000001'::uuid,
-    'Jira Projects',
-    'Aggregated Jira projects for metrics',
-    NOW(),
-    NOW()
+    (SELECT id FROM platform.users WHERE email = 'system@metrics.local'),
+    (SELECT ti.id FROM platform.tool_integrations ti
+     JOIN platform.users u ON ti.user_id = u.id
+     WHERE u.email = 'system@metrics.local'
+       AND ti.integration_type_id = (SELECT id FROM platform.integration_types WHERE name = 'jira_cloud')
+     LIMIT 1),
+    'JIRA',
+    'jira-aggregated',
+    'Jira - Aggregated Projects',
+    true
 )
 ON CONFLICT (id) DO NOTHING;
 ```
