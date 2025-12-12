@@ -46,13 +46,14 @@ def clean_jira_issues(
                 updated_at
             )
             SELECT
-                (SELECT id FROM platform.projects LIMIT 1) as platform_project_id,
+                pp.id as platform_project_id,
                 r.id::text as external_id,
                 r.key as external_key,
                 r.name,
-                COALESCE(r._dlt_load_id::timestamptz, now()) as created_at,
+                now() as created_at,
                 now() as updated_at
             FROM raw_jira.projects r
+            CROSS JOIN platform.projects pp
             ON CONFLICT (platform_project_id, external_id)
             DO UPDATE SET
                 external_key = EXCLUDED.external_key,
@@ -128,12 +129,14 @@ def clean_jira_issues(
                 project_id,
                 external_id,
                 display_name,
+                created_at,
                 updated_at
             )
             SELECT DISTINCT
                 p.id as project_id,
                 u.account_id as external_id,
                 u.display_name,
+                now() as created_at,
                 now() as updated_at
             FROM raw_jira.users u
             CROSS JOIN clean_jira.projects p
@@ -159,6 +162,7 @@ def clean_jira_issues(
                 jira_created_at,
                 jira_updated_at,
                 jira_resolved_at,
+                db_created_at,
                 db_updated_at
             )
             SELECT
@@ -172,6 +176,7 @@ def clean_jira_issues(
                 r.fields__created::timestamptz as jira_created_at,
                 r.fields__updated::timestamptz as jira_updated_at,
                 r.fields__resolutiondate::timestamptz as jira_resolved_at,
+                now() as db_created_at,
                 now() as db_updated_at
             FROM raw_jira.issues r
             JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
