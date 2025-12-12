@@ -6,8 +6,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.orm import ProjectAccessLevel
-
 
 class ProjectCreate(BaseModel):
     """Request schema for creating a project."""
@@ -37,8 +35,8 @@ class ProjectResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    owner_user_id: UUID
-    tool_integration_id: UUID
+    owner_user_id: Optional[UUID] = None
+    tool_integration_id: Optional[UUID] = None
     external_key: str
     external_id: str
     name: str
@@ -46,25 +44,3 @@ class ProjectResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
-
-
-class ProjectAccessCreate(BaseModel):
-    """Request schema for granting project access."""
-
-    user_id: UUID = Field(..., description="ID of user to grant access")
-    access_level: ProjectAccessLevel = Field(
-        ..., description="Access level: owner, admin, viewer"
-    )
-
-
-class ProjectAccessResponse(BaseModel):
-    """Response schema for project access."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    project_id: UUID
-    user_id: UUID
-    access_level: str
-    granted_by: Optional[UUID] = None
-    granted_at: datetime

@@ -8,10 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models.orm import Project, ProjectAccess, ToolIntegration, User
+from app.models.orm import Project, ToolIntegration, User
 from app.schemas.project import (
-    ProjectAccessCreate,
-    ProjectAccessResponse,
     ProjectCreate,
     ProjectResponse,
     ProjectUpdate,
@@ -108,17 +106,8 @@ async def create_project(
     )
 
     db.add(project)
-    await db.flush()
+    await db.commit()
     await db.refresh(project)
-
-    # Grant owner access
-    owner_access = ProjectAccess(
-        project_id=project.id,
-        user_id=user_id,
-        access_level="owner",
-        granted_by=user_id,
-    )
-    db.add(owner_access)
 
     return project
 
@@ -181,122 +170,4 @@ async def delete_project(db: DBSession, project_id: UUID):
         )
 
     await db.delete(project)
-    return None
-
-
-# Project Access Management
-
-
-@router.get("/projects/{project_id}/access", response_model=list[ProjectAccessResponse])
-async def list_project_access(db: DBSession, project_id: UUID):
-    """List all access grants for a project."""
-    # Verify project exists
-    project_result = await db.execute(select(Project).where(Project.id == project_id))
-    project = project_result.scalar_one_or_none()
-
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project {project_id} not found",
-        )
-
-    result = await db.execute(
-        select(ProjectAccess).where(ProjectAccess.project_id == project_id)
-    )
-    access_list = result.scalars().all()
-    return access_list
-
-
-@router.post(
-    "/projects/{project_id}/access",
-    response_model=ProjectAccessResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def grant_project_access(
-    db: DBSession,
-    project_id: UUID,
-    access_data: ProjectAccessCreate,
-    granted_by: Annotated[UUID, Query(description="User ID granting access")],
-):
-    """Grant access to a project."""
-    # Verify project exists
-    project_result = await db.execute(select(Project).where(Project.id == project_id))
-    project = project_result.scalar_one_or_none()
-
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project {project_id} not found",
-        )
-
-    # Verify user exists
-    user_result = await db.execute(select(User).where(User.id == access_data.user_id))
-    user = user_result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User {access_data.user_id} not found",
-        )
-
-    # Check if access already exists
-    existing_result = await db.execute(
-        select(ProjectAccess).where(
-            ProjectAccess.project_id == project_id,
-            ProjectAccess.user_id == access_data.user_id,
-        )
-    )
-    existing_access = existing_result.scalar_one_or_none()
-
-    if existing_access:
-        # Update existing access level
-        existing_access.access_level = access_data.access_level.value
-        existing_access.granted_by = granted_by
-        await db.flush()
-        await db.refresh(existing_access)
-        return existing_access
-
-    # Create new access grant
-    access = ProjectAccess(
-        project_id=project_id,
-        user_id=access_data.user_id,
-        access_level=access_data.access_level.value,
-        granted_by=granted_by,
-    )
-
-    db.add(access)
-    await db.flush()
-    await db.refresh(access)
-
-    return access
-
-
-@router.delete(
-    "/projects/{project_id}/access/{user_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def revoke_project_access(db: DBSession, project_id: UUID, user_id: UUID):
-    """Revoke access to a project."""
-    result = await db.execute(
-        select(ProjectAccess).where(
-            ProjectAccess.project_id == project_id,
-            ProjectAccess.user_id == user_id,
-        )
-    )
-    access = result.scalar_one_or_none()
-
-    if not access:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Access for user {user_id} on project {project_id} not found",
-        )
-
-    # Don't allow revoking owner access
-    if access.access_level == "owner":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot revoke owner access",
-        )
-
-    await db.delete(access)
     return None

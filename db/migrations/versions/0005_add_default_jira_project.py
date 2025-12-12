@@ -16,15 +16,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    """Add default Jira project that clean_jira layer references."""
-    # Create default "Jira" project in platform.projects
-    # This is used by clean_jira.projects as a grouping project
+    """Add default Jira platform project for clean_jira layer.
+
+    This system project acts as a grouping container for all Jira data
+    in the clean layer. It doesn't require an owner or integration reference.
+    """
     op.execute(
         text("""
         INSERT INTO platform.projects (
             id,
-            owner_user_id,
-            tool_integration_id,
             external_key,
             external_id,
             name,
@@ -32,23 +32,15 @@ def upgrade() -> None:
             created_at,
             updated_at
         )
-        SELECT
-            '00000000-0000-0000-0000-000000000001'::uuid as id,
-            u.id as owner_user_id,
-            ti.id as tool_integration_id,
-            'JIRA' as external_key,
-            'jira-default' as external_id,
-            'Jira' as name,
-            true as is_active,
-            now() as created_at,
-            now() as updated_at
-        FROM platform.users u
-        JOIN platform.tool_integrations ti ON u.id = ti.user_id
-        WHERE u.email = 'system@metrics.local'
-          AND ti.integration_type_id = (
-              SELECT id FROM platform.integration_types WHERE name = 'jira_cloud'
-          )
-        LIMIT 1
+        VALUES (
+            '00000000-0000-0000-0000-000000000001'::uuid,
+            'JIRA',
+            'jira-system',
+            'Jira System Project',
+            true,
+            now(),
+            now()
+        )
         ON CONFLICT (id) DO NOTHING;
     """)
     )
