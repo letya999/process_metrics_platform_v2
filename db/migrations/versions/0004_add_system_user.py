@@ -1,6 +1,6 @@
 """Add system user and default Jira integration for automated pipelines
 
-Revision ID: 0004_add_system_user_and_integration
+Revision ID: 0004_add_system_user
 Revises: 0003_metrics_schema
 Create Date: 2025-12-12
 """
@@ -9,7 +9,7 @@ from alembic import op
 from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
-revision = "0004_add_system_user_and_integration"
+revision = "0004_add_system_user"
 down_revision = "0003_metrics_schema"
 branch_labels = None
 depends_on = None

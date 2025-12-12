@@ -19,21 +19,41 @@ def upgrade() -> None:
     # Create schema
     op.execute("CREATE SCHEMA IF NOT EXISTS clean_jira;")
 
-    # Create ENUMs
+    # Create ENUMs (with IF NOT EXISTS check using DO block)
     op.execute(
-        """CREATE TYPE clean_jira.issue_hierarchy_level AS ENUM ('epic', 'story', 'task', 'subtask');"""
+        """DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'issue_hierarchy_level' AND typnamespace = 'clean_jira'::regnamespace) THEN
+                CREATE TYPE clean_jira.issue_hierarchy_level AS ENUM ('epic', 'story', 'task', 'subtask');
+            END IF;
+        END $$;"""
     )
     op.execute(
-        """CREATE TYPE clean_jira.issue_status_category AS ENUM ('to_do', 'in_progress', 'done');"""
+        """DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'issue_status_category' AND typnamespace = 'clean_jira'::regnamespace) THEN
+                CREATE TYPE clean_jira.issue_status_category AS ENUM ('to_do', 'in_progress', 'done');
+            END IF;
+        END $$;"""
     )
     op.execute(
-        """CREATE TYPE clean_jira.user_role_type AS ENUM ('assignee', 'reporter', 'creator', 'watcher');"""
+        """DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_role_type' AND typnamespace = 'clean_jira'::regnamespace) THEN
+                CREATE TYPE clean_jira.user_role_type AS ENUM ('assignee', 'reporter', 'creator', 'watcher');
+            END IF;
+        END $$;"""
     )
     op.execute(
-        """CREATE TYPE clean_jira.sprint_status AS ENUM ('future', 'active', 'closed');"""
+        """DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'sprint_status' AND typnamespace = 'clean_jira'::regnamespace) THEN
+                CREATE TYPE clean_jira.sprint_status AS ENUM ('future', 'active', 'closed');
+            END IF;
+        END $$;"""
     )
     op.execute(
-        """CREATE TYPE clean_jira.release_status AS ENUM ('unreleased', 'released', 'archived');"""
+        """DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'release_status' AND typnamespace = 'clean_jira'::regnamespace) THEN
+                CREATE TYPE clean_jira.release_status AS ENUM ('unreleased', 'released', 'archived');
+            END IF;
+        END $$;"""
     )
 
     # Create core entity tables
