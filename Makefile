@@ -103,7 +103,7 @@ validate:
 ## Run Alembic migrations (upgrade head)
 migrate:
 	@echo "$(BLUE)Running database migrations...$(NC)"
-	docker compose run --rm alembic upgrade head
+	docker compose --profile migration run --rm alembic upgrade head
 	@echo "$(GREEN)Migrations complete!$(NC)"
 
 ## Create new migration (use: make migrate-create MSG="description")
@@ -113,13 +113,13 @@ migrate-create:
 		exit 1; \
 	fi
 	@echo "$(BLUE)Creating migration: $(MSG)$(NC)"
-	docker compose run --rm alembic revision --autogenerate -m "$(MSG)"
+	docker compose --profile migration run --rm alembic revision --autogenerate -m "$(MSG)"
 	@echo "$(GREEN)Migration created!$(NC)"
 
 ## Rollback one migration
 migrate-down:
 	@echo "$(BLUE)Rolling back migration...$(NC)"
-	docker compose run --rm alembic downgrade -1
+	docker compose --profile migration run --rm alembic downgrade -1
 	@echo "$(GREEN)Rollback complete!$(NC)"
 
 # =============================================================================
