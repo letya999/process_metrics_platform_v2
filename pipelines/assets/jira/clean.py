@@ -69,7 +69,7 @@ def clean_jira_issues(
         # Sync projects from raw to clean
         context.log.info("Syncing projects...")
         projects_synced = conn.execute(
-            text("""
+            text(f"""
             INSERT INTO clean_jira.projects (
                 platform_project_id,
                 external_id,
@@ -79,7 +79,7 @@ def clean_jira_issues(
                 updated_at
             )
             SELECT
-                :platform_project_id::uuid as platform_project_id,
+                '{platform_project_id}'::uuid as platform_project_id,
                 r.id::text as external_id,
                 r.key as external_key,
                 r.name,
@@ -92,7 +92,7 @@ def clean_jira_issues(
                 name = EXCLUDED.name,
                 updated_at = now()
             RETURNING id
-        """).bindparams(platform_project_id=platform_project_id)
+        """)
         ).fetchall()
         context.log.info(f"Synced {len(projects_synced)} projects")
 
