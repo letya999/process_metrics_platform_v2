@@ -1,15 +1,15 @@
 """Add metrics schema with materialized views
 
-Revision ID: 0002_metrics_schema
-Revises: 0001_initial
+Revision ID: 0003_metrics_schema
+Revises: 0002_create_clean_jira_schema
 Create Date: 2025-12-11
 """
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "0002_metrics_schema"
-down_revision = "0001_initial"
+revision = "0003_metrics_schema"
+down_revision = "0002_create_clean_jira_schema"
 branch_labels = None
 depends_on = None
 

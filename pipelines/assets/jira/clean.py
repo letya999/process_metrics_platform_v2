@@ -33,7 +33,30 @@ def clean_jira_issues(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        # First, sync projects from raw to clean
+        # First, ensure platform project exists
+        context.log.info("Ensuring platform project exists...")
+        platform_project = conn.execute(
+            text("""
+            SELECT id FROM platform.projects
+            LIMIT 1
+        """)
+        ).first()
+
+        if not platform_project:
+            context.log.info("No platform project found, creating default one...")
+            platform_project_id = conn.execute(
+                text("""
+                INSERT INTO platform.projects (name, created_at, updated_at)
+                VALUES ('Default Jira Project', now(), now())
+                RETURNING id
+            """)
+            ).scalar()
+        else:
+            platform_project_id = platform_project[0]
+
+        context.log.info(f"Using platform project: {platform_project_id}")
+
+        # Sync projects from raw to clean
         context.log.info("Syncing projects...")
         projects_synced = conn.execute(
             text("""
@@ -46,21 +69,20 @@ def clean_jira_issues(
                 updated_at
             )
             SELECT
-                pp.id as platform_project_id,
+                :platform_project_id as platform_project_id,
                 r.id::text as external_id,
                 r.key as external_key,
                 r.name,
                 now() as created_at,
                 now() as updated_at
             FROM raw_jira.projects r
-            CROSS JOIN platform.projects pp
             ON CONFLICT (platform_project_id, external_id)
             DO UPDATE SET
                 external_key = EXCLUDED.external_key,
                 name = EXCLUDED.name,
                 updated_at = now()
             RETURNING id
-        """)
+        """).bindparams(platform_project_id=platform_project_id)
         ).fetchall()
         context.log.info(f"Synced {len(projects_synced)} projects")
 
