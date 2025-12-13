@@ -181,8 +181,25 @@ def clean_jira_issues(
 
         # Sync issues
         context.log.info("Syncing issues...")
-        issues_result = conn.execute(
+
+        # Check if optional fields exist in raw_jira.issues
+        columns_result = conn.execute(
             text("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'raw_jira' AND table_name = 'issues'
+            AND column_name IN ('fields__description', 'fields__resolutiondate')
+        """)
+        ).fetchall()
+
+        column_names = {row[0] for row in columns_result}
+        has_description = "fields__description" in column_names
+        has_resolutiondate = "fields__resolutiondate" in column_names
+
+        description_col = "r.fields__description" if has_description else "NULL::text"
+        resolutiondate_col = "r.fields__resolutiondate" if has_resolutiondate else "NULL::text"
+
+        issues_result = conn.execute(
+            text(f"""
             INSERT INTO clean_jira.issues (
                 project_id,
                 external_id,
@@ -202,12 +219,12 @@ def clean_jira_issues(
                 r.id::text as external_id,
                 r.key as external_key,
                 r.fields__summary as summary,
-                r.fields__description as description,
+                {description_col} as description,
                 it.id as type_id,
                 ist.id as status_id,
                 r.fields__created::timestamptz as jira_created_at,
                 r.fields__updated::timestamptz as jira_updated_at,
-                r.fields__resolutiondate::timestamptz as jira_resolved_at,
+                {resolutiondate_col}::timestamptz as jira_resolved_at,
                 now() as db_created_at,
                 now() as db_updated_at
             FROM raw_jira.issues r
