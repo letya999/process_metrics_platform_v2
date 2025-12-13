@@ -18,7 +18,9 @@ metrics_assets = load_assets_from_modules([metrics])
 from pipelines.assets.jira import (
     check_issues_have_required_fields,
     check_no_orphan_issues,
+    check_release_issues_integrity,
     check_sprint_dates_valid,
+    check_sprint_issues_integrity,
 )
 from pipelines.assets.metrics import (
     check_lead_time_no_nulls,
@@ -31,6 +33,8 @@ asset_checks = [
     check_no_orphan_issues,
     check_issues_have_required_fields,
     check_sprint_dates_valid,
+    check_sprint_issues_integrity,
+    check_release_issues_integrity,
     check_lead_time_no_nulls,
     check_lead_time_positive,
     check_velocity_completion_rate_valid,
