@@ -2,6 +2,11 @@
 
 Если автоматизированные пайплайны не работают, вы можете вручную создать необходимые данные через SQL.
 
+docker-compose exec postgres psql -U postgres -d process_metrics_v2 -c "DROP TABLE IF EXISTS alembic_version CASCADE;"
+
+docker-compose exec app alembic -c db/migrations/alembic.ini upgrade head
+
+
 ## Подключение к БД
 
 ```bash
