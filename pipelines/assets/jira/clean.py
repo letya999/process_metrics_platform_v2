@@ -138,7 +138,7 @@ def clean_jira_issues(
                 p.id as project_id,
                 r.fields__status__id as external_id,
                 r.fields__status__name as name,
-                CASE r.fields__status__statuscategory__key
+                CASE r.fields__status__status_category__key
                     WHEN 'new' THEN 'to_do'::clean_jira.issue_status_category
                     WHEN 'indeterminate' THEN 'in_progress'::clean_jira.issue_status_category
                     WHEN 'done' THEN 'done'::clean_jira.issue_status_category
