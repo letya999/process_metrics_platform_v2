@@ -4,6 +4,7 @@ This module exports all Jira-related Dagster assets:
 - raw_jira_data: Load raw data from Jira API using dlt
 - clean_jira_issues: Transform raw issues to clean format
 - clean_jira_sprints: Transform raw sprints to clean format
+- clean_jira_sprint_changelog: Track sprint property changes
 - clean_jira_field_keys: Extract field keys from issues
 - clean_jira_field_values: Extract current field values
 - clean_jira_field_value_changelog: Extract field value change history
@@ -11,6 +12,7 @@ This module exports all Jira-related Dagster assets:
 - clean_jira_sprint_issues_changelog: Extract sprint-issue history
 - clean_jira_releases: Transform raw versions to releases
 - clean_jira_release_issues: Extract release-issue relationships
+- clean_jira_release_issues_changelog: Extract release-issue history
 - clean_jira_boards: Transform board configurations
 - clean_jira_status_changes: Extract status changes from changelogs
 """
@@ -27,7 +29,9 @@ from pipelines.assets.jira.clean import (
     clean_jira_field_values,
     clean_jira_issues,
     clean_jira_release_issues,
+    clean_jira_release_issues_changelog,
     clean_jira_releases,
+    clean_jira_sprint_changelog,
     clean_jira_sprint_issues,
     clean_jira_sprint_issues_changelog,
     clean_jira_sprints,
@@ -41,6 +45,7 @@ __all__ = [
     # Clean assets
     "clean_jira_issues",
     "clean_jira_sprints",
+    "clean_jira_sprint_changelog",
     "clean_jira_field_keys",
     "clean_jira_field_values",
     "clean_jira_field_value_changelog",
@@ -48,6 +53,7 @@ __all__ = [
     "clean_jira_sprint_issues_changelog",
     "clean_jira_releases",
     "clean_jira_release_issues",
+    "clean_jira_release_issues_changelog",
     "clean_jira_boards",
     "clean_jira_status_changes",
     # Asset checks
