@@ -176,7 +176,105 @@ def jira_source(
                     break
                 start_at += 100
 
-    return get_issues, get_projects, get_sprints, get_users
+    @dlt.resource(name="versions", write_disposition="merge", primary_key="id")
+    def get_versions() -> Iterator[dict[str, Any]]:
+        """Fetch project versions (releases) from Jira API.
+
+        For each project: GET /rest/api/3/project/{projectKey}/versions
+        """
+        # First get all projects
+        projects_response = requests.get(
+            f"{base_url}/rest/api/3/project/search",
+            auth=(email, api_token),
+            params={"maxResults": 100},
+        )
+        projects_response.raise_for_status()
+        projects_data = projects_response.json()
+
+        for project in projects_data.get("values", []):
+            project_key = project.get("key")
+            project_id = project.get("id")
+
+            # Filter by project if specified
+            if projects and project_key not in projects:
+                continue
+
+            try:
+                # Get versions for this project
+                versions_response = requests.get(
+                    f"{base_url}/rest/api/3/project/{project_key}/versions",
+                    auth=(email, api_token),
+                )
+                versions_response.raise_for_status()
+                versions = versions_response.json()
+
+                for version in versions:
+                    version["project_id"] = project_id
+                    version["project_key"] = project_key
+                    yield version
+
+            except requests.HTTPError:
+                # Some projects may not have versions enabled
+                continue
+
+    @dlt.resource(
+        name="board_configurations",
+        write_disposition="merge",
+        primary_key="board_id",
+    )
+    def get_board_configurations() -> Iterator[dict[str, Any]]:
+        """Fetch board configurations from Jira Agile API.
+
+        For each board: GET /rest/agile/1.0/board/{boardId}/configuration
+        """
+        # First get all boards
+        boards_response = requests.get(
+            f"{base_url}/rest/agile/1.0/board",
+            auth=(email, api_token),
+            params={"maxResults": 100},
+        )
+        boards_response.raise_for_status()
+        boards_data = boards_response.json()
+
+        for board in boards_data.get("values", []):
+            board_id = board.get("id")
+            board_project = board.get("location", {}).get("projectKey")
+
+            # Filter by project if specified
+            if projects and board_project not in projects:
+                continue
+
+            try:
+                # Get configuration for this board
+                config_response = requests.get(
+                    f"{base_url}/rest/agile/1.0/board/{board_id}/configuration",
+                    auth=(email, api_token),
+                )
+                config_response.raise_for_status()
+                config = config_response.json()
+
+                yield {
+                    "board_id": board_id,
+                    "board_name": board.get("name"),
+                    "board_type": board.get("type"),
+                    "project_key": board_project,
+                    "columns_config": config.get("columnConfig", {}),
+                    "filter_id": config.get("filter", {}).get("id"),
+                    "sub_query": config.get("subQuery", {}).get("query"),
+                }
+
+            except requests.HTTPError:
+                # Some boards may not have configuration accessible
+                continue
+
+    return (
+        get_issues,
+        get_projects,
+        get_sprints,
+        get_users,
+        get_versions,
+        get_board_configurations,
+    )
 
 
 def run_jira_pipeline(
@@ -247,7 +345,7 @@ def run_jira_pipeline(
 
 @asset(
     group_name="jira_raw",
-    description="Load raw Jira issues, projects, sprints, and users from Jira API",
+    description="Load raw Jira data from Jira API (issues, projects, sprints, users, versions, board configs)",
     compute_kind="dlt",
 )
 def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
@@ -258,6 +356,8 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
     - projects
     - sprints
     - users
+    - versions (releases)
+    - board_configurations
 
     Data is loaded into the raw_jira schema as append-only.
     """
