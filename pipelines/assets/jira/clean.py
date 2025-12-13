@@ -42,7 +42,8 @@ def clean_jira_issues(
         # Get or create default Jira integration for syncing
         context.log.info("Getting system user and Jira integration...")
         system_integration = conn.execute(
-            text("""
+            text(
+                """
             SELECT ti.id FROM platform.tool_integrations ti
             JOIN platform.users u ON ti.user_id = u.id
             WHERE u.email = 'system@metrics.local'
@@ -50,7 +51,8 @@ def clean_jira_issues(
                   SELECT id FROM platform.integration_types WHERE name = 'jira_cloud'
               )
             LIMIT 1
-        """)
+        """
+            )
         ).first()
 
         if not system_integration:
@@ -69,7 +71,8 @@ def clean_jira_issues(
         # Sync projects from raw to clean
         context.log.info("Syncing projects...")
         projects_synced = conn.execute(
-            text(f"""
+            text(
+                f"""
             INSERT INTO clean_jira.projects (
                 platform_project_id,
                 external_id,
@@ -92,14 +95,16 @@ def clean_jira_issues(
                 name = EXCLUDED.name,
                 updated_at = now()
             RETURNING id
-        """)
+        """
+            )
         ).fetchall()
         context.log.info(f"Synced {len(projects_synced)} projects")
 
         # Sync issue types
         context.log.info("Syncing issue types...")
         conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.issue_types (
                 project_id,
                 external_id,
@@ -111,9 +116,12 @@ def clean_jira_issues(
                 r.fields__issuetype__id as external_id,
                 r.fields__issuetype__name as name,
                 CASE
-                    WHEN r.fields__issuetype__name ILIKE '%epic%' THEN 'epic'::clean_jira.issue_hierarchy_level
-                    WHEN r.fields__issuetype__name ILIKE '%subtask%' THEN 'subtask'::clean_jira.issue_hierarchy_level
-                    WHEN r.fields__issuetype__name ILIKE '%story%' THEN 'story'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__name ILIKE '%epic%'
+                        THEN 'epic'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__name ILIKE '%subtask%'
+                        THEN 'subtask'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__name ILIKE '%story%'
+                        THEN 'story'::clean_jira.issue_hierarchy_level
                     ELSE 'task'::clean_jira.issue_hierarchy_level
                 END as hierarchy_level
             FROM raw_jira.issues r
@@ -121,13 +129,15 @@ def clean_jira_issues(
             WHERE r.fields__issuetype__id IS NOT NULL
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 name = EXCLUDED.name
-        """)
+        """
+            )
         )
 
         # Sync issue statuses
         context.log.info("Syncing issue statuses...")
         conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.issue_statuses (
                 project_id,
                 external_id,
@@ -139,9 +149,12 @@ def clean_jira_issues(
                 r.fields__status__id as external_id,
                 r.fields__status__name as name,
                 CASE r.fields__status__status_category__key
-                    WHEN 'new' THEN 'to_do'::clean_jira.issue_status_category
-                    WHEN 'indeterminate' THEN 'in_progress'::clean_jira.issue_status_category
-                    WHEN 'done' THEN 'done'::clean_jira.issue_status_category
+                    WHEN 'new'
+                        THEN 'to_do'::clean_jira.issue_status_category
+                    WHEN 'indeterminate'
+                        THEN 'in_progress'::clean_jira.issue_status_category
+                    WHEN 'done'
+                        THEN 'done'::clean_jira.issue_status_category
                     ELSE 'to_do'::clean_jira.issue_status_category
                 END as category
             FROM raw_jira.issues r
@@ -150,13 +163,15 @@ def clean_jira_issues(
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 category = EXCLUDED.category
-        """)
+        """
+            )
         )
 
         # Sync Jira users from raw_jira.users
         context.log.info("Syncing Jira users...")
         conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.jira_users (
                 project_id,
                 external_id,
@@ -176,44 +191,70 @@ def clean_jira_issues(
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 display_name = EXCLUDED.display_name,
                 updated_at = now()
-        """)
+        """
+            )
         )
 
         # Also extract users from issue changelog authors
         context.log.info("Extracting users from changelog...")
-        conn.execute(
-            text("""
-            INSERT INTO clean_jira.jira_users (
-                project_id,
-                external_id,
-                display_name,
-                created_at,
-                updated_at
+        # Check if history table exists first
+        history_table_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira'
+                  AND table_name = 'issues__changelog__histories'
             )
-            SELECT DISTINCT
-                p.id as project_id,
-                (h->>'author')::jsonb->>'accountId' as external_id,
-                COALESCE(
-                    (h->>'author')::jsonb->>'displayName',
-                    (h->>'author')::jsonb->>'accountId'
-                ) as display_name,
-                now() as created_at,
-                now() as updated_at
-            FROM raw_jira.issues r
-            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
-            CROSS JOIN LATERAL jsonb_array_elements(r.changelog->'histories') as h
-            WHERE r.changelog IS NOT NULL
-              AND (h->>'author')::jsonb->>'accountId' IS NOT NULL
-            ON CONFLICT (project_id, external_id) DO UPDATE SET
-                display_name = COALESCE(EXCLUDED.display_name, clean_jira.jira_users.display_name),
-                updated_at = now()
-        """)
-        )
+        """
+            )
+        ).scalar()
+
+        if history_table_exists:
+            conn.execute(
+                text(
+                    """
+                INSERT INTO clean_jira.jira_users (
+                    project_id,
+                    external_id,
+                    display_name,
+                    created_at,
+                    updated_at
+                )
+                SELECT DISTINCT
+                    p.id as project_id,
+                    h.author__account_id as external_id,
+                    COALESCE(
+                        h.author__display_name,
+                        h.author__account_id
+                    ) as display_name,
+                    now() as created_at,
+                    now() as updated_at
+                FROM raw_jira.issues__changelog__histories h
+                JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
+                JOIN clean_jira.projects p
+                    ON r.fields__project__id::text = p.external_id
+                WHERE h.author__account_id IS NOT NULL
+                ON CONFLICT (project_id, external_id) DO UPDATE SET
+                    display_name = COALESCE(
+                        EXCLUDED.display_name,
+                        clean_jira.jira_users.display_name
+                    ),
+                    updated_at = now()
+            """
+                )
+            )
+        else:
+            context.log.warning(
+                "Table raw_jira.issues__changelog__histories not found, "
+                "skipping user extraction from changelog"
+            )
 
         # Extract users from issue assignee/reporter/creator fields
         context.log.info("Extracting users from issue assignee/reporter/creator...")
         conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.jira_users (
                 project_id,
                 external_id,
@@ -247,9 +288,13 @@ def clean_jira_issues(
             ) as user_data
             WHERE user_data.account_id IS NOT NULL
             ON CONFLICT (project_id, external_id) DO UPDATE SET
-                display_name = COALESCE(EXCLUDED.display_name, clean_jira.jira_users.display_name),
+                display_name = COALESCE(
+                    EXCLUDED.display_name,
+                    clean_jira.jira_users.display_name
+                ),
                 updated_at = now()
-        """)
+        """
+            )
         )
 
         # Sync issues
@@ -257,22 +302,32 @@ def clean_jira_issues(
 
         # Check if optional fields exist in raw_jira.issues
         columns_result = conn.execute(
-            text("""
+            text(
+                """
             SELECT column_name FROM information_schema.columns
             WHERE table_schema = 'raw_jira' AND table_name = 'issues'
-            AND column_name IN ('rendered_fields__description', 'fields__resolutiondate')
-        """)
+            AND column_name IN (
+                'rendered_fields__description',
+                'fields__resolutiondate'
+            )
+        """
+            )
         ).fetchall()
 
         column_names = {row[0] for row in columns_result}
         has_description = "rendered_fields__description" in column_names
         has_resolutiondate = "fields__resolutiondate" in column_names
 
-        description_col = "r.rendered_fields__description" if has_description else "NULL::text"
-        resolutiondate_col = "r.fields__resolutiondate" if has_resolutiondate else "NULL::text"
+        description_col = (
+            "r.rendered_fields__description" if has_description else "NULL::text"
+        )
+        resolutiondate_col = (
+            "r.fields__resolutiondate" if has_resolutiondate else "NULL::text"
+        )
 
         issues_result = conn.execute(
-            text(f"""
+            text(
+                f"""
             INSERT INTO clean_jira.issues (
                 project_id,
                 external_id,
@@ -316,7 +371,8 @@ def clean_jira_issues(
                 jira_resolved_at = EXCLUDED.jira_resolved_at,
                 db_updated_at = now()
             RETURNING id
-        """)
+        """
+            )
         )
         issues_synced = issues_result.fetchall()
         context.log.info(f"Synced {len(issues_synced)} issues")
@@ -349,7 +405,8 @@ def clean_jira_sprints(
         # Need to link sprints to projects via board -> project relationship
         # First, get board_id -> project_key mapping from raw_jira.sprints
         result = conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.sprints (
                 project_id,
                 external_id,
@@ -388,7 +445,8 @@ def clean_jira_sprints(
                 complete_date = EXCLUDED.complete_date,
                 updated_at = now()
             RETURNING id
-        """)
+        """
+            )
         )
         sprints_synced = result.fetchall()
         context.log.info(f"Synced {len(sprints_synced)} sprints")
@@ -422,21 +480,24 @@ def clean_jira_field_keys(
 
         # Get all fields__* columns from raw_jira.issues
         columns_result = conn.execute(
-            text("""
+            text(
+                """
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'raw_jira'
               AND table_name = 'issues'
               AND column_name LIKE 'fields__%'
               AND column_name NOT LIKE '%__%__%__%'  -- Skip deeply nested
-        """)
+        """
+            )
         ).fetchall()
 
         field_keys_inserted = 0
 
         # Insert standard and custom field keys
         for (col_name,) in columns_result:
-            # Extract field key from column name (e.g., fields__customfield_10001 -> customfield_10001)
+            # Extract field key from column name
+            # (e.g., fields__customfield_10001 -> customfield_10001)
             field_key = col_name.replace("fields__", "")
             is_custom = field_key.startswith("customfield_")
 
@@ -447,7 +508,8 @@ def clean_jira_field_keys(
                 field_name = field_key.replace("_", " ").title()
 
             conn.execute(
-                text("""
+                text(
+                    """
                 INSERT INTO clean_jira.field_keys (
                     project_id,
                     external_key,
@@ -464,8 +526,13 @@ def clean_jira_field_keys(
                 FROM clean_jira.projects p
                 ON CONFLICT (project_id, external_key) DO UPDATE SET
                     name = EXCLUDED.name
-            """),
-                {"field_key": field_key, "field_name": field_name, "is_custom": is_custom},
+            """
+                ),
+                {
+                    "field_key": field_key,
+                    "field_name": field_name,
+                    "is_custom": is_custom,
+                },
             )
             field_keys_inserted += 1
 
@@ -473,24 +540,28 @@ def clean_jira_field_keys(
 
         # Try to get human-readable names from raw_jira.fields if it exists
         fields_table_exists = conn.execute(
-            text("""
+            text(
+                """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'raw_jira' AND table_name = 'fields'
             )
-        """)
+        """
+            )
         ).scalar()
 
         if fields_table_exists:
             context.log.info("Updating field names from raw_jira.fields metadata...")
             conn.execute(
-                text("""
+                text(
+                    """
                 UPDATE clean_jira.field_keys fk
                 SET name = f.name
                 FROM raw_jira.fields f
                 WHERE fk.external_key = f.id
                   AND f.name IS NOT NULL
-            """)
+            """
+                )
             )
 
         conn.commit()
@@ -520,14 +591,16 @@ def clean_jira_field_values(
 
         # Get all custom field columns
         columns_result = conn.execute(
-            text("""
+            text(
+                """
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'raw_jira'
               AND table_name = 'issues'
               AND column_name LIKE 'fields__customfield_%'
               AND column_name NOT LIKE '%__%__%__%'
-        """)
+        """
+            )
         ).fetchall()
 
         for (col_name,) in columns_result:
@@ -535,7 +608,8 @@ def clean_jira_field_values(
 
             try:
                 result = conn.execute(
-                    text(f"""
+                    text(
+                        f"""
                     INSERT INTO clean_jira.field_values (
                         issue_id,
                         field_key_id,
@@ -548,7 +622,8 @@ def clean_jira_field_values(
                         fk.id as field_key_id,
                         r.{col_name}::text as value,
                         CASE
-                            WHEN r.{col_name}::text ~ '^[{{\\[]' THEN r.{col_name}::text::jsonb
+                            WHEN r.{col_name}::text ~ '^[{{\\[]'
+                                THEN r.{col_name}::text::jsonb
                             ELSE NULL
                         END as json_value,
                         now() as updated_at
@@ -562,7 +637,8 @@ def clean_jira_field_values(
                         json_value = EXCLUDED.json_value,
                         updated_at = now()
                     RETURNING id
-                """),
+                """
+                    ),
                     {"field_key": field_key},
                 )
                 count = len(result.fetchall())
@@ -599,24 +675,26 @@ def clean_jira_field_value_changelog(
     with engine.connect() as conn:
         context.log.info("Extracting field value changelog...")
 
-        # Check if changelog column exists
+        # Check if changelog table exists
         changelog_exists = conn.execute(
-            text("""
+            text(
+                """
             SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
+                SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues'
-                  AND column_name = 'changelog'
+                  AND table_name = 'issues__changelog__histories__items'
             )
-        """)
+        """
+            )
         ).scalar()
 
         if not changelog_exists:
-            context.log.warning("No changelog column found in raw_jira.issues")
-            return {"status": "skipped", "reason": "no_changelog_column"}
+            context.log.warning("No changelog items table found in raw_jira")
+            return {"status": "skipped", "reason": "no_changelog_items_table"}
 
         result = conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.field_value_changelog (
                 issue_id,
                 field_key_id,
@@ -628,27 +706,30 @@ def clean_jira_field_value_changelog(
             SELECT
                 i.id as issue_id,
                 fk.id as field_key_id,
-                to_jsonb(item->>'fromString') as old_value,
-                to_jsonb(item->>'toString') as new_value,
+                to_jsonb(item.from_string) as old_value,
+                to_jsonb(item.to_string) as new_value,
                 u.id as changed_by_id,
-                (h->>'created')::timestamptz as changed_at
-            FROM raw_jira.issues r
+                h.created::timestamptz as changed_at
+            FROM raw_jira.issues__changelog__histories__items item
+            JOIN raw_jira.issues__changelog__histories h
+                ON item._dlt_parent_id = h._dlt_id
+            JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
             JOIN clean_jira.issues i ON i.external_id = r.id::text
-            CROSS JOIN LATERAL jsonb_array_elements(r.changelog->'histories') as h
-            CROSS JOIN LATERAL jsonb_array_elements(h->'items') as item
             JOIN clean_jira.field_keys fk ON fk.project_id = i.project_id
                 AND (
-                    fk.external_key = item->>'fieldId'
-                    OR fk.external_key = LOWER(REPLACE(item->>'field', ' ', '_'))
+                    fk.external_key = item.field_id
+                    OR fk.external_key = LOWER(REPLACE(item.field, ' ', '_'))
                 )
             LEFT JOIN clean_jira.jira_users u ON u.project_id = i.project_id
-                AND u.external_id = (h->'author'->>'accountId')
-            WHERE r.changelog IS NOT NULL
-              AND (item->>'fieldId' LIKE 'customfield_%'
-                   OR item->>'field' NOT IN ('Sprint', 'Fix Version/s', 'fixVersions', 'Fix Version', 'Status'))
+                AND u.external_id = h.author__account_id
+            WHERE (item.field_id LIKE 'customfield_%'
+                   OR item.field NOT IN (
+                       'Sprint', 'Fix Version/s', 'fixVersions', 'Fix Version', 'Status'
+                   ))
             ON CONFLICT (issue_id, field_key_id, changed_at) DO NOTHING
             RETURNING id
-        """)
+        """
+            )
         )
         changes_count = len(result.fetchall())
         context.log.info(f"Inserted {changes_count} field value changelog entries")
@@ -689,37 +770,39 @@ def clean_jira_sprint_issues(
 
         # Check if changelog exists
         changelog_exists = conn.execute(
-            text("""
+            text(
+                """
             SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
+                SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues'
-                  AND column_name = 'changelog'
+                  AND table_name = 'issues__changelog__histories__items'
             )
-        """)
+        """
+            )
         ).scalar()
 
         if not changelog_exists:
-            context.log.warning("No changelog column found")
-            return {"status": "skipped", "reason": "no_changelog_column"}
+            context.log.warning("No changelog items table found in raw_jira")
+            return {"status": "skipped", "reason": "no_changelog_items_table"}
 
         # Build sprint_issues from changelog final state
         result = conn.execute(
-            text("""
+            text(
+                """
             WITH changelog_events AS (
                 -- Extract Sprint changes from changelog
                 SELECT
                     r.id::text as issue_external_id,
                     r.fields__project__id::text as project_external_id,
-                    (h->>'created')::timestamptz as changed_at,
-                    item->>'to' as to_value,
-                    item->>'from' as from_value,
-                    (h->'author'->>'accountId') as author_id
-                FROM raw_jira.issues r
-                CROSS JOIN LATERAL jsonb_array_elements(r.changelog->'histories') as h
-                CROSS JOIN LATERAL jsonb_array_elements(h->'items') as item
-                WHERE r.changelog IS NOT NULL
-                  AND item->>'field' = 'Sprint'
+                    h.created::timestamptz as changed_at,
+                    item."to" as to_value,
+                    item."from" as from_value,
+                    h.author__account_id as author_id
+                FROM raw_jira.issues__changelog__histories__items item
+                JOIN raw_jira.issues__changelog__histories h
+                    ON item._dlt_parent_id = h._dlt_id
+                JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
+                WHERE item.field = 'Sprint'
             ),
             -- Split comma-separated sprint IDs for 'added' actions
             added_events AS (
@@ -731,7 +814,9 @@ def clean_jira_sprint_issues(
                     'added' as action,
                     author_id
                 FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(COALESCE(to_value, ''), '\\s*,\\s*') as sprint_id
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(to_value, ''), '\\s*,\\s*'
+                ) as sprint_id
                 WHERE to_value IS NOT NULL AND to_value != ''
             ),
             -- Split comma-separated sprint IDs for 'removed' actions
@@ -744,7 +829,9 @@ def clean_jira_sprint_issues(
                     'removed' as action,
                     author_id
                 FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(COALESCE(from_value, ''), '\\s*,\\s*') as sprint_id
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(from_value, ''), '\\s*,\\s*'
+                ) as sprint_id
                 WHERE from_value IS NOT NULL AND from_value != ''
             ),
             -- Union all events
@@ -782,7 +869,8 @@ def clean_jira_sprint_issues(
             ON CONFLICT (sprint_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
             RETURNING id
-        """)
+        """
+            )
         )
         sprint_issues_count = len(result.fetchall())
         context.log.info(f"Inserted {sprint_issues_count} sprint-issue relationships")
@@ -815,19 +903,20 @@ def clean_jira_sprint_issues_changelog(
         context.log.info("Extracting sprint-issue changelog...")
 
         result = conn.execute(
-            text("""
+            text(
+                """
             WITH changelog_events AS (
                 SELECT
                     r.id::text as issue_external_id,
-                    (h->>'created')::timestamptz as changed_at,
-                    item->>'to' as to_value,
-                    item->>'from' as from_value,
-                    (h->'author'->>'accountId') as author_id
-                FROM raw_jira.issues r
-                CROSS JOIN LATERAL jsonb_array_elements(r.changelog->'histories') as h
-                CROSS JOIN LATERAL jsonb_array_elements(h->'items') as item
-                WHERE r.changelog IS NOT NULL
-                  AND item->>'field' = 'Sprint'
+                    h.created::timestamptz as changed_at,
+                    item."to" as to_value,
+                    item."from" as from_value,
+                    h.author__account_id as author_id
+                FROM raw_jira.issues__changelog__histories__items item
+                JOIN raw_jira.issues__changelog__histories h
+                    ON item._dlt_parent_id = h._dlt_id
+                JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
+                WHERE item.field = 'Sprint'
             ),
             added_events AS (
                 SELECT
@@ -837,8 +926,12 @@ def clean_jira_sprint_issues_changelog(
                     'added' as action,
                     author_id
                 FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(COALESCE(to_value, ''), '\\s*,\\s*') as sprint_id
-                WHERE to_value IS NOT NULL AND to_value != '' AND sprint_id ~ '^[0-9]+$'
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(to_value, ''), '\\s*,\\s*'
+                ) as sprint_id
+                WHERE to_value IS NOT NULL
+                  AND to_value != ''
+                  AND sprint_id ~ '^[0-9]+$'
             ),
             removed_events AS (
                 SELECT
@@ -848,8 +941,12 @@ def clean_jira_sprint_issues_changelog(
                     'removed' as action,
                     author_id
                 FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(COALESCE(from_value, ''), '\\s*,\\s*') as sprint_id
-                WHERE from_value IS NOT NULL AND from_value != '' AND sprint_id ~ '^[0-9]+$'
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(from_value, ''), '\\s*,\\s*'
+                ) as sprint_id
+                WHERE from_value IS NOT NULL
+                  AND from_value != ''
+                  AND sprint_id ~ '^[0-9]+$'
             ),
             all_events AS (
                 SELECT * FROM added_events
@@ -877,7 +974,8 @@ def clean_jira_sprint_issues_changelog(
                 AND u.external_id = ae.author_id
             ON CONFLICT (sprint_id, issue_id, action, changed_at) DO NOTHING
             RETURNING id
-        """)
+        """
+            )
         )
         changelog_count = len(result.fetchall())
         context.log.info(f"Inserted {changelog_count} sprint-issue changelog entries")
@@ -908,12 +1006,14 @@ def clean_jira_releases(
 
         # Check if versions table exists
         versions_exists = conn.execute(
-            text("""
+            text(
+                """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'raw_jira' AND table_name = 'versions'
             )
-        """)
+        """
+            )
         ).scalar()
 
         if not versions_exists:
@@ -921,7 +1021,8 @@ def clean_jira_releases(
             return {"status": "skipped", "reason": "no_versions_table"}
 
         result = conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.releases (
                 project_id,
                 external_id,
@@ -945,7 +1046,7 @@ def clean_jira_releases(
                     WHEN v.archived = true THEN 'archived'::clean_jira.release_status
                     ELSE 'unreleased'::clean_jira.release_status
                 END as status,
-                v.start_date::date as start_date,
+                NULL::date as start_date,
                 v.release_date::date as release_date,
                 COALESCE(v.archived, false) as is_archived,
                 COALESCE(v.released, false) as is_released,
@@ -964,7 +1065,8 @@ def clean_jira_releases(
                 is_released = EXCLUDED.is_released,
                 updated_at = now()
             RETURNING id
-        """)
+        """
+            ),
         )
         releases_count = len(result.fetchall())
         context.log.info(f"Synced {releases_count} releases")
@@ -1006,19 +1108,20 @@ def clean_jira_release_issues(
             return {"status": "skipped", "reason": "no_releases"}
 
         result = conn.execute(
-            text("""
+            text(
+                """
             WITH changelog_events AS (
                 SELECT
                     r.id::text as issue_external_id,
-                    (h->>'created')::timestamptz as changed_at,
-                    item->>'to' as to_value,
-                    item->>'from' as from_value,
-                    (h->'author'->>'accountId') as author_id
-                FROM raw_jira.issues r
-                CROSS JOIN LATERAL jsonb_array_elements(r.changelog->'histories') as h
-                CROSS JOIN LATERAL jsonb_array_elements(h->'items') as item
-                WHERE r.changelog IS NOT NULL
-                  AND item->>'field' IN ('Fix Version/s', 'fixVersions', 'Fix Version')
+                    h.created::timestamptz as changed_at,
+                    item."to" as to_value,
+                    item."from" as from_value,
+                    h.author__account_id as author_id
+                FROM raw_jira.issues__changelog__histories__items item
+                JOIN raw_jira.issues__changelog__histories h
+                    ON item._dlt_parent_id = h._dlt_id
+                JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
+                WHERE item.field IN ('Fix Version/s', 'fixVersions', 'Fix Version')
             ),
             added_events AS (
                 SELECT
@@ -1028,7 +1131,9 @@ def clean_jira_release_issues(
                     'added' as action,
                     author_id
                 FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(COALESCE(to_value, ''), '\\s*,\\s*') as version_id
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(to_value, ''), '\\s*,\\s*'
+                ) as version_id
                 WHERE to_value IS NOT NULL AND to_value != ''
             ),
             removed_events AS (
@@ -1039,7 +1144,9 @@ def clean_jira_release_issues(
                     'removed' as action,
                     author_id
                 FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(COALESCE(from_value, ''), '\\s*,\\s*') as version_id
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(from_value, ''), '\\s*,\\s*'
+                ) as version_id
                 WHERE from_value IS NOT NULL AND from_value != ''
             ),
             all_events AS (
@@ -1074,7 +1181,8 @@ def clean_jira_release_issues(
             ON CONFLICT (release_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
             RETURNING id
-        """)
+        """
+            )
         )
         release_issues_count = len(result.fetchall())
         context.log.info(f"Inserted {release_issues_count} release-issue relationships")
@@ -1116,19 +1224,20 @@ def clean_jira_release_issues_changelog(
             return {"status": "skipped", "reason": "no_releases"}
 
         result = conn.execute(
-            text("""
+            text(
+                """
             WITH changelog_events AS (
                 SELECT
                     r.id::text as issue_external_id,
-                    (h->>'created')::timestamptz as changed_at,
-                    item->>'to' as to_value,
-                    item->>'from' as from_value,
-                    (h->'author'->>'accountId') as author_id
-                FROM raw_jira.issues r
-                CROSS JOIN LATERAL jsonb_array_elements(r.changelog->'histories') as h
-                CROSS JOIN LATERAL jsonb_array_elements(h->'items') as item
-                WHERE r.changelog IS NOT NULL
-                  AND item->>'field' IN ('Fix Version/s', 'fixVersions', 'Fix Version')
+                    h.created::timestamptz as changed_at,
+                    item."to" as to_value,
+                    item."from" as from_value,
+                    h.author__account_id as author_id
+                FROM raw_jira.issues__changelog__histories__items item
+                JOIN raw_jira.issues__changelog__histories h
+                    ON item._dlt_parent_id = h._dlt_id
+                JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
+                WHERE item.field IN ('Fix Version/s', 'fixVersions', 'Fix Version')
             ),
             added_events AS (
                 SELECT
@@ -1138,8 +1247,12 @@ def clean_jira_release_issues_changelog(
                     'added' as action,
                     author_id
                 FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(COALESCE(to_value, ''), '\\s*,\\s*') as version_id
-                WHERE to_value IS NOT NULL AND to_value != '' AND version_id ~ '^[0-9]+$'
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(to_value, ''), '\\s*,\\s*'
+                ) as version_id
+                WHERE to_value IS NOT NULL
+                  AND to_value != ''
+                  AND version_id ~ '^[0-9]+$'
             ),
             removed_events AS (
                 SELECT
@@ -1149,8 +1262,12 @@ def clean_jira_release_issues_changelog(
                     'removed' as action,
                     author_id
                 FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(COALESCE(from_value, ''), '\\s*,\\s*') as version_id
-                WHERE from_value IS NOT NULL AND from_value != '' AND version_id ~ '^[0-9]+$'
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(from_value, ''), '\\s*,\\s*'
+                ) as version_id
+                WHERE from_value IS NOT NULL
+                  AND from_value != ''
+                  AND version_id ~ '^[0-9]+$'
             ),
             all_events AS (
                 SELECT * FROM added_events
@@ -1178,7 +1295,8 @@ def clean_jira_release_issues_changelog(
                 AND u.external_id = ae.author_id
             ON CONFLICT (release_id, issue_id, action, changed_at) DO NOTHING
             RETURNING id
-        """)
+        """
+            )
         )
         changelog_count = len(result.fetchall())
         context.log.info(f"Inserted {changelog_count} release-issue changelog entries")
@@ -1215,7 +1333,8 @@ def clean_jira_sprint_changelog(
         # For now, we track sprint state changes from raw sprints
         # A more complete implementation would require incremental tracking
         result = conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.sprint_changelog (
                 sprint_id,
                 field_name,
@@ -1235,9 +1354,9 @@ def clean_jira_sprint_changelog(
                   SELECT 1 FROM clean_jira.sprint_changelog sc
                   WHERE sc.sprint_id = s.id AND sc.field_name = 'status'
               )
-            ON CONFLICT (sprint_id, field_name, changed_at) DO NOTHING
             RETURNING id
-        """)
+        """
+            )
         )
         changelog_count = len(result.fetchall())
         context.log.info(f"Inserted {changelog_count} sprint changelog entries")
@@ -1260,7 +1379,10 @@ def clean_jira_boards(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Transform raw Jira board configurations to clean_jira.boards, board_columns, and board_column_statuses."""
+    """Transform raw Jira board configurations to clean_jira.
+
+    Target tables: boards, board_columns, and board_column_statuses.
+    """
     engine = database.get_engine()
 
     with engine.connect() as conn:
@@ -1268,12 +1390,14 @@ def clean_jira_boards(
 
         # Check if board_configurations table exists
         boards_exists = conn.execute(
-            text("""
+            text(
+                """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'raw_jira' AND table_name = 'board_configurations'
             )
-        """)
+        """
+            )
         ).scalar()
 
         if not boards_exists:
@@ -1282,7 +1406,8 @@ def clean_jira_boards(
 
         # Sync boards
         boards_result = conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.boards (
                 project_id,
                 external_id,
@@ -1300,7 +1425,8 @@ def clean_jira_boards(
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 name = EXCLUDED.name
             RETURNING id
-        """)
+        """
+            )
         )
         boards_count = len(boards_result.fetchall())
         context.log.info(f"Synced {boards_count} boards")
@@ -1308,7 +1434,8 @@ def clean_jira_boards(
         # Sync board columns from columns_config JSON
         context.log.info("Syncing board columns...")
         columns_result = conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.board_columns (
                 board_id,
                 name,
@@ -1316,19 +1443,19 @@ def clean_jira_boards(
             )
             SELECT
                 b.id as board_id,
-                col->>'name' as name,
-                (col_idx.ordinality)::int as position
-            FROM raw_jira.board_configurations bc
+                col.name as name,
+                col._dlt_list_idx::int as position
+            FROM raw_jira.board_configurations__columns_config__columns col
+            JOIN raw_jira.board_configurations bc ON col._dlt_parent_id = bc._dlt_id
             JOIN clean_jira.projects p ON p.external_key = bc.project_key
-            JOIN clean_jira.boards b ON b.project_id = p.id AND b.external_id = bc.board_id::text
-            CROSS JOIN LATERAL jsonb_array_elements(bc.columns_config->'columns')
-                WITH ORDINALITY AS col_idx(col, ordinality)
-            WHERE bc.columns_config IS NOT NULL
-              AND jsonb_typeof(bc.columns_config->'columns') = 'array'
+            JOIN clean_jira.boards b
+                ON b.project_id = p.id AND b.external_id = bc.board_id::text
+            WHERE col.name IS NOT NULL
             ON CONFLICT (board_id, name) DO UPDATE SET
                 position = EXCLUDED.position
             RETURNING id
-        """)
+        """
+            )
         )
         columns_count = len(columns_result.fetchall())
         context.log.info(f"Synced {columns_count} board columns")
@@ -1336,7 +1463,8 @@ def clean_jira_boards(
         # Sync board column statuses
         context.log.info("Syncing board column statuses...")
         statuses_result = conn.execute(
-            text("""
+            text(
+                """
             INSERT INTO clean_jira.board_column_statuses (
                 board_column_id,
                 status_id
@@ -1344,21 +1472,22 @@ def clean_jira_boards(
             SELECT
                 bc_col.id as board_column_id,
                 ist.id as status_id
-            FROM raw_jira.board_configurations cfg
-            JOIN clean_jira.projects p ON p.external_key = cfg.project_key
-            JOIN clean_jira.boards b ON b.project_id = p.id AND b.external_id = cfg.board_id::text
-            CROSS JOIN LATERAL jsonb_array_elements(cfg.columns_config->'columns')
-                WITH ORDINALITY AS col_data(col, col_ord)
+            FROM raw_jira.board_configurations__columns_config__columns__statuses st
+            JOIN raw_jira.board_configurations__columns_config__columns col
+                ON st._dlt_parent_id = col._dlt_id
+            JOIN raw_jira.board_configurations bc ON col._dlt_parent_id = bc._dlt_id
+            JOIN clean_jira.projects p ON p.external_key = bc.project_key
+            JOIN clean_jira.boards b
+                ON b.project_id = p.id AND b.external_id = bc.board_id::text
             JOIN clean_jira.board_columns bc_col ON bc_col.board_id = b.id
-                AND bc_col.name = col_data.col->>'name'
-            CROSS JOIN LATERAL jsonb_array_elements(col_data.col->'statuses') AS status_data(status)
+                AND bc_col.name = col.name
             JOIN clean_jira.issue_statuses ist ON ist.project_id = p.id
-                AND ist.external_id = status_data.status->>'id'
-            WHERE cfg.columns_config IS NOT NULL
-              AND jsonb_typeof(cfg.columns_config->'columns') = 'array'
+                AND ist.external_id = st.id
+            WHERE st.id IS NOT NULL
             ON CONFLICT (board_column_id, status_id) DO NOTHING
             RETURNING id
-        """)
+        """
+            )
         )
         statuses_count = len(statuses_result.fetchall())
         context.log.info(f"Synced {statuses_count} board column statuses")
@@ -1397,11 +1526,13 @@ def clean_jira_status_changes(
         # For now, we'll create a placeholder that can be extended
         # when changelog parsing is fully implemented
         conn.execute(
-            text("""
+            text(
+                """
             -- Placeholder: Status changes extraction would go here
             -- This requires parsing the changelog JSON array from raw issues
             SELECT 1
-        """)
+        """
+            )
         )
 
         conn.commit()
@@ -1425,13 +1556,15 @@ def check_no_orphan_issues(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM clean_jira.issues i
             WHERE NOT EXISTS (
                 SELECT 1 FROM clean_jira.projects p
                 WHERE p.id = i.project_id
             )
-        """)
+        """
+            )
         )
         orphan_count = result.scalar() or 0
 
@@ -1451,13 +1584,15 @@ def check_issues_have_required_fields(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM clean_jira.issues
             WHERE external_key IS NULL
                OR summary IS NULL
                OR type_id IS NULL
                OR status_id IS NULL
-        """)
+        """
+            )
         )
         invalid_count = result.scalar() or 0
 
@@ -1477,12 +1612,14 @@ def check_sprint_dates_valid(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM clean_jira.sprints
             WHERE start_date IS NOT NULL
               AND end_date IS NOT NULL
               AND start_date > end_date
-        """)
+        """
+            )
         )
         invalid_count = result.scalar() or 0
 
@@ -1502,11 +1639,17 @@ def check_sprint_issues_integrity(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM clean_jira.sprint_issues si
-            WHERE NOT EXISTS (SELECT 1 FROM clean_jira.sprints s WHERE s.id = si.sprint_id)
-               OR NOT EXISTS (SELECT 1 FROM clean_jira.issues i WHERE i.id = si.issue_id)
-        """)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM clean_jira.sprints s WHERE s.id = si.sprint_id
+            )
+               OR NOT EXISTS (
+                   SELECT 1 FROM clean_jira.issues i WHERE i.id = si.issue_id
+               )
+        """
+            )
         )
         invalid_count = result.scalar() or 0
 
@@ -1526,11 +1669,17 @@ def check_release_issues_integrity(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM clean_jira.release_issues ri
-            WHERE NOT EXISTS (SELECT 1 FROM clean_jira.releases r WHERE r.id = ri.release_id)
-               OR NOT EXISTS (SELECT 1 FROM clean_jira.issues i WHERE i.id = ri.issue_id)
-        """)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM clean_jira.releases r WHERE r.id = ri.release_id
+            )
+               OR NOT EXISTS (
+                   SELECT 1 FROM clean_jira.issues i WHERE i.id = ri.issue_id
+               )
+        """
+            )
         )
         invalid_count = result.scalar() or 0
 
