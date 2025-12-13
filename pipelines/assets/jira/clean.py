@@ -183,19 +183,22 @@ def clean_jira_issues(
         context.log.info("Syncing issues...")
 
         # Check if optional fields exist in raw_jira.issues
+        # Note: Jira API returns description as:
+        # - rendered_fields__description: HTML rendered version (preferred for display)
+        # - fields__description__type/version: ADF (Atlassian Document Format) structured format
         columns_result = conn.execute(
             text("""
             SELECT column_name FROM information_schema.columns
             WHERE table_schema = 'raw_jira' AND table_name = 'issues'
-            AND column_name IN ('fields__description', 'fields__resolutiondate')
+            AND column_name IN ('rendered_fields__description', 'fields__resolutiondate')
         """)
         ).fetchall()
 
         column_names = {row[0] for row in columns_result}
-        has_description = "fields__description" in column_names
+        has_description = "rendered_fields__description" in column_names
         has_resolutiondate = "fields__resolutiondate" in column_names
 
-        description_col = "r.fields__description" if has_description else "NULL::text"
+        description_col = "r.rendered_fields__description" if has_description else "NULL::text"
         resolutiondate_col = "r.fields__resolutiondate" if has_resolutiondate else "NULL::text"
 
         issues_result = conn.execute(
