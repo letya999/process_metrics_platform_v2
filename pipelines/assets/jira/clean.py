@@ -478,7 +478,8 @@ def clean_jira_field_keys(
     with engine.connect() as conn:
         context.log.info("Extracting field keys from issues...")
 
-        # Get all fields__* columns from raw_jira.issues
+        # Get all columns from raw_jira.issues
+        # We fetch all and filter in python to be safer and debuggable
         columns_result = conn.execute(
             text(
                 """
@@ -486,19 +487,57 @@ def clean_jira_field_keys(
             FROM information_schema.columns
             WHERE table_schema = 'raw_jira'
               AND table_name = 'issues'
-              AND column_name LIKE 'fields__%'
-              AND column_name NOT LIKE '%__%__%__%'  -- Skip deeply nested
         """
             )
         ).fetchall()
 
+        all_columns = [row[0] for row in columns_result]
+        context.log.info(f"Found {len(all_columns)} columns in raw_jira.issues")
+
+        # Debug log some sample columns
+        if all_columns:
+            context.log.info(f"Sample columns: {all_columns[:10]}")
+        else:
+            context.log.warning(
+                "No columns found in raw_jira.issues! Checking casing..."
+            )
+            # Try case-insensitive search
+            columns_result_ci = conn.execute(
+                text(
+                    """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'raw_jira'
+                  AND LOWER(table_name) = 'issues'
+            """
+                )
+            ).fetchall()
+            all_columns = [row[0] for row in columns_result_ci]
+            context.log.info(
+                f"Found {len(all_columns)} columns using case-insensitive search"
+            )
+
         field_keys_inserted = 0
 
         # Insert standard and custom field keys
-        for (col_name,) in columns_result:
+        for col_name in all_columns:
+            if not col_name.startswith("fields__"):
+                continue
+
+            # Skip deeply nested fields (equivalent to NOT LIKE '%__%__%__%')
+            # We want to keep fields__summary, fields__customfield_123,
+            # fields__status__name
+            # But avoid deeply nested json structures that might have been flattened
+            if col_name.count("__") >= 3:
+                continue
+
+            # Skip metadata fields that are usually not useful for analytics
+            if col_name.endswith("__self"):
+                continue
+
             # Extract field key from column name
             # (e.g., fields__customfield_10001 -> customfield_10001)
-            field_key = col_name.replace("fields__", "")
+            field_key = col_name.replace("fields__", "", 1)
             is_custom = field_key.startswith("customfield_")
 
             # Derive human-readable name from key
@@ -552,6 +591,7 @@ def clean_jira_field_keys(
 
         if fields_table_exists:
             context.log.info("Updating field names from raw_jira.fields metadata...")
+            # Update names matching exact ID
             conn.execute(
                 text(
                     """
@@ -560,6 +600,22 @@ def clean_jira_field_keys(
                 FROM raw_jira.fields f
                 WHERE fk.external_key = f.id
                   AND f.name IS NOT NULL
+            """
+                )
+            )
+            # Update names for sub-fields (e.g. customfield_10001__value)
+            # We try to match the prefix (customfield_10001) with the field ID
+            conn.execute(
+                text(
+                    """
+                UPDATE clean_jira.field_keys fk
+                SET name = f.name || ' (' || SUBSTRING(
+                    fk.external_key FROM LENGTH(f.id) + 3
+                ) || ')'
+                FROM raw_jira.fields f
+                WHERE fk.external_key LIKE f.id || '__%'
+                  AND f.name IS NOT NULL
+                  AND fk.name = fk.external_key -- Only update if still using raw key
             """
                 )
             )
@@ -589,7 +645,25 @@ def clean_jira_field_values(
     with engine.connect() as conn:
         context.log.info("Extracting field values from issues...")
 
-        # Get all custom field columns
+        # Create safe_jsonb function to handle invalid JSON gracefully
+        conn.execute(
+            text(
+                """
+            CREATE OR REPLACE FUNCTION pg_temp.safe_jsonb(val text)
+            RETURNS jsonb AS $$
+            BEGIN
+                BEGIN
+                    RETURN val::jsonb;
+                EXCEPTION WHEN OTHERS THEN
+                    RETURN NULL;
+                END;
+            END;
+            $$ LANGUAGE plpgsql;
+        """
+            )
+        )
+
+        # Get all columns first
         columns_result = conn.execute(
             text(
                 """
@@ -597,54 +671,78 @@ def clean_jira_field_values(
             FROM information_schema.columns
             WHERE table_schema = 'raw_jira'
               AND table_name = 'issues'
-              AND column_name LIKE 'fields__customfield_%'
-              AND column_name NOT LIKE '%__%__%__%'
         """
             )
         ).fetchall()
 
-        for (col_name,) in columns_result:
-            field_key = col_name.replace("fields__", "")
+        all_columns = [row[0] for row in columns_result]
 
-            try:
-                result = conn.execute(
-                    text(
-                        f"""
-                    INSERT INTO clean_jira.field_values (
-                        issue_id,
-                        field_key_id,
-                        value,
-                        json_value,
-                        updated_at
-                    )
-                    SELECT
-                        i.id as issue_id,
-                        fk.id as field_key_id,
-                        r.{col_name}::text as value,
-                        CASE
-                            WHEN r.{col_name}::text ~ '^[{{\\[]'
-                                THEN r.{col_name}::text::jsonb
-                            ELSE NULL
-                        END as json_value,
-                        now() as updated_at
-                    FROM raw_jira.issues r
-                    JOIN clean_jira.issues i ON i.external_id = r.id::text
-                    JOIN clean_jira.field_keys fk ON fk.project_id = i.project_id
-                        AND fk.external_key = :field_key
-                    WHERE r.{col_name} IS NOT NULL
-                    ON CONFLICT (issue_id, field_key_id) DO UPDATE SET
-                        value = EXCLUDED.value,
-                        json_value = EXCLUDED.json_value,
-                        updated_at = now()
-                    RETURNING id
-                """
-                    ),
-                    {"field_key": field_key},
+        # Get known Rank fields (garbage) to exclude from JSON parsing
+        # We can identify them by checking raw_jira.fields if available,
+        # or just heuristic
+        # For now, let's treat anything that looks like "0|..." as garbage/text-only
+
+        for col_name in all_columns:
+            # We want fields__customfield_%
+            if not col_name.startswith("fields__customfield_"):
+                continue
+
+            # Skip deeply nested (same as field_keys)
+            if col_name.count("__") >= 3:
+                continue
+
+            field_key = col_name.replace("fields__", "", 1)
+
+            # Insert with safe logic
+            # We explicitly check for "Rank" pattern in value to avoid trying to
+            # parse it as JSON
+            # simpler: just use safe_jsonb which returns NULL if it fails
+
+            result = conn.execute(
+                text(
+                    f"""
+                INSERT INTO clean_jira.field_values (
+                    issue_id,
+                    field_key_id,
+                    value,
+                    json_value,
+                    updated_at
                 )
-                count = len(result.fetchall())
-                field_values_inserted += count
-            except Exception as e:
-                context.log.warning(f"Failed to extract values for {field_key}: {e}")
+                SELECT
+                    i.id as issue_id,
+                    fk.id as field_key_id,
+                    r."{col_name}"::text as value,
+                    CASE
+                        -- Heuristic for Rank fields: starts with "0|" or contains "|i"
+                        -- We assume these are NEVER valid JSON and skip parsing
+                        -- to save time/noise
+                        WHEN r."{col_name}"::text LIKE '0|%'
+                            OR r."{col_name}"::text LIKE '%|i%'
+                            THEN NULL
+                        -- Heuristic for weird development fields like "pullrequest"
+                        -- that start with {{ but aren't JSON
+                        WHEN r."{col_name}"::text LIKE '{{pullrequest%'
+                            THEN NULL
+                        -- Otherwise try safe parsing
+                        ELSE pg_temp.safe_jsonb(r."{col_name}"::text)
+                    END as json_value,
+                    now() as updated_at
+                FROM raw_jira.issues r
+                JOIN clean_jira.issues i ON i.external_id = r.id::text
+                JOIN clean_jira.field_keys fk ON fk.project_id = i.project_id
+                    AND fk.external_key = :field_key
+                WHERE r."{col_name}" IS NOT NULL
+                ON CONFLICT (issue_id, field_key_id) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    json_value = EXCLUDED.json_value,
+                    updated_at = now()
+                RETURNING id
+            """
+                ),
+                {"field_key": field_key},
+            )
+            count = len(result.fetchall())
+            field_values_inserted += count
 
         context.log.info(f"Inserted {field_values_inserted} field values")
         conn.commit()
@@ -692,6 +790,27 @@ def clean_jira_field_value_changelog(
             context.log.warning("No changelog items table found in raw_jira")
             return {"status": "skipped", "reason": "no_changelog_items_table"}
 
+        # Use a temporary function to safely cast to JSONB
+        # If text is valid JSON, returns JSONB.
+        # If text is invalid JSON (e.g. truncated or bad format),
+        # returns text as JSONB string.
+        conn.execute(
+            text(
+                """
+            CREATE OR REPLACE FUNCTION pg_temp.safe_jsonb(val text)
+            RETURNS jsonb AS $$
+            BEGIN
+                BEGIN
+                    RETURN val::jsonb;
+                EXCEPTION WHEN OTHERS THEN
+                    RETURN to_jsonb(val);
+                END;
+            END;
+            $$ LANGUAGE plpgsql;
+        """
+            )
+        )
+
         result = conn.execute(
             text(
                 """
@@ -706,8 +825,8 @@ def clean_jira_field_value_changelog(
             SELECT
                 i.id as issue_id,
                 fk.id as field_key_id,
-                to_jsonb(item.from_string) as old_value,
-                to_jsonb(item.to_string) as new_value,
+                pg_temp.safe_jsonb(item.from_string) as old_value,
+                pg_temp.safe_jsonb(item.to_string) as new_value,
                 u.id as changed_by_id,
                 h.created::timestamptz as changed_at
             FROM raw_jira.issues__changelog__histories__items item

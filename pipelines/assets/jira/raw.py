@@ -267,6 +267,26 @@ def jira_source(
                 # Some boards may not have configuration accessible
                 continue
 
+    @dlt.resource(
+        name="fields",
+        write_disposition="merge",
+        primary_key="id",
+    )
+    def get_fields() -> Iterator[dict[str, Any]]:
+        """Fetch all field definitions from Jira API.
+
+        GET /rest/api/3/field
+        """
+        response = requests.get(
+            f"{base_url}/rest/api/3/field",
+            auth=(email, api_token),
+        )
+        response.raise_for_status()
+        fields = response.json()
+
+        for field in fields:
+            yield field
+
     return (
         get_issues,
         get_projects,
@@ -274,6 +294,7 @@ def jira_source(
         get_users,
         get_versions,
         get_board_configurations,
+        get_fields,
     )
 
 
@@ -345,7 +366,10 @@ def run_jira_pipeline(
 
 @asset(
     group_name="jira_raw",
-    description="Load raw Jira data from Jira API (issues, projects, sprints, users, versions, board configs)",
+    description=(
+        "Load raw Jira data from Jira API (issues, projects, sprints, "
+        "users, versions, board configs)"
+    ),
     compute_kind="dlt",
 )
 def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
