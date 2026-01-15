@@ -7,7 +7,6 @@ from typing import Optional
 
 from alembic import context
 from sqlalchemy import create_engine, pool
-from sqlalchemy.engine import Connection
 
 # This is the Alembic Config object.
 # It provides access to the values within the .ini file in use.
@@ -46,16 +45,18 @@ def _collect_target_metadata() -> Optional[object]:
     if not os.path.isdir(services_pkg):
         return None
 
-    for finder, name, ispkg in pkgutil.iter_modules([services_pkg]):
+    for _, name, _ in pkgutil.iter_modules([services_pkg]):
         module_name = f"services.{name}.app.models.orm"
         try:
             mod = importlib.import_module(module_name)
-        except Exception:
+        except Exception as e:
+            # S112: consider logging the exception
+            print(f"Skipping {module_name} due to import error: {e}", file=sys.stderr)
             continue
         if hasattr(mod, "metadata"):
-            found.append(getattr(mod, "metadata"))
+            found.append(mod.metadata)
         elif hasattr(mod, "Base"):
-            base = getattr(mod, "Base")
+            base = mod.Base
             if hasattr(base, "metadata"):
                 found.append(base.metadata)
 
@@ -115,7 +116,11 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:  # type: Connection
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            version_table="alembic_version_app",
+        )
         with context.begin_transaction():
             context.run_migrations()
 

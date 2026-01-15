@@ -72,7 +72,7 @@ dev: docker-up
 ## Run tests with coverage
 test:
 	@echo "$(BLUE)Running tests...$(NC)"
-	python -m pytest tests/ -v --cov=app --cov=pipelines --cov-report=term-missing
+	.venv/Scripts/python -m pytest tests/ -v --cov=app --cov=pipelines --cov-report=term-missing
 	@echo "$(GREEN)Tests passed!$(NC)"
 
 ## Check code style with ruff and black
@@ -108,6 +108,13 @@ migrate:
 	@echo "$(BLUE)Running database migrations...$(NC)"
 	docker compose --profile migration run --rm alembic upgrade head
 	@echo "$(GREEN)Migrations complete!$(NC)"
+
+## Update database views (metrics.sql)
+update-views:
+	@echo "$(BLUE)Updating database views...$(NC)"
+	docker compose cp db/views/metrics.sql postgres:/tmp/metrics.sql
+	docker compose exec postgres psql -U postgres -d process_metrics_v2 -f /tmp/metrics.sql
+	@echo "$(GREEN)Views updated!$(NC)"
 
 ## Create new migration (use: make migrate-create MSG="description")
 migrate-create:
@@ -180,11 +187,10 @@ install:
 ## Clean build artifacts
 clean:
 	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
-	rm -rf .pytest_cache .coverage htmlcov
-	rm -rf __pycache__ */__pycache__ */*/__pycache__
-	rm -rf .ruff_cache .mypy_cache
-	rm -rf build dist *.egg-info
-	rm -rf .dagster
+	@python -c "import shutil, pathlib; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('__pycache__')]"
+	@python -c "import shutil, pathlib; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('.pytest_cache')]"
+	@python -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in [pathlib.Path('.coverage'), pathlib.Path('htmlcov'), pathlib.Path('.ruff_cache'), pathlib.Path('.mypy_cache'), pathlib.Path('build'), pathlib.Path('dist'), pathlib.Path('.dagster')]]"
+	@python -c "import shutil, pathlib; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('*.egg-info')]"
 	@echo "$(GREEN)Clean complete!$(NC)"
 
 ## Run Dagster locally (for development without Docker)

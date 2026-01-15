@@ -111,7 +111,9 @@ class TestChangelogEventLogic:
         # Determine final state for each pair
         final_states = {}
         for (issue_id, sprint_id), group_events in grouped.items():
-            sorted_events = sorted(group_events, key=lambda x: x["timestamp"], reverse=True)
+            sorted_events = sorted(
+                group_events, key=lambda x: x["timestamp"], reverse=True
+            )
             final_states[(issue_id, sprint_id)] = sorted_events[0]["action"]
 
         # Issue should be in sprint 200 but not in sprint 100

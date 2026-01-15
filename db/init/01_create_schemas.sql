@@ -44,7 +44,6 @@ COMMIT;
 \echo 'Loading clean_jira schema...'
 \ir /db/schemas/clean_jira_schema.sql
 
-\echo 'Loading metrics views...'
-\ir /db/views/metrics.sql
+-- Metrics views will be loaded via make update-views after migrations
 
 \echo 'Database initialization complete.'

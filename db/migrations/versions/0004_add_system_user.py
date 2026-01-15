@@ -19,7 +19,8 @@ def upgrade() -> None:
     """Add system user and default Jira integration for pipeline operations."""
     # Create system user if it doesn't exist
     op.execute(
-        text("""
+        text(
+            """
         INSERT INTO platform.users (email, password_hash, display_name, is_active, is_admin)
         VALUES (
             'system@metrics.local',
@@ -29,21 +30,25 @@ def upgrade() -> None:
             true
         )
         ON CONFLICT (email) DO NOTHING;
-    """)
+    """
+        )
     )
 
     # Create default Jira integration type if not exists
     op.execute(
-        text("""
+        text(
+            """
         INSERT INTO platform.integration_types (name, description, is_active)
         VALUES ('jira_cloud', 'Jira Cloud integration', true)
         ON CONFLICT (name) DO NOTHING;
-    """)
+    """
+        )
     )
 
     # Create system Jira integration for the system user
     op.execute(
-        text("""
+        text(
+            """
         INSERT INTO platform.tool_integrations (
             user_id,
             integration_type_id,
@@ -69,22 +74,27 @@ def upgrade() -> None:
               WHERE ti.user_id = u.id AND ti.integration_type_id = it.id
           )
         ON CONFLICT (user_id, integration_type_id, instance_url) DO NOTHING;
-    """)
+    """
+        )
     )
 
 
 def downgrade() -> None:
     """Rollback: Remove system user and integration."""
     op.execute(
-        text("""
+        text(
+            """
         DELETE FROM platform.tool_integrations
         WHERE user_id = (SELECT id FROM platform.users WHERE email = 'system@metrics.local')
           AND integration_type_id = (SELECT id FROM platform.integration_types WHERE name = 'jira_cloud');
-    """)
+    """
+        )
     )
 
     op.execute(
-        text("""
+        text(
+            """
         DELETE FROM platform.users WHERE email = 'system@metrics.local';
-    """)
+    """
+        )
     )

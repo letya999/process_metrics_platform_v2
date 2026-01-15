@@ -3,7 +3,6 @@
 Tests the Dagster assets can be loaded and executed.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -29,9 +28,7 @@ class TestJiraRawAsset:
         assert result["reason"] == "credentials_not_configured"
 
     @patch("pipelines.assets.jira.raw.run_jira_pipeline")
-    def test_raw_jira_data_runs_with_credentials(
-        self, mock_pipeline, jira_env_vars
-    ):
+    def test_raw_jira_data_runs_with_credentials(self, mock_pipeline, jira_env_vars):
         """Test that raw_jira_data runs when credentials configured."""
         mock_pipeline.return_value = {
             "pipeline_name": "jira_raw",
@@ -65,8 +62,8 @@ class TestJiraCleanAssets:
         # Mock the database execute to return empty results
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchall.return_value = []
-        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = (
-            MagicMock(return_value=mock_conn)
+        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = MagicMock(
+            return_value=mock_conn
         )
         mock_database_resource.get_engine.return_value.connect.return_value.__exit__ = (
             MagicMock(return_value=False)
@@ -85,8 +82,8 @@ class TestJiraCleanAssets:
 
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchall.return_value = []
-        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = (
-            MagicMock(return_value=mock_conn)
+        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = MagicMock(
+            return_value=mock_conn
         )
         mock_database_resource.get_engine.return_value.connect.return_value.__exit__ = (
             MagicMock(return_value=False)
@@ -114,8 +111,8 @@ class TestMetricsAssets:
             "min_lead_time_days": 0.5,
             "max_lead_time_days": 30.0,
         }
-        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = (
-            MagicMock(return_value=mock_conn)
+        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = MagicMock(
+            return_value=mock_conn
         )
         mock_database_resource.get_engine.return_value.connect.return_value.__exit__ = (
             MagicMock(return_value=False)
@@ -139,8 +136,8 @@ class TestMetricsAssets:
             "avg_completion_rate": 75.0,
             "avg_issues_per_sprint": 12.0,
         }
-        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = (
-            MagicMock(return_value=mock_conn)
+        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = MagicMock(
+            return_value=mock_conn
         )
         mock_database_resource.get_engine.return_value.connect.return_value.__exit__ = (
             MagicMock(return_value=False)
@@ -164,8 +161,8 @@ class TestMetricsAssets:
             "total_completed": 150,
             "avg_daily_throughput": 5.0,
         }
-        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = (
-            MagicMock(return_value=mock_conn)
+        mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = MagicMock(
+            return_value=mock_conn
         )
         mock_database_resource.get_engine.return_value.connect.return_value.__exit__ = (
             MagicMock(return_value=False)

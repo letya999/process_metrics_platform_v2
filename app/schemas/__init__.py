@@ -18,11 +18,7 @@ from app.schemas.metrics import (
     VelocityItem,
     VelocityResponse,
 )
-from app.schemas.project import (
-    ProjectCreate,
-    ProjectResponse,
-    ProjectUpdate,
-)
+from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 
 __all__ = [
     # Integration schemas

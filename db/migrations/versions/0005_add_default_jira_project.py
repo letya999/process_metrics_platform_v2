@@ -22,7 +22,8 @@ def upgrade() -> None:
     in the clean layer. It doesn't require an owner or integration reference.
     """
     op.execute(
-        text("""
+        text(
+            """
         INSERT INTO platform.projects (
             id,
             external_key,
@@ -42,15 +43,18 @@ def upgrade() -> None:
             now()
         )
         ON CONFLICT (id) DO NOTHING;
-    """)
+    """
+        )
     )
 
 
 def downgrade() -> None:
     """Rollback: Remove default Jira project."""
     op.execute(
-        text("""
+        text(
+            """
         DELETE FROM platform.projects
         WHERE id = '00000000-0000-0000-0000-000000000001'::uuid;
-    """)
+    """
+        )
     )

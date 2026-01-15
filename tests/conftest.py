@@ -6,14 +6,12 @@ This module provides fixtures for testing:
 - API test client
 """
 
-import os
 from datetime import datetime, timezone
 from typing import Any, Generator
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-
 
 # =============================================================================
 # Sample Data Fixtures

@@ -5,14 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    ForeignKey,
-    String,
-    Text,
-    Uuid,
-)
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, Uuid
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -179,7 +172,9 @@ class Project(Base):
     )
 
     # Relationships
-    owner: Mapped[Optional["User"]] = relationship("User", back_populates="owned_projects")
+    owner: Mapped[Optional["User"]] = relationship(
+        "User", back_populates="owned_projects"
+    )
     tool_integration: Mapped[Optional["ToolIntegration"]] = relationship(
         "ToolIntegration", back_populates="projects"
     )

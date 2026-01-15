@@ -1490,6 +1490,99 @@ def clean_jira_sprint_changelog(
 
 @asset(
     group_name="jira_clean",
+    deps=["clean_jira_issues", "clean_jira_issue_statuses"],
+    description="Extract issue status changes from changelog",
+    compute_kind="sql",
+)
+def clean_jira_issue_status_changelog(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Extract issue status changelog from raw history.
+
+    Parses 'status' field changes. Joins with issue_statuses to resolve string status names to UUIDs.
+    """
+    engine = database.get_engine()
+
+    with engine.connect() as conn:
+        context.log.info("Extracting issue status change log...")
+
+        # Check raw changelog exists
+        changelog_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira' AND table_name = 'issues__changelog__histories__items'
+            )
+        """
+            )
+        ).scalar()
+
+        if not changelog_exists:
+            return {"status": "skipped", "reason": "no_raw_changelog"}
+
+        result = conn.execute(
+            text(
+                """
+            WITH status_changes AS (
+                SELECT
+                    r.id::text as issue_external_id,
+                    p.id as project_id,
+                    h.created::timestamptz as changed_at,
+                    h.author__account_id as author_external_id,
+                    item."from" as from_status_external_id,
+                    item."to" as to_status_external_id
+                FROM raw_jira.issues__changelog__histories__items item
+                JOIN raw_jira.issues__changelog__histories h ON item._dlt_parent_id = h._dlt_id
+                JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
+                JOIN clean_jira.projects p ON p.external_id = r.fields__project__id::text
+                WHERE item.field = 'status'
+                  AND item.fieldtype = 'jira'
+            )
+            INSERT INTO clean_jira.issue_status_changelog (
+                issue_id,
+                from_status_id,
+                to_status_id,
+                changed_by_id,
+                changed_at
+            )
+            SELECT
+                i.id as issue_id,
+                s_from.id as from_status_id,
+                s_to.id as to_status_id,
+                u.id as changed_by_id,
+                sc.changed_at
+            FROM status_changes sc
+            JOIN clean_jira.issues i ON i.external_id = sc.issue_external_id
+            -- Resolve 'from' status
+            LEFT JOIN clean_jira.issue_statuses s_from
+                ON s_from.project_id = sc.project_id
+                AND s_from.external_id = sc.from_status_external_id
+            -- Resolve 'to' status
+            LEFT JOIN clean_jira.issue_statuses s_to
+                ON s_to.project_id = sc.project_id
+                AND s_to.external_id = sc.to_status_external_id
+            -- Resolve author
+            LEFT JOIN clean_jira.jira_users u
+                ON u.project_id = sc.project_id
+                AND u.external_id = sc.author_external_id
+            WHERE s_to.id IS NOT NULL
+            ON CONFLICT (issue_id, changed_at) DO NOTHING
+            RETURNING id
+        """
+            )
+        )
+
+        count = len(result.fetchall())
+        context.log.info(f"Inserted {count} status changelog entries")
+        conn.commit()
+
+    return {"status": "success", "changelog_entries": count}
+
+
+@asset(
+    group_name="jira_clean",
     deps=["raw_jira_data", "clean_jira_issues"],
     description="Transform raw Jira board configurations to clean format",
     compute_kind="sql",
@@ -1618,47 +1711,6 @@ def clean_jira_boards(
         "boards_count": boards_count,
         "columns_count": columns_count,
         "statuses_count": statuses_count,
-    }
-
-
-@asset(
-    group_name="jira_clean",
-    deps=["clean_jira_issues"],
-    description="Extract and transform status changes from issue changelogs",
-    compute_kind="sql",
-)
-def clean_jira_status_changes(
-    context: AssetExecutionContext,
-    database: DatabaseResource,
-) -> dict[str, Any]:
-    """Extract status changes from raw changelog data.
-
-    Note: This is a simplified version. Full implementation would
-    parse the changelog JSON from raw_jira.issues.
-    """
-    engine = database.get_engine()
-
-    with engine.connect() as conn:
-        # Check if changelog data exists
-        context.log.info("Processing status changes from changelog...")
-
-        # For now, we'll create a placeholder that can be extended
-        # when changelog parsing is fully implemented
-        conn.execute(
-            text(
-                """
-            -- Placeholder: Status changes extraction would go here
-            -- This requires parsing the changelog JSON array from raw issues
-            SELECT 1
-        """
-            )
-        )
-
-        conn.commit()
-
-    return {
-        "status": "success",
-        "message": "Status changes processing placeholder",
     }
 
 

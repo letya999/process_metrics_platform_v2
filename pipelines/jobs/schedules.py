@@ -60,12 +60,29 @@ hourly_metrics_refresh_schedule = ScheduleDefinition(
     execution_timezone="UTC",
 )
 
+# Job: Recalculate Lead Time (Fact + View)
+lead_time_recalc_job = define_asset_job(
+    name="recalculate_lead_time_job",
+    selection=AssetSelection.assets("calculate_lead_time", "metrics_lead_time"),
+    description="Recalculate Lead Time facts and refresh view",
+)
+
+# Job: Recalculate Velocity (Fact + View)
+velocity_recalc_job = define_asset_job(
+    name="recalculate_velocity_job",
+    selection=AssetSelection.assets("calculate_velocity", "metrics_velocity"),
+    description="Recalculate Velocity facts and refresh view",
+)
+
+
 # Export all jobs and schedules
 jobs = [
     jira_sync_job,
     jira_raw_job,
     jira_clean_job,
     metrics_refresh_job,
+    lead_time_recalc_job,
+    velocity_recalc_job,
 ]
 
 schedules = [

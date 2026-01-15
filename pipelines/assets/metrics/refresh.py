@@ -6,7 +6,13 @@ Materialized views in the metrics schema are refreshed after data sync.
 
 from typing import Any
 
-from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
+from dagster import (
+    AssetCheckExecutionContext,
+    AssetCheckResult,
+    AssetExecutionContext,
+    asset,
+    asset_check,
+)
 from sqlalchemy import text
 
 from pipelines.resources.database import DatabaseResource
@@ -14,7 +20,7 @@ from pipelines.resources.database import DatabaseResource
 
 @asset(
     group_name="metrics",
-    deps=["clean_jira_issues", "clean_jira_sprints"],
+    deps=["calculate_lead_time"],
     description="Refresh lead time materialized view",
     compute_kind="sql",
 )
@@ -33,22 +39,25 @@ def metrics_lead_time(
         context.log.info("Refreshing mv_lead_time materialized view...")
 
         try:
-            conn.execute(
-                text("REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_lead_time")
-            )
-            conn.commit()
-            context.log.info("mv_lead_time refreshed successfully")
+            # View is now a standard SQL View, so it updates automatically
+            # conn.execute(
+            #    text("REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_lead_time")
+            # )
+            # conn.commit()
+            context.log.info("mv_lead_time is a standard view (auto-updated)")
 
             # Get stats
             result = conn.execute(
-                text("""
+                text(
+                    """
                 SELECT
                     count(*) as total_issues,
                     round(avg(lead_time_days)::numeric, 2) as avg_lead_time_days,
                     round(min(lead_time_days)::numeric, 2) as min_lead_time_days,
                     round(max(lead_time_days)::numeric, 2) as max_lead_time_days
                 FROM metrics.mv_lead_time
-            """)
+            """
+                )
             )
             stats = result.mappings().first()
 
@@ -64,7 +73,7 @@ def metrics_lead_time(
 
 @asset(
     group_name="metrics",
-    deps=["clean_jira_issues", "clean_jira_sprints"],
+    deps=["calculate_velocity"],
     description="Refresh velocity materialized view",
     compute_kind="sql",
 )
@@ -83,21 +92,26 @@ def metrics_velocity(
         context.log.info("Refreshing mv_velocity materialized view...")
 
         try:
-            conn.execute(
-                text("REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_velocity")
-            )
-            conn.commit()
-            context.log.info("mv_velocity refreshed successfully")
+            # View is now a standard SQL View, so it updates automatically
+            # conn.execute(
+            #    text("REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_velocity")
+            # )
+            # conn.commit()
+            context.log.info("mv_velocity is a standard view (auto-updated)")
 
             # Get stats
             result = conn.execute(
-                text("""
+                text(
+                    """
                 SELECT
                     count(*) as total_sprints,
-                    round(avg(completion_rate_pct)::numeric, 2) as avg_completion_rate,
-                    round(avg(total_issues)::numeric, 2) as avg_issues_per_sprint
+                    round(
+                        avg(completion_rate_points_pct)::numeric, 2
+                    ) as avg_completion_rate,
+                    round(avg(completed_issues)::numeric, 2) as avg_issues_per_sprint
                 FROM metrics.mv_velocity
-            """)
+            """
+                )
             )
             stats = result.mappings().first()
 
@@ -113,7 +127,7 @@ def metrics_velocity(
 
 @asset(
     group_name="metrics",
-    deps=["clean_jira_issues"],
+    deps=["calculate_lead_time"],
     description="Refresh throughput materialized view",
     compute_kind="sql",
 )
@@ -132,21 +146,24 @@ def metrics_throughput(
         context.log.info("Refreshing mv_throughput materialized view...")
 
         try:
-            conn.execute(
-                text("REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_throughput")
-            )
-            conn.commit()
-            context.log.info("mv_throughput refreshed successfully")
+            # View is now a standard SQL View, so it updates automatically
+            # conn.execute(
+            #    text("REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_throughput")
+            # )
+            # conn.commit()
+            context.log.info("mv_throughput is a standard view (auto-updated)")
 
             # Get stats
             result = conn.execute(
-                text("""
+                text(
+                    """
                 SELECT
                     count(DISTINCT resolved_date) as days_with_data,
                     sum(issues_completed) as total_completed,
                     round(avg(issues_completed)::numeric, 2) as avg_daily_throughput
                 FROM metrics.mv_throughput
-            """)
+            """
+                )
             )
             stats = result.mappings().first()
 
@@ -182,12 +199,14 @@ def metrics_all(
 
         # Get overall stats
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT
                 (SELECT count(*) FROM metrics.mv_lead_time) as lead_time_records,
                 (SELECT count(*) FROM metrics.mv_velocity) as velocity_records,
                 (SELECT count(*) FROM metrics.mv_throughput) as throughput_records
-        """)
+        """
+            )
         )
         stats = result.mappings().first()
 
@@ -202,7 +221,7 @@ def metrics_all(
 
 @asset_check(asset=metrics_lead_time)
 def check_lead_time_no_nulls(
-    context: AssetExecutionContext,
+    context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
     """Ensure lead_time_days is populated for all resolved issues."""
@@ -210,10 +229,12 @@ def check_lead_time_no_nulls(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM metrics.mv_lead_time
             WHERE lead_time_days IS NULL
-        """)
+        """
+            )
         )
         null_count = result.scalar() or 0
 
@@ -225,7 +246,7 @@ def check_lead_time_no_nulls(
 
 @asset_check(asset=metrics_lead_time)
 def check_lead_time_positive(
-    context: AssetExecutionContext,
+    context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
     """Ensure lead_time_days is positive (resolved after created)."""
@@ -233,10 +254,12 @@ def check_lead_time_positive(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM metrics.mv_lead_time
             WHERE lead_time_days < 0
-        """)
+        """
+            )
         )
         negative_count = result.scalar() or 0
 
@@ -248,7 +271,7 @@ def check_lead_time_positive(
 
 @asset_check(asset=metrics_velocity)
 def check_velocity_completion_rate_valid(
-    context: AssetExecutionContext,
+    context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
     """Ensure completion_rate_pct is between 0 and 100."""
@@ -256,10 +279,12 @@ def check_velocity_completion_rate_valid(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM metrics.mv_velocity
-            WHERE completion_rate_pct < 0 OR completion_rate_pct > 100
-        """)
+            WHERE completion_rate_points_pct < 0 OR completion_rate_points_pct > 100
+        """
+            )
         )
         invalid_count = result.scalar() or 0
 
@@ -271,7 +296,7 @@ def check_velocity_completion_rate_valid(
 
 @asset_check(asset=metrics_throughput)
 def check_throughput_no_future_dates(
-    context: AssetExecutionContext,
+    context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
     """Ensure no throughput records have future resolved_date."""
@@ -279,10 +304,12 @@ def check_throughput_no_future_dates(
 
     with engine.connect() as conn:
         result = conn.execute(
-            text("""
+            text(
+                """
             SELECT count(*) FROM metrics.mv_throughput
             WHERE resolved_date > CURRENT_DATE
-        """)
+        """
+            )
         )
         future_count = result.scalar() or 0
 

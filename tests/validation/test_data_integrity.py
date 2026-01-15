@@ -49,9 +49,7 @@ class TestRawLayerIntegrity:
             table_exists = result.scalar()
 
             if table_exists:
-                result = conn.execute(
-                    text("SELECT count(*) FROM raw_jira.issues")
-                )
+                result = conn.execute(text("SELECT count(*) FROM raw_jira.issues"))
                 count = result.scalar()
                 assert count >= 0, "raw_jira.issues should exist"
 
@@ -71,9 +69,7 @@ class TestRawLayerIntegrity:
             table_exists = result.scalar()
 
             if table_exists:
-                result = conn.execute(
-                    text("SELECT count(*) FROM raw_jira.projects")
-                )
+                result = conn.execute(text("SELECT count(*) FROM raw_jira.projects"))
                 count = result.scalar()
                 assert count >= 0, "raw_jira.projects should exist"
 
@@ -157,7 +153,9 @@ class TestCleanLayerIntegrity:
             )
             invalid_count = result.scalar()
 
-        assert invalid_count == 0, f"Found {invalid_count} issues with invalid status_id"
+        assert (
+            invalid_count == 0
+        ), f"Found {invalid_count} issues with invalid status_id"
 
     def test_clean_sprints_valid_dates(self, engine):
         """Test that sprints have valid date ranges."""
@@ -299,9 +297,7 @@ class TestMetricsLayerIntegrity:
             )
             invalid_count = result.scalar()
 
-        assert (
-            invalid_count == 0
-        ), f"Found {invalid_count} records with invalid counts"
+        assert invalid_count == 0, f"Found {invalid_count} records with invalid counts"
 
 
 class TestCrossLayerConsistency:

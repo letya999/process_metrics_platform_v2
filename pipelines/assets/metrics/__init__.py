@@ -1,13 +1,5 @@
-"""Metrics assets module.
-
-This module exports all metrics-related Dagster assets:
-- metrics_lead_time: Refresh lead time materialized view
-- metrics_velocity: Refresh velocity materialized view
-- metrics_throughput: Refresh throughput materialized view
-- metrics_all: Convenience asset for all metrics
-"""
-
-from pipelines.assets.metrics.refresh import (
+from .lead_time import calculate_lead_time
+from .refresh import (
     check_lead_time_no_nulls,
     check_lead_time_positive,
     check_throughput_no_future_dates,
@@ -17,16 +9,17 @@ from pipelines.assets.metrics.refresh import (
     metrics_throughput,
     metrics_velocity,
 )
+from .velocity import calculate_velocity
 
 __all__ = [
-    # Metrics assets
-    "metrics_lead_time",
-    "metrics_velocity",
-    "metrics_throughput",
+    "calculate_lead_time",
+    "calculate_velocity",
     "metrics_all",
-    # Asset checks
+    "metrics_lead_time",
+    "metrics_throughput",
+    "metrics_velocity",
     "check_lead_time_no_nulls",
     "check_lead_time_positive",
-    "check_velocity_completion_rate_valid",
     "check_throughput_no_future_dates",
+    "check_velocity_completion_rate_valid",
 ]

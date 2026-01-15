@@ -5,8 +5,6 @@ Tests the transformation functions in pipelines/utils/transformations.py
 
 from datetime import datetime, timezone
 
-import pytest
-
 from pipelines.utils.transformations import (
     deduplicate_issues,
     enrich_issue_with_lead_time,

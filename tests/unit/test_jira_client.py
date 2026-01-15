@@ -3,9 +3,7 @@
 Tests the parsing functions in pipelines/utils/__init__.py
 """
 
-from datetime import datetime, timezone
-
-import pytest
+from datetime import datetime
 
 from pipelines.utils import (
     extract_status_changes,

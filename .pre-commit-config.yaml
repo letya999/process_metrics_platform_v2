@@ -5,11 +5,7 @@ repos:
       - id: black
         language_version: python
 
-  - repo: https://github.com/PyCQA/isort
-    rev: 5.13.2
-    hooks:
-      - id: isort
-        language_version: python
+
 
   - repo: https://github.com/charliermarsh/ruff-pre-commit
     rev: v0.1.9

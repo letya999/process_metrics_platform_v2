@@ -3,8 +3,6 @@
 Tests the API endpoints in app/api/
 """
 
-import pytest
-
 
 class TestHealthEndpoint:
     """Tests for health check endpoint."""

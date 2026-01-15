@@ -9,11 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.orm import Project, ToolIntegration, User
-from app.schemas.project import (
-    ProjectCreate,
-    ProjectResponse,
-    ProjectUpdate,
-)
+from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 
 router = APIRouter()
 

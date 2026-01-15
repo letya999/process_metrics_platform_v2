@@ -462,7 +462,9 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_cj_issues_project ON clean_jira.issues(project_id);"
     )
-    op.execute("CREATE INDEX IF NOT EXISTS idx_cj_issues_type ON clean_jira.issues(type_id);")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cj_issues_type ON clean_jira.issues(type_id);"
+    )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_cj_issues_status ON clean_jira.issues(status_id);"
     )

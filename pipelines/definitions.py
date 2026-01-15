@@ -7,14 +7,6 @@ jobs, schedules, and resources.
 from dagster import Definitions, load_assets_from_modules
 
 from pipelines.assets import jira, metrics
-from pipelines.jobs.schedules import jobs, schedules
-from pipelines.resources.database import database_resource
-
-# Load all assets from modules
-jira_assets = load_assets_from_modules([jira])
-metrics_assets = load_assets_from_modules([metrics])
-
-# Load asset checks
 from pipelines.assets.jira import (
     check_issues_have_required_fields,
     check_no_orphan_issues,
@@ -28,6 +20,12 @@ from pipelines.assets.metrics import (
     check_throughput_no_future_dates,
     check_velocity_completion_rate_valid,
 )
+from pipelines.jobs.schedules import jobs, schedules
+from pipelines.resources.database import database_resource
+
+# Load all assets from modules
+jira_assets = load_assets_from_modules([jira])
+metrics_assets = load_assets_from_modules([metrics])
 
 asset_checks = [
     check_no_orphan_issues,
