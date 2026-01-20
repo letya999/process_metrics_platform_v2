@@ -622,6 +622,32 @@ def clean_jira_field_keys(
 
         conn.commit()
 
+        # Explicitly ensure 'Sprint' field key exists (customfield_10020)
+        # It is usually a separate table and might be missed by the column scan
+        conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.field_keys (
+                project_id,
+                external_key,
+                name,
+                is_custom,
+                created_at
+            )
+            SELECT DISTINCT
+                p.id as project_id,
+                'customfield_10020' as external_key,
+                'Sprint' as name,
+                true as is_custom,
+                now() as created_at
+            FROM clean_jira.projects p
+            ON CONFLICT (project_id, external_key) DO UPDATE SET
+                name = EXCLUDED.name
+        """
+            )
+        )
+        conn.commit()
+
     return {
         "status": "success",
         "field_keys_inserted": field_keys_inserted,
@@ -746,6 +772,66 @@ def clean_jira_field_values(
 
         context.log.info(f"Inserted {field_values_inserted} field values")
         conn.commit()
+
+        # Explicitly extract 'Sprint' values (customfield_10020)
+        # This stores a comma-separated list of sprint names in json_value,
+        # which matches the format expected by clean_jira_sprint_issues logic (parsed by regexp_split_to_table)
+        context.log.info("Extracting Sprint (customfield_10020) values...")
+        sprint_table_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira'
+                  AND table_name = 'issues__fields__customfield_10020'
+            )
+        """
+            )
+        ).scalar()
+
+        if sprint_table_exists:
+            result = conn.execute(
+                text(
+                    """
+                INSERT INTO clean_jira.field_values (
+                    issue_id,
+                    field_key_id,
+                    value,
+                    json_value,
+                    updated_at
+                )
+                SELECT
+                    i.id as issue_id,
+                    fk.id as field_key_id,
+                    -- For 'value', we just store the raw aggregation
+                    string_agg(s.name, ', ' ORDER BY s.start_date) as value,
+                    -- For 'json_value', we store it as a JSON string containing the list
+                    -- This ensures that when retrieved as text, it matches the string format
+                    -- e.g. "Sprint 1, Sprint 2"
+                    to_jsonb(string_agg(s.name, ', ' ORDER BY s.start_date)) as json_value,
+                    now() as updated_at
+                FROM raw_jira.issues__fields__customfield_10020 s
+                JOIN raw_jira.issues r ON s._dlt_parent_id = r._dlt_id
+                JOIN clean_jira.issues i ON i.external_id = r.id::text
+                JOIN clean_jira.field_keys fk ON fk.project_id = i.project_id
+                    AND fk.external_key = 'customfield_10020'
+                GROUP BY i.id, fk.id
+                ON CONFLICT (issue_id, field_key_id) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    json_value = EXCLUDED.json_value,
+                    updated_at = now()
+                RETURNING id
+            """
+                )
+            )
+            sprint_values_count = len(result.fetchall())
+            context.log.info(f"Inserted {sprint_values_count} Sprint field values")
+            field_values_inserted += sprint_values_count
+            conn.commit()
+        else:
+            context.log.warning(
+                "Sprint table (customfield_10020) not found in raw_jira"
+            )
 
     return {
         "status": "success",
@@ -953,22 +1039,58 @@ def clean_jira_sprint_issues(
                 ) as sprint_id
                 WHERE from_value IS NOT NULL AND from_value != ''
             ),
+            -- Extract sprint data from current issue fields (Snapshot/Backfill)
+            -- This captures issues created directly in a sprint (no changelog entry)
+            snapshot_events AS (
+                SELECT
+                    i.id::text as issue_external_id,
+                    i.fields__project__id::text as project_external_id,
+                    -- Use issue creation time as the 'added' time if available, or epoch
+                    COALESCE(i.fields__created::timestamptz, '1970-01-01'::timestamptz) as changed_at,
+                    s.id::text as sprint_external_id,
+                    'added' as action,
+                    NULL::text as author_id  -- No author for snapshot events
+                FROM raw_jira.issues i
+                JOIN raw_jira.issues__fields__customfield_10020 s
+                  ON s._dlt_parent_id = i._dlt_id
+                WHERE s.id IS NOT NULL
+            ),
             -- Union all events
             all_events AS (
-                SELECT * FROM added_events
+                SELECT issue_external_id, project_external_id, changed_at, sprint_external_id, action, author_id FROM added_events
                 UNION ALL
-                SELECT * FROM removed_events
+                SELECT issue_external_id, project_external_id, changed_at, sprint_external_id, action, author_id FROM removed_events
+                UNION ALL
+                SELECT issue_external_id, project_external_id, changed_at, sprint_external_id, action, author_id::text FROM snapshot_events
+            ),
+            -- Normalize sprint_external_id to actual sprint_id first
+            -- This handles both numeric IDs and text names
+            normalized_events AS (
+                SELECT
+                    ae.issue_external_id,
+                    s.id as sprint_id,
+                    ae.changed_at,
+                    ae.action
+                FROM all_events ae
+                JOIN clean_jira.issues i ON i.external_id = ae.issue_external_id
+                JOIN clean_jira.sprints s ON s.project_id = i.project_id
+                    AND (
+                        s.external_id = ae.sprint_external_id
+                        OR s.name = ae.sprint_external_id
+                    )
+                WHERE ae.sprint_external_id IS NOT NULL
+                  AND ae.sprint_external_id != ''
             ),
             -- Get the latest action for each issue-sprint pair
+            -- Now using normalized sprint_id to avoid duplicates from ID vs name matching
             latest_action AS (
-                SELECT DISTINCT ON (issue_external_id, sprint_external_id)
+                SELECT DISTINCT ON (issue_external_id, sprint_id)
                     issue_external_id,
-                    sprint_external_id,
+                    sprint_id,
                     action,
                     changed_at
-                FROM all_events
-                WHERE sprint_external_id ~ '^[0-9]+$'  -- Only numeric sprint IDs
-                ORDER BY issue_external_id, sprint_external_id, changed_at DESC
+                FROM normalized_events
+                ORDER BY issue_external_id, sprint_id, changed_at DESC, action DESC
             )
             -- Insert only pairs where final action is 'added'
             INSERT INTO clean_jira.sprint_issues (
@@ -977,13 +1099,11 @@ def clean_jira_sprint_issues(
                 is_active
             )
             SELECT
-                s.id as sprint_id,
+                la.sprint_id,
                 i.id as issue_id,
                 true as is_active
             FROM latest_action la
             JOIN clean_jira.issues i ON i.external_id = la.issue_external_id
-            JOIN clean_jira.sprints s ON s.project_id = i.project_id
-                AND s.external_id = la.sprint_external_id
             WHERE la.action = 'added'
             ON CONFLICT (sprint_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
@@ -1050,7 +1170,7 @@ def clean_jira_sprint_issues_changelog(
                 ) as sprint_id
                 WHERE to_value IS NOT NULL
                   AND to_value != ''
-                  AND sprint_id ~ '^[0-9]+$'
+                  AND trim(sprint_id) != ''
             ),
             removed_events AS (
                 SELECT
@@ -1065,12 +1185,53 @@ def clean_jira_sprint_issues_changelog(
                 ) as sprint_id
                 WHERE from_value IS NOT NULL
                   AND from_value != ''
-                  AND sprint_id ~ '^[0-9]+$'
+                  AND trim(sprint_id) != ''
+            ),
+            -- Snapshot events: issues created directly in a sprint (no changelog entry)
+            -- These are issues where Sprint was set at creation time, not via changelog
+            snapshot_events AS (
+                SELECT
+                    i.id::text as issue_external_id,
+                    -- Use issue creation time as the 'added' time
+                    COALESCE(i.fields__created::timestamptz, '1970-01-01'::timestamptz) as changed_at,
+                    s.id::text as sprint_external_id,
+                    'added' as action,
+                    NULL::text as author_id
+                FROM raw_jira.issues i
+                JOIN raw_jira.issues__fields__customfield_10020 s
+                  ON s._dlt_parent_id = i._dlt_id
+                WHERE s.id IS NOT NULL
+                  -- Exclude issues that already have Sprint changelog entries
+                  AND NOT EXISTS (
+                      SELECT 1 FROM changelog_events ce
+                      WHERE ce.issue_external_id = i.id::text
+                  )
             ),
             all_events AS (
                 SELECT * FROM added_events
                 UNION ALL
                 SELECT * FROM removed_events
+                UNION ALL
+                SELECT * FROM snapshot_events
+            ),
+            -- Normalize to actual sprint_id to avoid duplicate inserts from ID vs name matching
+            normalized_events AS (
+                SELECT DISTINCT ON (s.id, i.id, ae.action, ae.changed_at)
+                    s.id as sprint_id,
+                    i.id as issue_id,
+                    ae.action,
+                    u.id as changed_by_id,
+                    ae.changed_at
+                FROM all_events ae
+                JOIN clean_jira.issues i ON i.external_id = ae.issue_external_id
+                JOIN clean_jira.sprints s ON s.project_id = i.project_id
+                    AND (
+                        s.external_id = ae.sprint_external_id
+                        OR s.name = ae.sprint_external_id
+                    )
+                LEFT JOIN clean_jira.jira_users u ON u.project_id = i.project_id
+                    AND u.external_id = ae.author_id
+                ORDER BY s.id, i.id, ae.action, ae.changed_at
             )
             INSERT INTO clean_jira.sprint_issues_changelog (
                 sprint_id,
@@ -1080,17 +1241,12 @@ def clean_jira_sprint_issues_changelog(
                 changed_at
             )
             SELECT
-                s.id as sprint_id,
-                i.id as issue_id,
-                ae.action,
-                u.id as changed_by_id,
-                ae.changed_at
-            FROM all_events ae
-            JOIN clean_jira.issues i ON i.external_id = ae.issue_external_id
-            JOIN clean_jira.sprints s ON s.project_id = i.project_id
-                AND s.external_id = ae.sprint_external_id
-            LEFT JOIN clean_jira.jira_users u ON u.project_id = i.project_id
-                AND u.external_id = ae.author_id
+                sprint_id,
+                issue_id,
+                action,
+                changed_by_id,
+                changed_at
+            FROM normalized_events
             ON CONFLICT (sprint_id, issue_id, action, changed_at) DO NOTHING
             RETURNING id
         """

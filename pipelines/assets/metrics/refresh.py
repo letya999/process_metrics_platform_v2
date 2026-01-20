@@ -81,35 +81,30 @@ def metrics_velocity(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Refresh the metrics.mv_velocity materialized view.
+    """Get stats from the metrics.fact_velocity table.
 
-    This view calculates velocity metrics (issues completed, completion rate)
-    per sprint from the clean_jira schema.
+    This table contains velocity metrics (planned/completed issues and story points)
+    per sprint, calculated by the calculate_velocity asset.
     """
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        context.log.info("Refreshing mv_velocity materialized view...")
+        context.log.info("Getting velocity stats from fact_velocity...")
 
         try:
-            # View is now a standard SQL View, so it updates automatically
-            # conn.execute(
-            #    text("REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_velocity")
-            # )
-            # conn.commit()
-            context.log.info("mv_velocity is a standard view (auto-updated)")
-
-            # Get stats
+            # fact_velocity is populated by calculate_velocity asset
             result = conn.execute(
                 text(
                     """
                 SELECT
                     count(*) as total_sprints,
                     round(
-                        avg(completion_rate_points_pct)::numeric, 2
-                    ) as avg_completion_rate,
+                        avg(CASE WHEN planned_story_points > 0
+                            THEN completed_story_points * 100.0 / planned_story_points
+                            ELSE 0 END)::numeric, 2
+                    ) as avg_completion_rate_pct,
                     round(avg(completed_issues)::numeric, 2) as avg_issues_per_sprint
-                FROM metrics.mv_velocity
+                FROM metrics.fact_velocity
             """
                 )
             )
@@ -117,11 +112,11 @@ def metrics_velocity(
 
             return {
                 "status": "success",
-                "view": "mv_velocity",
+                "table": "fact_velocity",
                 "stats": dict(stats) if stats else {},
             }
         except Exception as e:
-            context.log.error(f"Failed to refresh mv_velocity: {e}")
+            context.log.error(f"Failed to get velocity stats: {e}")
             raise
 
 
@@ -203,7 +198,7 @@ def metrics_all(
                 """
             SELECT
                 (SELECT count(*) FROM metrics.mv_lead_time) as lead_time_records,
-                (SELECT count(*) FROM metrics.mv_velocity) as velocity_records,
+                (SELECT count(*) FROM metrics.fact_velocity) as velocity_records,
                 (SELECT count(*) FROM metrics.mv_throughput) as throughput_records
         """
             )
@@ -274,15 +269,17 @@ def check_velocity_completion_rate_valid(
     context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
-    """Ensure completion_rate_pct is between 0 and 100."""
+    """Ensure completed_story_points does not exceed planned_story_points unreasonably."""
     engine = database.get_engine()
 
     with engine.connect() as conn:
+        # Check if completed is more than 150% of planned (allows some scope creep)
         result = conn.execute(
             text(
                 """
-            SELECT count(*) FROM metrics.mv_velocity
-            WHERE completion_rate_points_pct < 0 OR completion_rate_points_pct > 100
+            SELECT count(*) FROM metrics.fact_velocity
+            WHERE planned_story_points > 0
+              AND completed_story_points > planned_story_points * 1.5
         """
             )
         )
@@ -290,7 +287,7 @@ def check_velocity_completion_rate_valid(
 
     return AssetCheckResult(
         passed=invalid_count == 0,
-        metadata={"invalid_completion_rate_count": invalid_count},
+        metadata={"suspicious_completion_rate_count": invalid_count},
     )
 
 

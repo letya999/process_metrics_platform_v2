@@ -39,7 +39,13 @@ class TestPlannedIssues:
             {"id": ["ISS-1"], "jira_created_at": [datetime(2023, 12, 1)]}
         )
 
-        sprints = pl.DataFrame({"id": ["SPRINT-1"], "start_date": [date(2024, 1, 2)]})
+        sprints = pl.DataFrame(
+            {
+                "id": ["SPRINT-1"],
+                "start_date": [date(2024, 1, 2)],
+                "end_date": [date(2024, 1, 15)],
+            }
+        )
 
         result = identify_planned_issues(
             sprint_issues, sprint_changelog, issues, sprints
@@ -47,8 +53,8 @@ class TestPlannedIssues:
 
         assert result.filter(pl.col("issue_id") == "ISS-1")["is_planned"][0] is True
 
-    def test_issue_added_mid_sprint_is_not_planned(self):
-        """Test that issue added AFTER sprint start is NOT planned (scope creep)."""
+    def test_issue_added_mid_sprint_is_planned_scope_creep(self):
+        """Test that issue added AFTER sprint start IS planned (scope creep) if present at end."""
         sprint_issues = pl.DataFrame({"issue_id": ["ISS-2"], "sprint_id": ["SPRINT-1"]})
 
         sprint_changelog = pl.DataFrame(
@@ -64,14 +70,20 @@ class TestPlannedIssues:
             {"id": ["ISS-2"], "jira_created_at": [datetime(2024, 1, 3)]}
         )
 
-        sprints = pl.DataFrame({"id": ["SPRINT-1"], "start_date": [date(2024, 1, 2)]})
+        sprints = pl.DataFrame(
+            {
+                "id": ["SPRINT-1"],
+                "start_date": [date(2024, 1, 2)],
+                "end_date": [date(2024, 1, 15)],
+            }
+        )
 
         result = identify_planned_issues(
             sprint_issues, sprint_changelog, issues, sprints
         )
 
-        # Issue added AFTER start_date → NOT planned
-        assert result.filter(pl.col("issue_id") == "ISS-2")["is_planned"][0] is False
+        # Issue added mid-sprint IS planned ("scope creep")
+        assert result.filter(pl.col("issue_id") == "ISS-2")["is_planned"][0] is True
 
     def test_issue_created_before_start_with_no_history_is_planned(self):
         """Issue created before sprint start with no changelog = planned."""
@@ -95,7 +107,13 @@ class TestPlannedIssues:
             }
         )
 
-        sprints = pl.DataFrame({"id": ["SPRINT-1"], "start_date": [date(2024, 1, 2)]})
+        sprints = pl.DataFrame(
+            {
+                "id": ["SPRINT-1"],
+                "start_date": [date(2024, 1, 2)],
+                "end_date": [date(2024, 1, 15)],
+            }
+        )
 
         result = identify_planned_issues(
             sprint_issues, sprint_changelog, issues, sprints
@@ -130,7 +148,7 @@ class TestCompletedIssues:
         sprints = pl.DataFrame({"id": ["SPRINT-1"], "end_date": [date(2024, 1, 15)]})
 
         result = identify_completed_issues(
-            planned, issues, status_changelog, done_status_ids=[], sprints=sprints
+            planned, issues, status_changelog, done_status_ids=[], sprints_df=sprints
         )
 
         assert len(result) == 1
@@ -159,7 +177,7 @@ class TestCompletedIssues:
         sprints = pl.DataFrame({"id": ["SPRINT-1"], "end_date": [date(2024, 1, 15)]})
 
         result = identify_completed_issues(
-            planned, issues, status_changelog, done_status_ids=[], sprints=sprints
+            planned, issues, status_changelog, done_status_ids=[], sprints_df=sprints
         )
 
         assert len(result) == 0  # Not completed
@@ -169,7 +187,11 @@ class TestCompletedIssues:
         planned = pl.DataFrame({"issue_id": ["ISS-3"], "sprint_id": ["SPRINT-1"]})
 
         issues = pl.DataFrame(
-            {"id": ["ISS-3"], "jira_resolved_at": [None]}  # Not resolved via field
+            {
+                "id": ["ISS-3"],
+                "jira_resolved_at": [None],  # Not resolved via field
+                "status_id": ["STATUS-TODO"],
+            }
         )
 
         status_changelog = pl.DataFrame(
@@ -187,7 +209,7 @@ class TestCompletedIssues:
             issues,
             status_changelog,
             done_status_ids=["STATUS-DONE"],
-            sprints=sprints,
+            sprints_df=sprints,
         )
 
         assert len(result) == 1
@@ -213,7 +235,11 @@ class TestStoryPoints:
             }
         )
 
-        result = extract_story_points(planned, field_values, field_keys)
+        result = extract_story_points(
+            planned,
+            field_values_df=field_values,
+            field_keys_df=field_keys,
+        )
 
         assert result.filter(pl.col("issue_id") == "ISS-1")["story_points"][0] == 5.0
 
@@ -238,7 +264,11 @@ class TestStoryPoints:
             }
         )
 
-        result = extract_story_points(planned, field_values, field_keys)
+        result = extract_story_points(
+            planned,
+            field_values_df=field_values,
+            field_keys_df=field_keys,
+        )
 
         assert result.filter(pl.col("issue_id") == "ISS-2")["story_points"][0] == 0.0
 

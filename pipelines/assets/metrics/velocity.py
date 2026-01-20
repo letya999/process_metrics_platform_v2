@@ -51,14 +51,22 @@ def calculate_velocity(
     sprints_df = read_table(
         engine,
         """
-        SELECT id, project_id, name, start_date, end_date
+        SELECT id, project_id, name, start_date, end_date, complete_date
         FROM clean_jira.sprints
         WHERE start_date IS NOT NULL
         """,
     )
 
     sprint_issues_df = read_table(
-        engine, "SELECT issue_id, sprint_id FROM clean_jira.sprint_issues"
+        engine,
+        """
+        SELECT DISTINCT si.issue_id, si.sprint_id
+        FROM clean_jira.sprint_issues si
+        JOIN clean_jira.issues i ON i.id = si.issue_id
+        JOIN clean_jira.issue_types it ON it.id = i.type_id
+        -- Exclude Sub-tasks by name (hierarchy_level may be incorrect in data)
+        WHERE it.name NOT ILIKE '%%sub%%'
+        """,
     )
 
     sprint_changelog_df = read_table(
@@ -82,7 +90,7 @@ def calculate_velocity(
     field_values_df = read_table(
         engine,
         """
-        SELECT issue_id, field_key_id, json_value
+        SELECT issue_id, field_key_id, json_value::text AS json_value
         FROM clean_jira.field_values
         """,
     )
@@ -114,6 +122,17 @@ def calculate_velocity(
         """,
     )
 
+    field_value_changelog_df = read_table(
+        engine,
+        """
+        SELECT issue_id, field_key_id,
+               old_value::text as old_value,
+               new_value::text as new_value,
+               changed_at
+        FROM clean_jira.field_value_changelog
+        """,
+    )
+
     context.log.info(
         f"Loaded {len(sprints_df)} sprints, {len(issues_df)} issues, "
         f"{len(sprint_issues_df)} sprint-issue memberships"
@@ -133,6 +152,7 @@ def calculate_velocity(
         status_changelog_df=status_changelog_df,
         boards_df=boards_df,
         board_columns_df=board_columns_df,
+        field_value_changelog_df=field_value_changelog_df,
     )
 
     context.log.info(f"Calculated velocity for {len(velocity_df)} sprints")
@@ -155,6 +175,7 @@ def calculate_velocity(
         status_changelog_df=status_changelog_df,
         boards_df=boards_df,
         board_columns_df=board_columns_df,
+        field_value_changelog_df=field_value_changelog_df,
     )
 
     context.log.info(f"Calculated {len(velocity_slice_df)} velocity slice rows")

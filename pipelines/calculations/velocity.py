@@ -61,79 +61,98 @@ def identify_planned_issues(
     sprints_df: pl.DataFrame,
 ) -> pl.DataFrame:
     """
-    Determine which issues were "Planned" at sprint start.
+    Determine which issues were part of the sprint ("Planned/Committed") at the END of the sprint.
 
-    Business Rules:
-    1. If issue was explicitly added BEFORE sprint start → Planned
-    2. If issue was created BEFORE sprint start AND never removed → Planned
-    3. If issue was added MID-sprint → NOT Planned (scope creep)
+    User Definition:
+    - "Planned" includes everything that was in the sprint at the moment it closed.
+    - Includes "Scope Creep" (issues added mid-sprint).
+    - Excludes issues that were removed from the sprint before it ended.
 
     Args:
-        sprint_issues_df: Current sprint-issue membership
+        sprint_issues_df: Current sprint-issue membership (candidates)
         sprint_changelog_df: History of sprint membership changes
-        issues_df: Issue details (including created_at)
-        sprints_df: Sprint details (including start_date)
+        issues_df: Issue details (unused in this logic, kept for interface compatibility)
+        sprints_df: Sprint details (including end_date)
 
     Returns:
         DataFrame with columns: [issue_id, sprint_id, is_planned]
-
-    Example:
-        >>> planned = identify_planned_issues(sprint_issues, changelog, issues, sprints)
-        >>> print(planned.filter(pl.col("is_planned")).shape)
-        (150, 3)  # 150 planned issues
     """
-    # Step 1: Join sprint_issues with sprints to get start_date
-    membership = sprint_issues_df.join(
-        sprints_df.select(["id", "start_date"]),
+    # Step 1: Get ALL candidates - from current membership AND changelog history
+    # sprint_issues only contains issues currently in sprint (or at end)
+    # But checking commitment requires seeing issues that were removed
+    candidates = sprint_issues_df.select(["issue_id", "sprint_id"])
+
+    if not sprint_changelog_df.is_empty():
+        history_candidates = sprint_changelog_df.select(
+            ["issue_id", "sprint_id"]
+        ).unique()
+        candidates = pl.concat([candidates, history_candidates]).unique()
+
+    # Join with sprint timestamps
+    membership = candidates.join(
+        sprints_df.select(["id", "start_date", "end_date"]),
         left_on="sprint_id",
         right_on="id",
-        how="left",
+        how="inner",  # Only meaningful if we have sprint dates
     )
 
-    # Step 2: For each (issue, sprint), find LAST action <= start_date
-    # This tells us the state of the issue at sprint start
+    # Step 2: Determine status AT START
     if (
         not sprint_changelog_df.is_empty()
         and "changed_at" in sprint_changelog_df.columns
     ):
-        state_at_start = (
-            membership.join(
-                sprint_changelog_df, on=["issue_id", "sprint_id"], how="left"
+        # Get last action at or before start_date
+        actions_at_start = (
+            sprint_changelog_df.join(
+                sprints_df.select(["id", "start_date"]),
+                left_on="sprint_id",
+                right_on="id",
+                how="inner",
             )
             .filter(
                 pl.col("changed_at").is_null()
                 | (pl.col("changed_at") <= pl.col("start_date"))
             )
             .sort("changed_at", descending=True)
-            .group_by(["issue_id", "sprint_id"])
-            .first()
+            .unique(subset=["issue_id", "sprint_id"], keep="first")
+            .select(
+                ["issue_id", "sprint_id", pl.col("action").alias("action_at_start")]
+            )
+        )
+
+        state = membership.join(
+            actions_at_start, on=["issue_id", "sprint_id"], how="left"
         )
     else:
-        # No changelog - assume all current members were planned
-        state_at_start = membership.with_columns(pl.lit(None).alias("action"))
+        # No changelog - fallback to viewing everything as added
+        state = membership.with_columns(pl.lit("added").alias("action_at_start"))
 
-    # Step 3: Join with issue creation dates
-    state_with_created = state_at_start.join(
-        issues_df.select(["id", "jira_created_at"]),
-        left_on="issue_id",
-        right_on="id",
+    # Step 3: Filter - included if added before/at start OR snapshot (NULL)
+    # IMPORTANT:
+    # - If action_at_start is 'added' -> It was in sprint at start -> Planned
+    # - If action_at_start is NULL:
+    #   - If it is in sprint_issues (current membership) -> Likely snapshot -> Planned
+    #   - If NOT in sprint_issues -> It was removed, but we have no add record?
+    #     This is tricky. Assuming valid changelog, NULL means 'no event before start'.
+    #     If the issue is in sprint_issues, it means it's there NOW. If no history, it was likely there at start (snapshot).
+    #     If the issue is NOT in sprint_issues (removed) and has NULL start action, it clearly wasn't there at start.
+
+    # Let's verify membership in sprint_issues for the snapshot case
+    current_members = sprint_issues_df.with_columns(pl.lit(True).alias("is_current"))
+
+    state_with_curr = state.join(
+        current_members.select(["issue_id", "sprint_id", "is_current"]),
+        on=["issue_id", "sprint_id"],
         how="left",
     )
 
-    # Step 4: Determine if planned
-    # Planned if:
-    # - Explicitly added before start (action='added')
-    # - OR: No history AND created before start
-    planned = state_with_created.with_columns(
-        [
-            (
-                (pl.col("action") == "added")
-                | (
-                    pl.col("action").is_null()
-                    & (pl.col("jira_created_at") <= pl.col("start_date"))
-                )
-            ).alias("is_planned")
-        ]
+    planned = state_with_curr.with_columns(
+        (
+            (pl.col("action_at_start") == "added")
+            | (pl.col("action_at_start").is_null() & pl.col("is_current").is_not_null())
+        )
+        .fill_null(False)
+        .alias("is_planned")
     )
 
     return planned.select(["issue_id", "sprint_id", "is_planned"])
@@ -143,68 +162,114 @@ def extract_story_points(
     planned_df: pl.DataFrame,
     field_values_df: pl.DataFrame,
     field_keys_df: pl.DataFrame,
+    field_value_changelog_df: pl.DataFrame,
+    sprints_df: pl.DataFrame,
+    sprint_changelog_df: pl.DataFrame,
 ) -> pl.DataFrame:
     """
-    Extract Story Points for planned issues.
+    Extract Story Points at COMMITMENT time (Sprint Start).
 
-    Fallback strategy:
-    1. Try custom field "Story Points" (by name)
-    2. Try customfield_10036, customfield_10016 (common Jira field IDs)
-    3. Default to 0 if not found
+    Takes the SP estimate valid at the moment the sprint started.
+    - If issue was in sprint at start: use SP at start_date
+    - Changes during sprint are NOT included in "Planned" SP (Commitment).
 
     Args:
         planned_df: DataFrame with [issue_id, sprint_id, is_planned]
-        field_values_df: Custom field values
+        field_values_df: Custom field values (current state, fallback)
         field_keys_df: Custom field definitions
+        field_value_changelog_df: Field value history
+        sprints_df: Sprint details (need start_date)
+        sprint_changelog_df: Not used but kept for interface compatibility
 
     Returns:
         DataFrame with: [issue_id, sprint_id, story_points]
-
-    Example:
-        >>> sp_df = extract_story_points(planned, field_values, field_keys)
-        >>> print(sp_df.select("story_points").describe())
     """
     if field_keys_df.is_empty():
-        # No custom fields - return 0 story points
         return planned_df.select(["issue_id", "sprint_id"]).with_columns(
             pl.lit(0.0).alias("story_points")
         )
 
     # Step 1: Identify Story Points field ID(s)
     sp_fields = field_keys_df.filter(
-        (
-            pl.col("external_key").is_in(
-                ["customfield_10036", "customfield_10016", "story_points"]
-            )
-        )
+        (pl.col("external_key").is_in(["customfield_10036", "story_points"]))
         | (pl.col("name").str.to_lowercase().str.contains("story point"))
     )
 
     if sp_fields.is_empty():
-        # No Story Points field found
         return planned_df.select(["issue_id", "sprint_id"]).with_columns(
             pl.lit(0.0).alias("story_points")
         )
 
-    # Step 2: Join planned issues with field values
-    sp_values = (
-        planned_df.join(field_values_df, on="issue_id", how="left")
-        .join(sp_fields, left_on="field_key_id", right_on="id", how="inner")
-        .with_columns(
-            [
-                # Try to parse as float, default to 0
-                pl.when(pl.col("json_value").is_not_null())
-                .then(pl.col("json_value").cast(pl.Float64, strict=False))
-                .otherwise(0.0)
-                .alias("story_points")
-            ]
-        )
-        .select(["issue_id", "sprint_id", "story_points"])
-        .group_by(["issue_id", "sprint_id"])
-        .agg(pl.col("story_points").max())  # Take max if multiple fields/values
+    # Step 2: Join with start_date to get commitment timestamp
+    planned_with_dates = planned_df.join(
+        sprints_df.select(["id", "start_date"]),
+        left_on="sprint_id",
+        right_on="id",
+        how="left",
     )
 
-    # Step 3: Left join back to planned issues (use 0 for missing values)
+    # Step 3: Get SP value as of start_date
+    sp_field_ids = sp_fields.select("id").to_series().to_list()
+
+    if not field_value_changelog_df.is_empty() and sp_field_ids:
+        # Filter changelog for SP fields only
+        sp_changelog = field_value_changelog_df.filter(
+            pl.col("field_key_id").is_in(sp_field_ids)
+        )
+
+        # Find last SP change BEFORE or AT start_date
+        historical_sp = (
+            planned_with_dates.join(sp_changelog, on="issue_id", how="left")
+            .filter(
+                pl.col("changed_at").is_null()
+                | (pl.col("changed_at") <= pl.col("start_date"))
+            )
+            .sort("changed_at", descending=True)
+            .unique(subset=["issue_id", "sprint_id"], keep="first")
+            .with_columns(
+                [
+                    pl.when(pl.col("new_value").is_not_null())
+                    .then(
+                        pl.col("new_value")
+                        .cast(pl.Utf8)
+                        .str.strip_chars('"')
+                        .cast(pl.Float64, strict=False)
+                    )
+                    .otherwise(0.0)
+                    .alias("story_points")
+                ]
+            )
+            .select(["issue_id", "sprint_id", "story_points"])
+        )
+    else:
+        historical_sp = pl.DataFrame()
+
+    # Fallback to current values if no changelog
+    if historical_sp.is_empty():
+        current_sp = (
+            planned_df.join(field_values_df, on="issue_id", how="left")
+            .join(sp_fields, left_on="field_key_id", right_on="id", how="inner")
+            .with_columns(
+                [
+                    pl.when(pl.col("json_value").is_not_null())
+                    .then(
+                        pl.col("json_value")
+                        .str.strip_chars('"')
+                        .cast(pl.Float64, strict=False)
+                    )
+                    .otherwise(0.0)
+                    .alias("story_points")
+                ]
+            )
+            .select(["issue_id", "sprint_id", "story_points"])
+            .group_by(["issue_id", "sprint_id"])
+            .agg(pl.col("story_points").max())
+        )
+        sp_values = current_sp
+    else:
+        sp_values = historical_sp
+
+    # Step 4: Left join back to planned issues (use 0 for missing values)
     result = planned_df.select(["issue_id", "sprint_id"]).join(
         sp_values, on=["issue_id", "sprint_id"], how="left"
     )
@@ -223,55 +288,65 @@ def identify_completed_issues(
     Determine which planned issues were completed by sprint end.
 
     Business Rules:
-    1. Issue resolved_at <= sprint.end_date → Completed
-    2. Issue transitioned to Done status <= sprint.end_date → Completed
-    3. Current status is Done AND sprint ended → Completed
+    1. Issue resolved_at is within [sprint.start_date, sprint.effective_end_date]
+       where effective_end_date is the actual completion date (if clicked) or scheduled end date.
+    2. Start Date Constraint: Issues resolved BEFORE sprint start are NOT counted (Velocity = work DONE in sprint).
+    3. End Date Constraint: Issues resolved AFTER sprint closed (with grace period) are NOT counted.
 
     Args:
         planned_df: Planned issues [issue_id, sprint_id]
         issues_df: Issue details (status, resolved_at)
         status_changelog_df: Status change history
         done_status_ids: List of status IDs representing "Done"
-        sprints_df: Sprint details (end_date)
+        sprints_df: Sprint details (start_date, end_date, complete_date)
 
     Returns:
         DataFrame with: [issue_id, sprint_id, is_completed]
-
-    Example:
-        >>> completed = identify_completed_issues(planned, issues, changelog, done_ids, sprints)
-        >>> completion_rate = len(completed) / len(planned) * 100
     """
-    # Join planned with sprint end dates
-    with_end_dates = planned_df.join(
-        sprints_df.select(["id", "end_date"]),
+    # Join planned with sprint dates
+    # We need start_date, end_date, and complete_date
+    sprint_dates = sprints_df.select(["id", "start_date", "end_date", "complete_date"])
+
+    with_dates = planned_df.join(
+        sprint_dates,
         left_on="sprint_id",
         right_on="id",
         how="left",
+    ).with_columns(
+        [
+            # Effective end date: Use complete_date if available (button clicked), else end_date
+            pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date")
+        ]
     )
 
-    # Strategy 1: Resolved by end date
-    resolved_by_end = (
-        with_end_dates.join(
-            issues_df.select(["id", "jira_resolved_at"]),
+    # Strategy 1: Resolved within the sprint window AND status is Done
+    # Condition: start_date <= resolved_at <= effective_end_date AND status_id IN done_status_ids
+    resolved_in_sprint = (
+        with_dates.join(
+            issues_df.select(["id", "jira_resolved_at", "status_id"]),
             left_on="issue_id",
             right_on="id",
             how="left",
         )
         .filter(
             pl.col("jira_resolved_at").is_not_null()
-            & (pl.col("jira_resolved_at") <= pl.col("end_date"))
+            & (pl.col("jira_resolved_at") >= pl.col("start_date"))
+            & (pl.col("jira_resolved_at") <= pl.col("effective_end_date"))
+            & (pl.col("status_id").is_in(done_status_ids))
         )
         .select(["issue_id", "sprint_id"])
         .with_columns(pl.lit(True).alias("is_completed"))
     )
 
-    # Strategy 2: Transitioned to Done by end date (from changelog)
+    # Strategy 2: Transitioned to Done within the sprint window (from changelog)
+    # Useful if jira_resolved_at is missing but status changed
     if not status_changelog_df.is_empty() and done_status_ids:
         done_by_changelog = (
-            with_end_dates.join(status_changelog_df, on="issue_id", how="left")
+            with_dates.join(status_changelog_df, on="issue_id", how="left")
             .filter(
                 pl.col("to_status_id").is_in(done_status_ids)
-                & (pl.col("changed_at") <= pl.col("end_date"))
+                & (pl.col("changed_at") >= pl.col("start_date"))
+                & (pl.col("changed_at") <= pl.col("effective_end_date"))
             )
             .select(["issue_id", "sprint_id"])
             .unique()
@@ -279,25 +354,9 @@ def identify_completed_issues(
         )
 
         # Combine strategies (UNION)
-        completed = pl.concat([resolved_by_end, done_by_changelog]).unique()
+        completed = pl.concat([resolved_in_sprint, done_by_changelog]).unique()
     else:
-        completed = resolved_by_end
-
-    # Strategy 3: Current status is Done (for sprints that already ended)
-    if done_status_ids:
-        done_by_current_status = (
-            with_end_dates.join(
-                issues_df.select(["id", "status_id"]),
-                left_on="issue_id",
-                right_on="id",
-                how="left",
-            )
-            .filter(pl.col("status_id").is_in(done_status_ids))
-            .select(["issue_id", "sprint_id"])
-            .with_columns(pl.lit(True).alias("is_completed"))
-        )
-
-        completed = pl.concat([completed, done_by_current_status]).unique()
+        completed = resolved_in_sprint
 
     return completed
 
@@ -312,6 +371,7 @@ def calculate_velocity_facts(
     status_changelog_df: pl.DataFrame,
     boards_df: pl.DataFrame,
     board_columns_df: pl.DataFrame,
+    field_value_changelog_df: pl.DataFrame,
 ) -> pl.DataFrame:
     """
     Main orchestration function: Calculate Velocity facts.
@@ -351,9 +411,16 @@ def calculate_velocity_facts(
         pl.col("is_planned")
     )  # Keep only planned=True
 
-    # Step 3: Extract story points for planned
+    # Step 3: Extract story points for planned (HISTORICAL values at commitment time)
     planned_with_sp = planned.join(
-        extract_story_points(planned, field_values_df, field_keys_df),
+        extract_story_points(
+            planned_df=planned,
+            field_values_df=field_values_df,
+            field_keys_df=field_keys_df,
+            field_value_changelog_df=field_value_changelog_df,
+            sprints_df=sprints_df,
+            sprint_changelog_df=sprint_changelog_df,
+        ),
         on=["issue_id", "sprint_id"],
         how="left",
     ).with_columns(pl.col("story_points").fill_null(0.0))
@@ -425,6 +492,7 @@ def calculate_velocity_slice_by_issue_type(
     status_changelog_df: pl.DataFrame,
     boards_df: pl.DataFrame,
     board_columns_df: pl.DataFrame,
+    field_value_changelog_df: pl.DataFrame,
 ) -> pl.DataFrame:
     """
     Calculate Velocity sliced by Issue Type.
@@ -451,7 +519,14 @@ def calculate_velocity_slice_by_issue_type(
     )
 
     planned_with_sp = planned_with_type.join(
-        extract_story_points(planned, field_values_df, field_keys_df),
+        extract_story_points(
+            planned_df=planned,
+            field_values_df=field_values_df,
+            field_keys_df=field_keys_df,
+            field_value_changelog_df=field_value_changelog_df,
+            sprints_df=sprints_df,
+            sprint_changelog_df=sprint_changelog_df,
+        ),
         on=["issue_id", "sprint_id"],
         how="left",
     ).with_columns(pl.col("story_points").fill_null(0.0))
