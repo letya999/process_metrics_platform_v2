@@ -31,34 +31,38 @@ class TestCommitmentPoints:
                 "id": ["COL-1", "COL-2", "COL-3"],
                 "board_id": ["BOARD-1", "BOARD-1", "BOARD-1"],
                 "name": ["To Do", "In Progress", "Done"],
+                "position": [0, 1, 2],
                 "status_id": ["STATUS-1", "STATUS-2", "STATUS-3"],
             }
         )
 
-        start_cols, end_cols = identify_commitment_points(boards, board_columns)
+        points = identify_commitment_points(boards, board_columns)
 
-        assert len(start_cols) == 1
-        assert start_cols["status_id"][0] == "STATUS-2"
-        assert len(end_cols) == 1
-        assert end_cols["status_id"][0] == "STATUS-3"
+        assert len(points["start_status_ids"]) == 1
+        assert points["start_status_ids"][0] == "STATUS-2"
+        assert len(points["end_status_ids"]) == 1
+        assert points["end_status_ids"][0] == "STATUS-3"
+        # Middle should include "In Progress" status (position 1 <= x < 2)
+        assert "STATUS-2" in points["middle_status_ids"]
 
     def test_empty_board_columns_returns_empty(self):
         """No board columns = no commitment points."""
         boards = pl.DataFrame({"id": [], "project_id": []})
         board_columns = pl.DataFrame(
-            {"id": [], "board_id": [], "name": [], "status_id": []},
+            {"id": [], "board_id": [], "name": [], "position": [], "status_id": []},
             schema={
                 "id": pl.Utf8,
                 "board_id": pl.Utf8,
                 "name": pl.Utf8,
+                "position": pl.Int32,
                 "status_id": pl.Utf8,
             },
         )
 
-        start_cols, end_cols = identify_commitment_points(boards, board_columns)
+        points = identify_commitment_points(boards, board_columns)
 
-        assert start_cols.is_empty()
-        assert end_cols.is_empty()
+        assert not points["start_status_ids"]
+        assert not points["end_status_ids"]
 
     def test_russian_column_names_are_recognized(self):
         """Russian column names (В работе, Готово) are recognized."""
@@ -69,14 +73,15 @@ class TestCommitmentPoints:
                 "id": ["COL-1", "COL-2"],
                 "board_id": ["BOARD-1", "BOARD-1"],
                 "name": ["В работе", "Готово"],
+                "position": [1, 2],
                 "status_id": ["STATUS-2", "STATUS-3"],
             }
         )
 
-        start_cols, end_cols = identify_commitment_points(boards, board_columns)
+        points = identify_commitment_points(boards, board_columns)
 
-        assert len(start_cols) == 1
-        assert len(end_cols) == 1
+        assert len(points["start_status_ids"]) == 1
+        assert len(points["end_status_ids"]) == 1
 
 
 class TestLeadTimeCalculation:
@@ -90,12 +95,15 @@ class TestLeadTimeCalculation:
                 "project_id": ["PROJ-1"],
                 "key": ["PROJ-1"],
                 "type_name": ["Story"],
+                "jira_created_at": [datetime(2023, 12, 25, 10, 0)],
+                "jira_resolved_at": [datetime(2024, 1, 10, 10, 0)],
             }
         )
 
         status_changelog = pl.DataFrame(
             {
                 "issue_id": ["ISS-1", "ISS-1"],
+                "from_status_id": [None, "STATUS-IN-PROGRESS"],
                 "to_status_id": ["STATUS-IN-PROGRESS", "STATUS-DONE"],
                 "changed_at": [
                     datetime(2024, 1, 1, 10, 0),  # Started
@@ -107,7 +115,7 @@ class TestLeadTimeCalculation:
         result = calculate_lead_time_per_issue(
             issues,
             status_changelog,
-            start_status_ids=["STATUS-IN-PROGRESS"],
+            middle_status_ids=["STATUS-IN-PROGRESS"],  # Changed parameter name
             end_status_ids=["STATUS-DONE"],
         )
 
@@ -122,12 +130,15 @@ class TestLeadTimeCalculation:
                 "project_id": ["PROJ-1"],
                 "key": ["PROJ-2"],
                 "type_name": ["Bug"],
+                "jira_created_at": [datetime(2023, 12, 25, 10, 0)],
+                "jira_resolved_at": [datetime(2024, 1, 15, 10, 0)],
             }
         )
 
         status_changelog = pl.DataFrame(
             {
                 "issue_id": ["ISS-2", "ISS-2", "ISS-2", "ISS-2"],
+                "from_status_id": [None, "STATUS-IN-PROGRESS", "STATUS-TODO", "STATUS-IN-PROGRESS"],
                 "to_status_id": [
                     "STATUS-IN-PROGRESS",  # First start (Jan 1)
                     "STATUS-TODO",  # Moved back
@@ -146,27 +157,30 @@ class TestLeadTimeCalculation:
         result = calculate_lead_time_per_issue(
             issues,
             status_changelog,
-            start_status_ids=["STATUS-IN-PROGRESS"],
+            middle_status_ids=["STATUS-IN-PROGRESS"],
             end_status_ids=["STATUS-DONE"],
         )
 
         # Lead time = Jan 1 to Jan 10 = 9 days (not Jan 5 to Jan 10)
         assert result["lead_time_days"][0] == 9.0
 
-    def test_issue_without_end_event_is_excluded(self):
-        """Issue without Done event = no lead time."""
+    def test_issue_without_end_event_uses_resolved_at(self):
+        """Issue without Done event falls back to jira_resolved_at."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-3"],
                 "project_id": ["PROJ-1"],
                 "key": ["PROJ-3"],
                 "type_name": ["Task"],
+                "jira_created_at": [datetime(2023, 12, 25, 10, 0)],
+                "jira_resolved_at": [datetime(2024, 1, 10, 10, 0)],  # Fallback
             }
         )
 
         status_changelog = pl.DataFrame(
             {
                 "issue_id": ["ISS-3"],
+                "from_status_id": [None],
                 "to_status_id": ["STATUS-IN-PROGRESS"],
                 "changed_at": [datetime(2024, 1, 1, 10, 0)],
             }
@@ -175,26 +189,31 @@ class TestLeadTimeCalculation:
         result = calculate_lead_time_per_issue(
             issues,
             status_changelog,
-            start_status_ids=["STATUS-IN-PROGRESS"],
+            middle_status_ids=["STATUS-IN-PROGRESS"],
             end_status_ids=["STATUS-DONE"],
         )
 
-        assert result.is_empty()
+        # Should use resolved_at as end: Jan 1 to Jan 10 = 9 days
+        assert len(result) == 1
+        assert result["lead_time_days"][0] == 9.0
 
-    def test_empty_status_ids_returns_empty(self):
-        """No start/end status IDs = no lead time."""
+    def test_issue_without_start_event_uses_created_at(self):
+        """Issue without In Progress event falls back to jira_created_at."""
         issues = pl.DataFrame(
             {
-                "id": ["ISS-4"],
+                "id": ["ISS-3B"],
                 "project_id": ["PROJ-1"],
-                "key": ["PROJ-4"],
-                "type_name": ["Story"],
+                "key": ["PROJ-3B"],
+                "type_name": ["Task"],
+                "jira_created_at": [datetime(2024, 1, 1, 10, 0)],  # Fallback
+                "jira_resolved_at": [datetime(2024, 1, 10, 10, 0)],
             }
         )
 
         status_changelog = pl.DataFrame(
             {
-                "issue_id": ["ISS-4"],
+                "issue_id": ["ISS-3B"],
+                "from_status_id": [None],
                 "to_status_id": ["STATUS-DONE"],
                 "changed_at": [datetime(2024, 1, 10, 10, 0)],
             }
@@ -203,11 +222,87 @@ class TestLeadTimeCalculation:
         result = calculate_lead_time_per_issue(
             issues,
             status_changelog,
-            start_status_ids=[],  # Empty
+            middle_status_ids=["STATUS-IN-PROGRESS"],
+            end_status_ids=["STATUS-DONE"],
+        )
+
+        # Should use created_at as start: Jan 1 to Jan 10 = 9 days
+        assert len(result) == 1
+        assert result["lead_time_days"][0] == 9.0
+
+    def test_empty_status_ids_returns_empty(self):
+        """No middle/end status IDs = no lead time."""
+        issues = pl.DataFrame(
+            {
+                "id": ["ISS-4"],
+                "project_id": ["PROJ-1"],
+                "key": ["PROJ-4"],
+                "type_name": ["Story"],
+                "jira_created_at": [datetime(2024, 1, 1, 10, 0)],
+                "jira_resolved_at": [datetime(2024, 1, 10, 10, 0)],
+            }
+        )
+
+        status_changelog = pl.DataFrame(
+            {
+                "issue_id": ["ISS-4"],
+                "from_status_id": [None],
+                "to_status_id": ["STATUS-DONE"],
+                "changed_at": [datetime(2024, 1, 10, 10, 0)],
+            }
+        )
+
+        result = calculate_lead_time_per_issue(
+            issues,
+            status_changelog,
+            middle_status_ids=[],  # Empty
             end_status_ids=["STATUS-DONE"],
         )
 
         assert result.is_empty()
+
+    def test_issue_returning_to_done_uses_last_left_end_logic(self):
+        """Issue that left Done and returned uses correct end date."""
+        issues = pl.DataFrame(
+            {
+                "id": ["ISS-5"],
+                "project_id": ["PROJ-1"],
+                "key": ["PROJ-5"],
+                "type_name": ["Bug"],
+                "jira_created_at": [datetime(2023, 12, 25, 10, 0)],
+                "jira_resolved_at": [datetime(2024, 1, 20, 10, 0)],
+            }
+        )
+
+        status_changelog = pl.DataFrame(
+            {
+                "issue_id": ["ISS-5", "ISS-5", "ISS-5", "ISS-5"],
+                "from_status_id": [None, "STATUS-IN-PROGRESS", "STATUS-DONE", "STATUS-IN-PROGRESS"],
+                "to_status_id": [
+                    "STATUS-IN-PROGRESS",  # Start: Jan 1
+                    "STATUS-DONE",  # First done: Jan 5 (should be ignored)
+                    "STATUS-IN-PROGRESS",  # Left done: Jan 8
+                    "STATUS-DONE",  # Final done: Jan 15 (should be used)
+                ],
+                "changed_at": [
+                    datetime(2024, 1, 1, 10, 0),
+                    datetime(2024, 1, 5, 10, 0),  # First Done (ignored)
+                    datetime(2024, 1, 8, 10, 0),  # Left Done
+                    datetime(2024, 1, 15, 10, 0),  # Final Done (used)
+                ],
+            }
+        )
+
+        result = calculate_lead_time_per_issue(
+            issues,
+            status_changelog,
+            middle_status_ids=["STATUS-IN-PROGRESS"],
+            end_status_ids=["STATUS-DONE"],
+        )
+
+        # Lead time = Jan 1 (first start) to Jan 15 (final done after leaving) = 14 days
+        assert len(result) == 1
+        assert result["lead_time_days"][0] == 14.0
 
 
 class TestHistogramBins:

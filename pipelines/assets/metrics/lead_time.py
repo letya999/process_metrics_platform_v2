@@ -59,7 +59,7 @@ def calculate_lead_time(
     status_changelog_df = read_table(
         engine,
         """
-        SELECT issue_id, to_status_id, changed_at
+        SELECT issue_id, from_status_id, to_status_id, changed_at
         FROM clean_jira.issue_status_changelog
         ORDER BY changed_at
         """,
@@ -70,7 +70,7 @@ def calculate_lead_time(
     board_columns_df = read_table(
         engine,
         """
-        SELECT bc.id, bc.board_id, bc.name, bcs.status_id
+        SELECT bc.id, bc.board_id, bc.name, bc.position, bcs.status_id
         FROM clean_jira.board_columns bc
         LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.board_column_id = bc.id
         """,
