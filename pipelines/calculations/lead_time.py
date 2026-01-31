@@ -10,150 +10,269 @@ Key Metrics:
 - Histogram bins: Distribution of lead times
 
 Business Rules:
-1. commitment_start = FIRST time issue entered "In Progress" column
-2. commitment_end = FIRST time issue entered "Done" column (after start)
+1. commitment_start = FIRST time issue entered columns between "In Progress" and "Done"
+   - Fallback: Use issue.jira_created_at if no transition event found
+2. commitment_end = FIRST time issue entered "Done" column (after leaving it last time)
+   - Handles cases where issue moved Done → In Progress → Done again
+   - Fallback: Use issue.jira_resolved_at if no transition event found
 3. Lead Time = end - start (in days)
-4. Only issues with both start and end are included
+4. All issues with either resolved_at or Done transition are included
 """
 
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import polars as pl
 
 
 def identify_commitment_points(
     boards_df: pl.DataFrame, board_columns_df: pl.DataFrame
-) -> Tuple[pl.DataFrame, pl.DataFrame]:
+) -> Dict[str, any]:
     """
     Identify "In Progress" (start) and "Done" (end) columns from board configuration.
 
     Args:
         boards_df: DataFrame of boards
-        board_columns_df: DataFrame of board columns with status mappings
+        board_columns_df: DataFrame of board columns with status mappings (must include position)
 
     Returns:
-        Tuple of (start_columns_df, end_columns_df) each with status_id column
+        Dict with:
+        - start_status_ids: List of status IDs in "In Progress" column
+        - end_status_ids: List of status IDs in "Done" column
+        - middle_status_ids: List of ALL status IDs between start and end columns
+        - start_position: Position of start column
+        - end_position: Position of end column
 
     Example:
-        >>> start_cols, end_cols = identify_commitment_points(boards, columns)
-        >>> print(f"Found {len(start_cols)} start statuses, {len(end_cols)} end statuses")
+        >>> points = identify_commitment_points(boards, columns)
+        >>> print(f"Found {len(points['start_status_ids'])} start statuses")
     """
     if board_columns_df.is_empty():
-        return pl.DataFrame(), pl.DataFrame()
+        return {
+            "start_status_ids": [],
+            "end_status_ids": [],
+            "middle_status_ids": [],
+            "start_position": None,
+            "end_position": None,
+        }
 
-    # Find "In Progress" columns
+    # Find "In Progress" columns (start commitment point)
     start_columns = board_columns_df.filter(
         pl.col("name").str.to_lowercase().str.contains("in progress")
         | pl.col("name").str.to_lowercase().str.contains("в работе")  # Russian
     )
 
-    # Find "Done" columns
+    # Find "Done" columns (end commitment point)
     end_columns = board_columns_df.filter(
         pl.col("name").str.to_lowercase().str.contains("done")
         | pl.col("name").str.to_lowercase().str.contains("готово")  # Russian
     )
 
-    return start_columns, end_columns
+    if start_columns.is_empty() or end_columns.is_empty():
+        return {
+            "start_status_ids": [],
+            "end_status_ids": [],
+            "middle_status_ids": [],
+            "start_position": None,
+            "end_position": None,
+        }
+
+    # Get positions
+    start_position = start_columns["position"].min()
+    end_position = end_columns["position"].min()
+
+    # Validate that start comes before end
+    if start_position >= end_position:
+        return {
+            "start_status_ids": [],
+            "end_status_ids": [],
+            "middle_status_ids": [],
+            "start_position": None,
+            "end_position": None,
+        }
+
+    # Get all status IDs for start and end columns
+    start_status_ids = start_columns["status_id"].unique().drop_nulls().to_list()
+    end_status_ids = end_columns["status_id"].unique().drop_nulls().to_list()
+
+    # Get ALL status IDs in columns between start (inclusive) and end (exclusive)
+    # This matches old SQL logic: cs.order_num >= p.start_order AND cs.order_num < p.end_order
+    middle_columns = board_columns_df.filter(
+        (pl.col("position") >= start_position) & (pl.col("position") < end_position)
+    )
+    middle_status_ids = middle_columns["status_id"].unique().drop_nulls().to_list()
+
+    return {
+        "start_status_ids": start_status_ids,
+        "end_status_ids": end_status_ids,
+        "middle_status_ids": middle_status_ids,
+        "start_position": start_position,
+        "end_position": end_position,
+    }
 
 
 def calculate_lead_time_per_issue(
     issues_df: pl.DataFrame,
     status_changelog_df: pl.DataFrame,
-    start_status_ids: List[str],
+    middle_status_ids: List[str],
     end_status_ids: List[str],
 ) -> pl.DataFrame:
     """
     Calculate Lead Time (commitment_start → commitment_end) for each issue.
 
-    Business Rules:
-    1. commitment_start = FIRST time issue entered "In Progress" column
-    2. commitment_end = FIRST time issue entered "Done" column (after start)
+    Business Rules (matching old SQL implementation):
+    1. commitment_end:
+       - Find LAST time issue LEFT "Done" column (last_left_end)
+       - Find FIRST time issue entered "Done" column AFTER last_left_end
+       - Fallback: Use issue.jira_resolved_at if no transition found
+    2. commitment_start:
+       - Find FIRST time issue entered ANY column between "In Progress" and "Done"
+       - Must be BEFORE commitment_end
+       - Fallback: Use issue.jira_created_at if no transition found
     3. Lead Time = end - start (in days)
-    4. Only issues with both start and end events are included
+    4. Includes ALL issues with resolved_at or Done transition
 
     Args:
-        issues_df: Issue details (id, project_id, key)
-        status_changelog_df: Status change history
-        start_status_ids: List of "In Progress" status IDs
+        issues_df: Issue details (id, project_id, key, jira_created_at, jira_resolved_at)
+        status_changelog_df: Status change history (issue_id, from_status_id, to_status_id, changed_at)
+        middle_status_ids: List of ALL status IDs between "In Progress" and "Done" (inclusive start, exclusive end)
         end_status_ids: List of "Done" status IDs
 
     Returns:
-        DataFrame: [issue_id, project_id, commitment_start_at,
-                    commitment_end_at, lead_time_days]
-
-    Example:
-        >>> lead_time_df = calculate_lead_time_per_issue(
-        ...     issues, changelog, ["10001"], ["10002"]
-        ... )
-        >>> print(lead_time_df.filter(pl.col("lead_time_days") > 10))
+        DataFrame: [issue_id, project_id, issue_key, issue_type,
+                    commitment_start_at, commitment_end_at, lead_time_days]
     """
-    if not start_status_ids or not end_status_ids or status_changelog_df.is_empty():
+    if not middle_status_ids or not end_status_ids:
         # No valid configuration - return empty DataFrame
         return pl.DataFrame(
             schema={
                 "issue_id": pl.Utf8,
                 "project_id": pl.Utf8,
+                "issue_key": pl.Utf8,
+                "issue_type": pl.Utf8,
                 "commitment_start_at": pl.Datetime,
                 "commitment_end_at": pl.Datetime,
                 "lead_time_days": pl.Float64,
             }
         )
 
-    # Step 1: Find first "In Progress" transition per issue
-    start_events = (
-        status_changelog_df.filter(pl.col("to_status_id").is_in(start_status_ids))
-        .group_by("issue_id")
-        .agg(pl.col("changed_at").min().alias("commitment_start_at"))
+    # ==============================================================
+    # Step 1: Find LAST time each issue LEFT the "Done" column
+    # ==============================================================
+    # This handles cases where issue moved: Done → In Progress → Done
+    # We need to find the LAST exit from Done to properly calculate the final entry
+
+    last_left_end = None
+    if not status_changelog_df.is_empty():
+        # Find transitions FROM "Done" status TO non-"Done" status
+        left_done_events = (
+            status_changelog_df.filter(
+                pl.col("from_status_id").is_in(end_status_ids)
+                & ~pl.col("to_status_id").is_in(end_status_ids)
+            )
+            .group_by("issue_id")
+            .agg(pl.col("changed_at").max().alias("last_left_done_at"))
+        )
+
+        if not left_done_events.is_empty():
+            last_left_end = left_done_events
+
+    # ==============================================================
+    # Step 2: Find commitment_end (FIRST entry to "Done" after last exit)
+    # ==============================================================
+
+    # Find all transitions TO "Done" status
+    done_transitions = status_changelog_df.filter(
+        pl.col("to_status_id").is_in(end_status_ids)
     )
 
-    if start_events.is_empty():
+    # If we have last_left_end info, filter to only transitions AFTER last exit
+    if last_left_end is not None:
+        done_transitions = done_transitions.join(
+            last_left_end, on="issue_id", how="left"
+        ).filter(
+            pl.col("last_left_done_at").is_null()
+            | (pl.col("changed_at") > pl.col("last_left_done_at"))
+        )
+
+    # Get FIRST transition to Done (per issue)
+    end_events_from_changelog = (
+        done_transitions.group_by("issue_id")
+        .agg(pl.col("changed_at").min().alias("end_at_from_changelog"))
+    )
+
+    # Join with issues and use COALESCE(changelog_event, resolved_at)
+    issues_with_end = issues_df.join(
+        end_events_from_changelog, left_on="id", right_on="issue_id", how="left"
+    ).with_columns(
+        [
+            pl.coalesce(
+                [pl.col("end_at_from_changelog"), pl.col("jira_resolved_at")]
+            ).alias("commitment_end_at")
+        ]
+    ).filter(
+        pl.col("commitment_end_at").is_not_null()
+    )
+
+    if issues_with_end.is_empty():
         return pl.DataFrame(
             schema={
                 "issue_id": pl.Utf8,
                 "project_id": pl.Utf8,
+                "issue_key": pl.Utf8,
+                "issue_type": pl.Utf8,
                 "commitment_start_at": pl.Datetime,
                 "commitment_end_at": pl.Datetime,
                 "lead_time_days": pl.Float64,
             }
         )
 
-    # Step 2: Find first "Done" transition per issue (AFTER start)
-    end_events = (
-        status_changelog_df.join(start_events, on="issue_id", how="inner")
-        .filter(
-            pl.col("to_status_id").is_in(end_status_ids)
-            & (pl.col("changed_at") > pl.col("commitment_start_at"))
-        )
-        .group_by("issue_id")
-        .agg(pl.col("changed_at").min().alias("commitment_end_at"))
+    # ==============================================================
+    # Step 3: Find commitment_start (FIRST entry to middle columns, BEFORE end)
+    # ==============================================================
+
+    # Find all transitions TO any status in the middle range (In Progress to Done, exclusive)
+    start_transitions = status_changelog_df.filter(
+        pl.col("to_status_id").is_in(middle_status_ids)
     )
 
-    if end_events.is_empty():
-        return pl.DataFrame(
-            schema={
-                "issue_id": pl.Utf8,
-                "project_id": pl.Utf8,
-                "commitment_start_at": pl.Datetime,
-                "commitment_end_at": pl.Datetime,
-                "lead_time_days": pl.Float64,
-            }
-        )
+    # Join with commitment_end to filter only transitions BEFORE end
+    start_transitions_before_end = start_transitions.join(
+        issues_with_end.select(["id", "commitment_end_at"]),
+        left_on="issue_id",
+        right_on="id",
+        how="inner",
+    ).filter(
+        pl.col("changed_at") <= pl.col("commitment_end_at")
+    )
 
-    # Step 3: Combine start and end events with issue details
+    # Get FIRST transition to middle columns (per issue)
+    start_events_from_changelog = (
+        start_transitions_before_end.group_by("issue_id")
+        .agg(pl.col("changed_at").min().alias("start_at_from_changelog"))
+    )
+
+    # Join with issues_with_end and use COALESCE(changelog_event, created_at)
     lead_time = (
-        issues_df.join(start_events, left_on="id", right_on="issue_id", how="inner")
-        .join(end_events, left_on="id", right_on="issue_id", how="inner")
+        issues_with_end.join(
+            start_events_from_changelog, left_on="id", right_on="issue_id", how="left"
+        )
+        .with_columns(
+            [
+                pl.coalesce(
+                    [pl.col("start_at_from_changelog"), pl.col("jira_created_at")]
+                ).alias("commitment_start_at")
+            ]
+        )
         .filter(
             pl.col("commitment_start_at").is_not_null()
-            & pl.col("commitment_end_at").is_not_null()
+            & (pl.col("commitment_end_at") >= pl.col("commitment_start_at"))
         )
         .with_columns(
             [
                 # Calculate lead time in days
                 (
-                    (
-                        pl.col("commitment_end_at") - pl.col("commitment_start_at")
-                    ).dt.total_seconds()
+                    (pl.col("commitment_end_at") - pl.col("commitment_start_at"))
+                    .dt.total_seconds()
                     / 86400.0
                 ).alias("lead_time_days")
             ]
@@ -321,10 +440,13 @@ def calculate_lead_time_facts(
     replacing the complex SQL Materialized View with debuggable Python code.
 
     Args:
-        issues_df: Issue details
-        status_changelog_df: Status change history
+        issues_df: Issue details (must include: id, project_id, key, type_name,
+                   jira_created_at, jira_resolved_at)
+        status_changelog_df: Status change history (must include: issue_id,
+                            from_status_id, to_status_id, changed_at)
         boards_df: Board definitions
-        board_columns_df: Board column configuration
+        board_columns_df: Board column configuration (must include: id, board_id,
+                         name, position, status_id)
 
     Returns:
         DataFrame ready to insert into metrics.fact_lead_time
@@ -336,9 +458,9 @@ def calculate_lead_time_facts(
         >>> print(lead_time_df.describe())
     """
     # Step 1: Identify commitment points (start and end statuses)
-    start_columns, end_columns = identify_commitment_points(boards_df, board_columns_df)
+    points = identify_commitment_points(boards_df, board_columns_df)
 
-    if start_columns.is_empty() or end_columns.is_empty():
+    if not points["middle_status_ids"] or not points["end_status_ids"]:
         # No valid board configuration - return empty DataFrame
         return pl.DataFrame(
             schema={
@@ -352,12 +474,12 @@ def calculate_lead_time_facts(
             }
         )
 
-    start_status_ids = start_columns["status_id"].unique().to_list()
-    end_status_ids = end_columns["status_id"].unique().to_list()
-
     # Step 2: Calculate lead time per issue
     lead_time = calculate_lead_time_per_issue(
-        issues_df, status_changelog_df, start_status_ids, end_status_ids
+        issues_df,
+        status_changelog_df,
+        points["middle_status_ids"],
+        points["end_status_ids"],
     )
 
     return lead_time
