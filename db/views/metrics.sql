@@ -244,6 +244,144 @@ COMMENT ON MATERIALIZED VIEW metrics.mv_lead_time_bins_slice IS
 -- Purpose: Refresh all metrics views (called by Dagster)
 -- ============================================================================
 
+-- ============================================================================
+-- VIEW: mv_throughput_weekly
+-- Purpose: Weekly throughput (issues completed per week)
+-- ============================================================================
+
+CREATE OR REPLACE VIEW metrics.mv_throughput_weekly AS
+SELECT
+    f.project_id,
+    p.external_key AS project_key,
+    p.name AS project_name,
+    f.week_start_date,
+    f.week_end_date,
+    f.issue_type,
+    f.issues_completed,
+    f.avg_lead_time_days
+FROM metrics.fact_throughput f
+JOIN clean_jira.projects p ON f.project_id = p.id
+ORDER BY f.project_id, f.week_start_date;
+
+COMMENT ON VIEW metrics.mv_throughput_weekly IS
+    'Weekly throughput metrics (issues completed per week by type)';
+
+-- ============================================================================
+-- VIEW: mv_cfd
+-- Purpose: Cumulative Flow Diagram data (daily status counts)
+-- ============================================================================
+
+CREATE OR REPLACE VIEW metrics.mv_cfd AS
+SELECT
+    f.project_id,
+    p.external_key AS project_key,
+    p.name AS project_name,
+    f.date,
+    f.status_name,
+    f.status_category,
+    f.issue_count,
+    f.column_position
+FROM metrics.fact_cfd f
+JOIN clean_jira.projects p ON f.project_id = p.id
+ORDER BY f.project_id, f.date, f.column_position;
+
+COMMENT ON VIEW metrics.mv_cfd IS
+    'Cumulative Flow Diagram data showing daily issue counts per status';
+
+-- ============================================================================
+-- VIEW: mv_backlog_health
+-- Purpose: Backlog health metrics (size, age, staleness)
+-- ============================================================================
+
+CREATE OR REPLACE VIEW metrics.mv_backlog_health AS
+SELECT
+    f.project_id,
+    p.external_key AS project_key,
+    p.name AS project_name,
+    f.total_backlog_size,
+    f.avg_age_days,
+    f.stale_issues_count,
+    f.stale_percentage,
+    f.oldest_issue_days,
+    f.backlog_growth_last_week,
+    f.backlog_growth_last_month
+FROM metrics.fact_backlog_health f
+JOIN clean_jira.projects p ON f.project_id = p.id;
+
+COMMENT ON VIEW metrics.mv_backlog_health IS
+    'Backlog health metrics including size, age, and staleness indicators';
+
+-- ============================================================================
+-- VIEW: mv_backlog_distribution
+-- Purpose: Backlog breakdown by type and priority
+-- ============================================================================
+
+CREATE OR REPLACE VIEW metrics.mv_backlog_distribution AS
+SELECT
+    f.project_id,
+    p.external_key AS project_key,
+    p.name AS project_name,
+    f.issue_type,
+    f.priority,
+    f.issue_count,
+    f.percentage
+FROM metrics.fact_backlog_distribution f
+JOIN clean_jira.projects p ON f.project_id = p.id
+ORDER BY f.project_id, f.issue_type, f.priority;
+
+COMMENT ON VIEW metrics.mv_backlog_distribution IS
+    'Backlog distribution by issue type and priority';
+
+-- ============================================================================
+-- VIEW: mv_time_to_market
+-- Purpose: Time to Market for features/epics
+-- ============================================================================
+
+CREATE OR REPLACE VIEW metrics.mv_time_to_market AS
+SELECT
+    f.issue_id,
+    f.project_id,
+    p.external_key AS project_key,
+    p.name AS project_name,
+    f.issue_key,
+    f.issue_type,
+    f.created_at,
+    f.released_at,
+    f.time_to_market_days,
+    (f.time_to_market_days * 24) AS time_to_market_hours
+FROM metrics.fact_time_to_market f
+JOIN clean_jira.projects p ON f.project_id = p.id
+ORDER BY f.project_id, f.released_at DESC;
+
+COMMENT ON VIEW metrics.mv_time_to_market IS
+    'Time to Market metrics showing creation to release duration for features/epics';
+
+-- ============================================================================
+-- VIEW: mv_release_cadence
+-- Purpose: Release frequency and cadence metrics
+-- ============================================================================
+
+CREATE OR REPLACE VIEW metrics.mv_release_cadence AS
+SELECT
+    f.project_id,
+    p.external_key AS project_key,
+    p.name AS project_name,
+    f.total_releases,
+    f.avg_days_between_releases,
+    f.min_gap,
+    f.max_gap,
+    f.releases_per_month
+FROM metrics.fact_release_cadence f
+JOIN clean_jira.projects p ON f.project_id = p.id;
+
+COMMENT ON VIEW metrics.mv_release_cadence IS
+    'Release cadence metrics showing frequency and regularity of releases';
+
+-- ============================================================================
+-- REFRESH FUNCTION (Updated to include new views)
+-- Purpose: Refresh all metrics views (called by Dagster)
+-- ============================================================================
+
 CREATE OR REPLACE FUNCTION metrics.refresh_all_views()
 RETURNS void AS $$
 BEGIN
@@ -255,6 +393,10 @@ BEGIN
     REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_velocity_slice;
     REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_lead_time_slice;
     REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_lead_time_bins_slice;
+
+    -- Note: New metrics (throughput_weekly, cfd, backlog_health, ttm, release_cadence)
+    -- are standard VIEWs (not materialized), so they auto-update when underlying
+    -- fact tables change. No manual refresh needed.
 END;
 $$ LANGUAGE plpgsql;
 
