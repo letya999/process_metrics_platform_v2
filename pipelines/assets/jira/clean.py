@@ -700,75 +700,120 @@ def clean_jira_field_values(
         """
             )
         ).fetchall()
-
         all_columns = [row[0] for row in columns_result]
 
-        # Get known Rank fields (garbage) to exclude from JSON parsing
-        # We can identify them by checking raw_jira.fields if available,
-        # or just heuristic
-        # For now, let's treat anything that looks like "0|..." as garbage/text-only
+        # Pre-load field keys map to avoid joins in the loop
+        # Map: (project_id, external_key) -> field_key_id
+        fk_rows = conn.execute(
+            text("SELECT id, project_id, external_key FROM clean_jira.field_keys")
+        ).fetchall()
+        fk_map = {(r.project_id, r.external_key): r.id for r in fk_rows}
+        context.log.info(f"Loaded {len(fk_map)} field keys for mapping")
 
+        # Filter for relevant custom field columns
+        target_columns = []
         for col_name in all_columns:
-            # We want fields__customfield_%
             if not col_name.startswith("fields__customfield_"):
                 continue
-
-            # Skip deeply nested (same as field_keys)
             if col_name.count("__") >= 3:
                 continue
+            target_columns.append(col_name)
 
-            field_key = col_name.replace("fields__", "", 1)
+        context.log.info(f"Found {len(target_columns)} custom field columns to process")
 
-            # Insert with safe logic
-            # We explicitly check for "Rank" pattern in value to avoid trying to
-            # parse it as JSON
-            # simpler: just use safe_jsonb which returns NULL if it fails
+        # Import json for validation
+        import json
 
-            result = conn.execute(
-                text(
-                    f"""
-                INSERT INTO clean_jira.field_values (
-                    issue_id,
-                    field_key_id,
-                    value,
-                    json_value,
-                    updated_at
-                )
+        # Process in batches of columns
+        batch_size = 20
+
+        for i in range(0, len(target_columns), batch_size):
+            chunk = target_columns[i : i + batch_size]
+            context.log.info(
+                f"Processing batch {i//batch_size + 1}: columns {i} to {i + len(chunk)}"
+            )
+
+            # Build dynamic select
+            select_clause = ", ".join([f'r."{c}"' for c in chunk])
+
+            rows_query = text(
+                f"""
                 SELECT
                     i.id as issue_id,
-                    fk.id as field_key_id,
-                    r."{col_name}"::text as value,
-                    CASE
-                        -- Heuristic for Rank fields: starts with "0|" or contains "|i"
-                        -- We assume these are NEVER valid JSON and skip parsing
-                        -- to save time/noise
-                        WHEN r."{col_name}"::text LIKE '0|%'
-                            OR r."{col_name}"::text LIKE '%|i%'
-                            THEN NULL
-                        -- Heuristic for weird development fields like "pullrequest"
-                        -- that start with {{ but aren't JSON
-                        WHEN r."{col_name}"::text LIKE '{{pullrequest%'
-                            THEN NULL
-                        -- Otherwise try safe parsing
-                        ELSE pg_temp.safe_jsonb(r."{col_name}"::text)
-                    END as json_value,
-                    now() as updated_at
+                    i.project_id,
+                    {select_clause}
                 FROM raw_jira.issues r
                 JOIN clean_jira.issues i ON i.external_id = r.id::text
-                JOIN clean_jira.field_keys fk ON fk.project_id = i.project_id
-                    AND fk.external_key = :field_key
-                WHERE r."{col_name}" IS NOT NULL
-                ON CONFLICT (issue_id, field_key_id) DO UPDATE SET
-                    value = EXCLUDED.value,
-                    json_value = EXCLUDED.json_value,
-                    updated_at = now()
-                RETURNING id
             """
-                ),
-                {"field_key": field_key},
             )
-            count = len(result.fetchall())
-            field_values_inserted += count
+
+            batch_rows = conn.execute(rows_query).fetchall()
+
+            insert_data = []
+            for row in batch_rows:
+                issue_id = row.issue_id
+                project_id = row.project_id
+
+                for idx, col_name in enumerate(chunk):
+                    val = row[2 + idx]
+                    if val is None:
+                        continue
+
+                    field_key = col_name.replace("fields__", "", 1)
+                    fk_id = fk_map.get((project_id, field_key))
+                    if not fk_id:
+                        continue
+
+                    val_str = str(val)
+                    json_val = None
+
+                    if (
+                        val_str.startswith("0|")
+                        or "|i" in val_str
+                        or val_str.startswith("{pullrequest")
+                    ):
+                        json_val = None
+                    else:
+                        try:
+                            json.loads(val_str)
+                            json_val = val_str
+                        except (ValueError, TypeError):
+                            json_val = None
+
+                    insert_data.append(
+                        {
+                            "issue_id": issue_id,
+                            "field_key_id": fk_id,
+                            "value": val_str,
+                            "json_value": json_val,
+                        }
+                    )
+
+            if insert_data:
+                stmt = text(
+                    """
+                    INSERT INTO clean_jira.field_values (
+                        issue_id,
+                        field_key_id,
+                        value,
+                        json_value,
+                        updated_at
+                    )
+                    VALUES (
+                        :issue_id,
+                        :field_key_id,
+                        :value,
+                        CAST(:json_value AS jsonb),
+                        now()
+                    )
+                    ON CONFLICT (issue_id, field_key_id) DO UPDATE SET
+                        value = EXCLUDED.value,
+                        json_value = EXCLUDED.json_value,
+                        updated_at = now()
+                """
+                )
+                conn.execute(stmt, insert_data)
+                field_values_inserted += len(insert_data)
 
         context.log.info(f"Inserted {field_values_inserted} field values")
         conn.commit()

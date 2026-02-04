@@ -39,8 +39,13 @@ def read_table(engine: Engine, query: str) -> pl.DataFrame:
 
     # Convert UUID columns to strings (PyArrow doesn't recognize UUID type)
     for col in pdf.columns:
-        if len(pdf) > 0 and isinstance(pdf[col].iloc[0], UUID):
-            pdf[col] = pdf[col].astype(str)
+        if pdf[col].dtype == "object" and len(pdf) > 0:
+            # Check first non-null value
+            first_valid_index = pdf[col].first_valid_index()
+            if first_valid_index is not None and isinstance(
+                pdf[col].loc[first_valid_index], UUID
+            ):
+                pdf[col] = pdf[col].astype(str)
 
     # Convert to Polars
     return pl.from_pandas(pdf)

@@ -74,6 +74,34 @@ velocity_recalc_job = define_asset_job(
     description="Recalculate Velocity facts and refresh view",
 )
 
+# Job: Recalculate Throughput (Fact + View)
+throughput_recalc_job = define_asset_job(
+    name="recalculate_throughput_job",
+    selection=AssetSelection.assets("calculate_throughput", "metrics_throughput"),
+    description="Recalculate Throughput facts and refresh view",
+)
+
+# Job: Recalculate CFD (Fact only)
+cfd_recalc_job = define_asset_job(
+    name="recalculate_cfd_job",
+    selection=AssetSelection.assets("calculate_cumulative_flow_diagram"),
+    description="Recalculate Cumulative Flow Diagram facts",
+)
+
+# Job: Recalculate Backlog Health (Fact only)
+backlog_health_recalc_job = define_asset_job(
+    name="recalculate_backlog_health_job",
+    selection=AssetSelection.assets("calculate_backlog_health"),
+    description="Recalculate Backlog Health facts",
+)
+
+# Job: Recalculate Time to Market (Fact only)
+time_to_market_recalc_job = define_asset_job(
+    name="recalculate_time_to_market_job",
+    selection=AssetSelection.assets("calculate_time_to_market"),
+    description="Recalculate Time to Market facts",
+)
+
 
 # Export all jobs and schedules
 jobs = [
@@ -83,6 +111,10 @@ jobs = [
     metrics_refresh_job,
     lead_time_recalc_job,
     velocity_recalc_job,
+    throughput_recalc_job,
+    cfd_recalc_job,
+    backlog_health_recalc_job,
+    time_to_market_recalc_job,
 ]
 
 schedules = [
