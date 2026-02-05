@@ -12,13 +12,12 @@ This migration adds fact tables for new performance metrics:
 - fact_release_cadence (release frequency)
 """
 
-from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+from alembic import op
 
 # revision identifiers, used by Alembic
 revision = "0012"
-down_revision = "0011"
+down_revision = "0011_convert_mvs_to_tables"
 branch_labels = None
 depends_on = None
 

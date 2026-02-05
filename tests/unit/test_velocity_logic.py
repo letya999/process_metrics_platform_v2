@@ -133,6 +133,7 @@ class TestCompletedIssues:
             {
                 "id": ["ISS-1"],
                 "jira_resolved_at": [datetime(2024, 1, 10)],  # Resolved during sprint
+                "status_id": ["STATUS-DONE"],
             }
         )
 
@@ -145,10 +146,21 @@ class TestCompletedIssues:
             },
         )
 
-        sprints = pl.DataFrame({"id": ["SPRINT-1"], "end_date": [date(2024, 1, 15)]})
+        sprints = pl.DataFrame(
+            {
+                "id": ["SPRINT-1"],
+                "end_date": [date(2024, 1, 15)],
+                "start_date": [date(2024, 1, 1)],
+                "complete_date": [None],
+            }
+        )
 
         result = identify_completed_issues(
-            planned, issues, status_changelog, done_status_ids=[], sprints_df=sprints
+            planned,
+            issues,
+            status_changelog,
+            done_status_ids=["STATUS-DONE"],
+            sprints_df=sprints,
         )
 
         assert len(result) == 1
@@ -162,6 +174,7 @@ class TestCompletedIssues:
             {
                 "id": ["ISS-2"],
                 "jira_resolved_at": [datetime(2024, 1, 20)],  # Resolved AFTER end
+                "status_id": ["STATUS-DONE"],
             }
         )
 
@@ -174,10 +187,21 @@ class TestCompletedIssues:
             },
         )
 
-        sprints = pl.DataFrame({"id": ["SPRINT-1"], "end_date": [date(2024, 1, 15)]})
+        sprints = pl.DataFrame(
+            {
+                "id": ["SPRINT-1"],
+                "end_date": [date(2024, 1, 15)],
+                "start_date": [date(2024, 1, 1)],
+                "complete_date": [None],
+            }
+        )
 
         result = identify_completed_issues(
-            planned, issues, status_changelog, done_status_ids=[], sprints_df=sprints
+            planned,
+            issues,
+            status_changelog,
+            done_status_ids=["STATUS-DONE"],
+            sprints_df=sprints,
         )
 
         assert len(result) == 0  # Not completed
@@ -202,7 +226,14 @@ class TestCompletedIssues:
             }
         )
 
-        sprints = pl.DataFrame({"id": ["SPRINT-1"], "end_date": [date(2024, 1, 15)]})
+        sprints = pl.DataFrame(
+            {
+                "id": ["SPRINT-1"],
+                "end_date": [date(2024, 1, 15)],
+                "start_date": [date(2024, 1, 1)],
+                "complete_date": [None],
+            }
+        )
 
         result = identify_completed_issues(
             planned,
@@ -239,6 +270,11 @@ class TestStoryPoints:
             planned,
             field_values_df=field_values,
             field_keys_df=field_keys,
+            field_value_changelog_df=pl.DataFrame({}),
+            sprints_df=pl.DataFrame(
+                {"id": ["SPRINT-1"], "start_date": [date(2024, 1, 1)]}
+            ),
+            sprint_changelog_df=pl.DataFrame({}),
         )
 
         assert result.filter(pl.col("issue_id") == "ISS-1")["story_points"][0] == 5.0
@@ -268,6 +304,11 @@ class TestStoryPoints:
             planned,
             field_values_df=field_values,
             field_keys_df=field_keys,
+            field_value_changelog_df=pl.DataFrame({}),
+            sprints_df=pl.DataFrame(
+                {"id": ["SPRINT-1"], "start_date": [date(2024, 1, 1)]}
+            ),
+            sprint_changelog_df=pl.DataFrame({}),
         )
 
         assert result.filter(pl.col("issue_id") == "ISS-2")["story_points"][0] == 0.0

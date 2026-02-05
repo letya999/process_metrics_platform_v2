@@ -388,7 +388,7 @@ def clean_jira_issues(
 
 @asset(
     group_name="jira_clean",
-    deps=["raw_jira_data"],
+    deps=["raw_jira_data", "clean_jira_issues"],
     description="Transform raw Jira sprints to clean normalized format",
     compute_kind="sql",
 )
@@ -1310,7 +1310,7 @@ def clean_jira_sprint_issues_changelog(
 
 @asset(
     group_name="jira_clean",
-    deps=["raw_jira_data"],
+    deps=["raw_jira_data", "clean_jira_issues"],
     description="Transform raw Jira versions to clean releases",
     compute_kind="sql",
 )

@@ -11,7 +11,9 @@ import polars as pl
 from sqlalchemy import Engine, text
 
 
-def read_table(engine: Engine, query: str) -> pl.DataFrame:
+def read_table(
+    engine: Engine, query: str, params: dict | list | tuple = None
+) -> pl.DataFrame:
     """
     Read SQL query results into a Polars DataFrame.
 
@@ -21,13 +23,14 @@ def read_table(engine: Engine, query: str) -> pl.DataFrame:
     Args:
         engine: SQLAlchemy Engine instance
         query: SQL query string to execute
+        params: Optional parameters to pass to the query (for safe execution)
 
     Returns:
         Polars DataFrame containing query results
 
     Example:
         >>> engine = create_engine("postgresql://...")
-        >>> df = read_table(engine, "SELECT * FROM clean_jira.issues")
+        >>> df = read_table(engine, "SELECT * FROM clean_jira.issues WHERE id = %(id)s", params={"id": 123})
         >>> print(df.shape)
     """
     from uuid import UUID
@@ -35,7 +38,7 @@ def read_table(engine: Engine, query: str) -> pl.DataFrame:
     import pandas as pd
 
     # Use Pandas as bridge (SQLAlchemy has native support)
-    pdf = pd.read_sql(query, engine)
+    pdf = pd.read_sql(query, engine, params=params)
 
     # Convert UUID columns to strings (PyArrow doesn't recognize UUID type)
     for col in pdf.columns:

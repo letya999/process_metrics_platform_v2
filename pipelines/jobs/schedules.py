@@ -115,6 +115,12 @@ jobs = [
     cfd_recalc_job,
     backlog_health_recalc_job,
     time_to_market_recalc_job,
+    # New Advanced Metrics
+    define_asset_job(
+        name="recalculate_advanced_metrics_job",
+        selection=AssetSelection.assets("calculate_advanced_metrics"),
+        description="Recalculate Pro Metrics (Aging, Flow Efficiency, Trends)",
+    ),
 ]
 
 schedules = [

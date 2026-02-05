@@ -17,7 +17,7 @@ Business Rules:
 4. Growth rate = change over last 4 weeks
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import polars as pl
 
@@ -83,7 +83,7 @@ def calculate_backlog_health(
             }
         )
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     # Calculate age and staleness
     backlog_with_metrics = backlog_issues.with_columns(
@@ -128,7 +128,7 @@ def calculate_backlog_health(
         backlog_with_metrics.group_by("project_id")
         .agg(
             [
-                pl.count().alias("total_backlog_size"),
+                pl.len().alias("total_backlog_size"),
                 pl.col("age_days").mean().round(2).alias("avg_age_days"),
                 pl.col("is_stale").sum().alias("stale_issues_count"),
                 pl.col("age_days")
@@ -239,7 +239,7 @@ def calculate_backlog_distribution(
             pl.col("name").str.to_lowercase().str.contains("priority")
         )
         if not priority_fields.is_empty():
-            priority_field_id = priority_fields["id"].first()
+            priority_field_id = priority_fields["id"][0]
 
     if priority_field_id and not field_values_df.is_empty():
         # Get priority values
@@ -248,7 +248,10 @@ def calculate_backlog_distribution(
         ).select(
             [
                 "issue_id",
-                pl.col("json_value").str.json_extract().alias("priority"),
+                pl.col("json_value")
+                .str.json_decode(pl.Struct({"name": pl.Utf8}))
+                .struct.field("name")
+                .alias("priority"),
             ]
         )
 
@@ -264,7 +267,7 @@ def calculate_backlog_distribution(
     # Calculate distribution
     distribution = (
         backlog_with_priority.group_by(["project_id", "issue_type", "priority"])
-        .agg([pl.count().alias("issue_count")])
+        .agg([pl.len().alias("issue_count")])
         .sort(["project_id", "issue_type", "priority"])
     )
 
@@ -339,7 +342,7 @@ def calculate_age_distribution(
             }
         )
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     # Calculate age and bucket
     backlog_with_age = backlog_issues.with_columns(

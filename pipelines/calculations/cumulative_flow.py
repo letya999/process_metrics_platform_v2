@@ -68,41 +68,46 @@ def calculate_cumulative_flow_diagram(
         }
     )
 
-    # Get all unique project-status combinations
-    project_statuses = (
-        issues_df.select(["project_id", "status_id"])
-        .join(
-            issue_statuses_df.select(["id", "project_id", "name", "category"]),
-            left_on=["project_id", "status_id"],
-            right_on=["project_id", "id"],
-            how="inner",
-        )
-        .select(
-            [
-                "project_id",
-                pl.col("status_id"),
-                pl.col("name").alias("status_name"),
-                pl.col("category").alias("status_category"),
-            ]
-        )
-        .unique()
+    # Get distinct projects from issues
+    relevant_projects = issues_df.select("project_id").unique()
+
+    # Start with all statuses for these projects
+    all_statuses = issue_statuses_df.join(
+        relevant_projects, on="project_id", how="inner"
     )
 
-    # Add column position from board configuration (for ordering in charts)
+    # Use board configuration to define/filter statuses and add positions
     if not board_columns_df.is_empty():
         status_positions = (
             board_columns_df.select(["status_id", "position"])
             .unique()
             .rename({"position": "column_position"})
         )
-        project_statuses = project_statuses.join(
-            status_positions, on="status_id", how="left"
+
+        # Inner join to restrict to board columns and map positions
+        project_statuses = all_statuses.join(
+            status_positions, left_on="id", right_on="status_id", how="inner"
+        ).select(
+            [
+                "project_id",
+                pl.col("id").alias("status_id"),
+                pl.col("name").alias("status_name"),
+                pl.col("category").alias("status_category"),
+                "column_position",
+            ]
         )
     else:
-        # Default position if no board config
-        project_statuses = project_statuses.with_columns(
-            [pl.lit(None).cast(pl.Int32).alias("column_position")]
-        )
+        # Default: use all project statuses
+        project_statuses = all_statuses.select(
+            [
+                "project_id",
+                pl.col("id").alias("status_id"),
+                pl.col("name").alias("status_name"),
+                pl.col("category").alias("status_category"),
+            ]
+        ).with_columns(pl.lit(None).cast(pl.Int32).alias("column_position"))
+
+    project_statuses = project_statuses.unique()
 
     # Create cartesian product: all dates × all project-status combinations
     date_status_grid = date_range.join(project_statuses, how="cross")
@@ -112,14 +117,28 @@ def calculate_cumulative_flow_diagram(
         issues_df, status_changelog_df, date_range
     )
 
+    # Fix potential list type in status_id (Polars may infer list from aggregation)
+    if daily_statuses.schema["status_id"] == pl.List(pl.Utf8) or isinstance(
+        daily_statuses.schema["status_id"], pl.List
+    ):
+        daily_statuses = daily_statuses.with_columns(
+            pl.col("status_id").list.first().cast(pl.Utf8)
+        )
+    else:
+        daily_statuses = daily_statuses.with_columns(pl.col("status_id").cast(pl.Utf8))
+
     # Count issues per project-status-date
+    daily_counts = daily_statuses.group_by(["project_id", "date", "status_id"]).agg(
+        [pl.len().alias("issue_count")]
+    )
+
+    # Join with full grid to ensure all dates/statuses are present
     cfd_data = (
-        daily_statuses.group_by(["project_id", "date", "status_id"])
-        .agg([pl.count().alias("issue_count")])
-        .join(
-            date_status_grid,
+        date_status_grid.join(
+            daily_counts,
             on=["project_id", "date", "status_id"],
-            how="right",
+            how="left",
+            coalesce=True,
         )
         # Fill missing counts with 0
         .with_columns([pl.col("issue_count").fill_null(0)])
@@ -211,9 +230,10 @@ def _calculate_issue_status_on_dates(
             [
                 pl.col("project_id").first(),
                 # Use status from changelog if exists, otherwise use current status
-                pl.when(pl.col("to_status_id").is_not_null())
-                .then(pl.col("to_status_id").first())
-                .otherwise(pl.col("status_id").first())
+                pl.coalesce(
+                    [pl.col("to_status_id").first(), pl.col("status_id").first()]
+                )
+                .cast(pl.Utf8)
                 .alias("status_id"),
             ]
         )
