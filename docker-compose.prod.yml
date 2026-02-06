@@ -1,0 +1,184 @@
+# =============================================================================
+# Process Metrics Platform - PRODUCTION Docker Compose
+# =============================================================================
+# Use this file for deploying to cloud (Digital Ocean, AWS, etc.)
+#
+# USAGE:
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# REQUIREMENTS:
+#   1. Create .env.production with your secrets
+#   2. Create config/projects.yaml with your projects
+#   3. Set up persistent volumes (or use managed database)
+#
+# =============================================================================
+
+networks:
+  process_metrics_network:
+    driver: bridge
+
+services:
+  # =============================================================================
+  # PostgreSQL - Main database
+  # =============================================================================
+  # For production, consider using managed PostgreSQL (DO Managed Databases)
+  postgres:
+    image: postgres:15-alpine
+    container_name: pmp_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # Use named volume for persistence
+      - postgres_data:/var/lib/postgresql/data
+      # Init scripts (read-only)
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - process_metrics_network
+    # Resource limits for production
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # =============================================================================
+  # FastAPI Admin Panel
+  # =============================================================================
+  app:
+    image: ${DOCKER_REGISTRY:-ghcr.io/your-org}/process-metrics-app:${IMAGE_TAG:-latest}
+    # OR build locally:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: pmp_app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DAGSTER_GRAPHQL_URL: http://dagster:3000/graphql
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-WARNING}
+    env_file:
+      - .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - process_metrics_network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+  # =============================================================================
+  # Dagster - Pipeline Orchestration
+  # =============================================================================
+  dagster:
+    image: ${DOCKER_REGISTRY:-ghcr.io/your-org}/process-metrics-dagster:${IMAGE_TAG:-latest}
+    # OR build locally:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile.dagster
+    container_name: pmp_dagster
+    restart: unless-stopped
+    ports:
+      - "${DAGSTER_PORT:-3000}:3000"
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_USER: ${POSTGRES_USER}
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DAGSTER_POSTGRES_DB: ${POSTGRES_DB}
+      # dlt PostgreSQL credentials
+      DESTINATION__POSTGRES__CREDENTIALS__HOST: postgres
+      DESTINATION__POSTGRES__CREDENTIALS__PORT: 5432
+      DESTINATION__POSTGRES__CREDENTIALS__DATABASE: ${POSTGRES_DB}
+      DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${POSTGRES_USER}
+      DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${POSTGRES_PASSWORD}
+      # Config path
+      PLATFORM_CONFIG_PATH: /opt/dagster/app/config/projects.yaml
+    env_file:
+      - .env.production
+    volumes:
+      # Dagster home for state
+      - dagster_home:/opt/dagster/dagster_home
+      # Config file (read-only)
+      - ./config:/opt/dagster/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/server_info"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - process_metrics_network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # =============================================================================
+  # Metabase - BI and visualization
+  # =============================================================================
+  metabase:
+    image: metabase/metabase:latest
+    container_name: pmp_metabase
+    restart: unless-stopped
+    ports:
+      - "${METABASE_PORT:-3001}:3000"
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: ${POSTGRES_DB}
+      MB_DB_PORT: 5432
+      MB_DB_USER: ${POSTGRES_USER}
+      MB_DB_PASS: ${POSTGRES_PASSWORD}
+      MB_DB_HOST: postgres
+      # Security settings for production
+      MB_EMBEDDING_TOKEN: ${METABASE_EMBEDDING_TOKEN:-}
+      MB_ENCRYPTION_SECRET_KEY: ${METABASE_SECRET_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - process_metrics_network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+volumes:
+  postgres_data:
+    driver: local
+  dagster_home:
+    driver: local

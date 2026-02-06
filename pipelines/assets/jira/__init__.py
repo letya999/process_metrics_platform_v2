@@ -39,9 +39,16 @@ from pipelines.assets.jira.clean import (
 )
 from pipelines.assets.jira.raw import raw_jira_data
 
+# Optional partitioned asset (may not exist if partitions not configured)
+try:
+    from pipelines.assets.jira.raw import raw_jira_project_data
+except ImportError:
+    raw_jira_project_data = None
+
 __all__ = [
     # Raw assets
     "raw_jira_data",
+    "raw_jira_project_data",  # Partitioned version (optional)
     # Clean assets
     "clean_jira_issues",
     "clean_jira_sprints",

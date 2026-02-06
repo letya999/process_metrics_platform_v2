@@ -32,6 +32,8 @@ dependencies = [
     "polars>=0.20.0,<1.0.0",
     "pandas>=2.0.0,<3.0.0",  # For Polars bridge to SQLAlchemy
     "pyarrow>=14.0.0,<16.0.0",  # Required for Polars <-> Pandas conversion
+    # Configuration
+    "pyyaml>=6.0.0,<7.0.0",  # YAML config file parsing
 ]
 
 [project.optional-dependencies]
@@ -51,7 +53,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*", "pipelines*", "common*"]
+include = ["app*", "pipelines*", "config*", "common*"]
 
 [tool.black]
 line-length = 88

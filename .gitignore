@@ -13,3 +13,7 @@ tracking/*.md
 .pytest_cache
 .dlt/
 *.egg-info/
+
+# Config files with secrets
+config/projects.yaml
+.env.production

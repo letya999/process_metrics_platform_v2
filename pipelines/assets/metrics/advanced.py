@@ -67,7 +67,7 @@ def calculate_advanced_metrics(
         """
         SELECT i.id, i.project_id, i.external_key AS key, i.summary, i.type_id, i.status_id,
                it.name AS type_name, i.jira_created_at, i.jira_resolved_at,
-               i.current_status_id -- Important for Aging
+               i.status_id AS current_status_id -- Important for Aging
         FROM clean_jira.issues i
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
         """,
@@ -94,7 +94,7 @@ def calculate_advanced_metrics(
     )
 
     statuses_df = read_table(
-        engine, "SELECT id, project_id, name, category FROM clean_jira.statuses"
+        engine, "SELECT id, project_id, name, category FROM clean_jira.issue_statuses"
     )
 
     context.log.info(f"Loaded {len(issues_df)} issues for processing")

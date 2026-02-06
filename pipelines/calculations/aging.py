@@ -16,7 +16,7 @@ Business Rules:
    unless specific "Hold" rules are applied (simple version counts wall-clock time).
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import polars as pl
 
@@ -81,23 +81,26 @@ def calculate_aging_work(
     )
 
     # Join back to active issues to Determine Start Date & Current Age
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
 
     aging_df = (
         active_issues.join(start_events, left_on="id", right_on="issue_id", how="left")
         .with_columns(
             [
                 # Start date: Changelog OR Created date fallback
-                pl.coalesce(
-                    [pl.col("start_at_changelog"), pl.col("jira_created_at")]
-                ).alias("commitment_start_at")
+                pl.coalesce([pl.col("start_at_changelog"), pl.col("jira_created_at")])
+                .cast(pl.Datetime("us", "UTC"))
+                .alias("commitment_start_at")
             ]
         )
         .with_columns(
             [
                 # Total Age
                 (
-                    (pl.lit(now) - pl.col("commitment_start_at")).dt.total_seconds()
+                    (
+                        pl.lit(now).cast(pl.Datetime("us", "UTC"))
+                        - pl.col("commitment_start_at")
+                    ).dt.total_seconds()
                     / 86400.0
                 ).alias("age_days")
             ]
@@ -126,20 +129,25 @@ def calculate_aging_work(
                 # If no transition (issue created in this status), age = now - created
                 pl.coalesce(
                     [pl.col("last_status_change_at"), pl.col("jira_created_at")]
-                ).alias("status_start_date")
+                )
+                .cast(pl.Datetime("us", "UTC"))
+                .alias("status_start_date")
             ]
         )
         .with_columns(
             [
                 (
-                    (pl.lit(now) - pl.col("status_start_date")).dt.total_seconds()
+                    (
+                        pl.lit(now).cast(pl.Datetime("us", "UTC"))
+                        - pl.col("status_start_date")
+                    ).dt.total_seconds()
                     / 86400.0
                 ).alias("age_in_status_days")
             ]
         )
         .select(
             [
-                pl.col("id"),
+                pl.col("id").alias("issue_id"),
                 pl.col("project_id"),
                 pl.col("key").alias("issue_key"),
                 pl.col("type_name").alias("issue_type"),

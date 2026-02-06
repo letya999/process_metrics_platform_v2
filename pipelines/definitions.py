@@ -23,9 +23,23 @@ from pipelines.assets.metrics import (
 from pipelines.jobs.schedules import jobs, schedules
 from pipelines.resources.database import database_resource
 
+# Import partitions and sensor
+try:
+    from pipelines.partitions import (
+        project_partitions,
+        sync_project_partitions_sensor,
+    )
+
+    sensors = [sync_project_partitions_sensor]
+except ImportError:
+    project_partitions = None
+    sensors = []
+
 # Load all assets from modules
 jira_assets = load_assets_from_modules([jira])
 metrics_assets = load_assets_from_modules([metrics])
+
+# Add partitioned asset if available
 
 asset_checks = [
     check_no_orphan_issues,
@@ -45,6 +59,7 @@ defs = Definitions(
     asset_checks=asset_checks,
     jobs=jobs,
     schedules=schedules,
+    sensors=sensors,
     resources={
         "database": database_resource,
     },

@@ -384,22 +384,58 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
     - board_configurations
 
     Data is loaded into the raw_jira schema as append-only.
+
+    Configuration sources (in priority order):
+    1. Config file (config/projects.yaml)
+    2. Environment variables (JIRA_BASE_URL, JIRA_PROJECTS, etc.)
     """
-    # Get configuration from environment
-    base_url = os.getenv("JIRA_BASE_URL", "")
-    email = os.getenv("JIRA_USER_EMAIL", "")
-    api_token = os.getenv("JIRA_API_TOKEN", "")
+    # Try config file first
+    base_url = None
+    email = None
+    api_token = None
+    projects = None
+
+    try:
+        from config import get_config, get_project_keys
+
+        config = get_config()
+        project_keys = get_project_keys()
+
+        if project_keys and config.jira_instances:
+            # Get first enabled project's instance for credentials
+            # (all-projects sync uses first instance)
+            first_project = config.get_enabled_projects()[0]
+            instance = config.get_project_instance(first_project)
+
+            base_url = instance.base_url
+            email = instance.email
+            api_token = instance.get_api_token()
+            projects = project_keys
+
+            context.log.info(
+                f"Using config file: {len(projects)} projects from "
+                f"{first_project.jira_instance} instance"
+            )
+    except Exception as e:
+        context.log.info(f"Config file not available, falling back to env: {e}")
+
+    # Fallback to environment variables
+    if not base_url:
+        base_url = os.getenv("JIRA_BASE_URL", "")
+    if not email:
+        email = os.getenv("JIRA_USER_EMAIL", "")
+    if not api_token:
+        api_token = os.getenv("JIRA_API_TOKEN", "")
+    if not projects:
+        projects_str = os.getenv("JIRA_PROJECTS", "")
+        projects = [p.strip() for p in projects_str.split(",") if p.strip()] or None
 
     if not all([base_url, email, api_token]):
         context.log.warning(
             "Jira credentials not configured. "
-            "Set JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_API_TOKEN environment variables."
+            "Set up config/projects.yaml or environment variables."
         )
         return {"status": "skipped", "reason": "credentials_not_configured"}
-
-    # Get projects to sync (could be from config or run config)
-    projects_str = os.getenv("JIRA_PROJECTS", "")
-    projects = [p.strip() for p in projects_str.split(",") if p.strip()] or None
 
     context.log.info(f"Starting Jira sync for projects: {projects or 'all'}")
 
@@ -417,3 +453,84 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
     except Exception as e:
         context.log.error(f"Jira sync failed: {str(e)}")
         raise
+
+
+# Import partitions for optional partitioned asset
+try:
+    from pipelines.partitions import project_partitions
+
+    @asset(
+        group_name="jira_raw_partitioned",
+        description="Load raw Jira data for a single project (partitioned)",
+        compute_kind="dlt",
+        partitions_def=project_partitions,
+    )
+    def raw_jira_project_data(context: AssetExecutionContext) -> dict[str, Any]:
+        """Dagster asset that loads raw data for a single Jira project.
+
+        This asset is partitioned by project key, allowing:
+        - Individual project syncs
+        - Parallel syncs (via Dagster concurrency)
+        - Mix of different Jira instances per project
+
+        Use this asset when you want fine-grained control over project syncing.
+        """
+        project_key = context.partition_key
+        context.log.info(f"Starting sync for project partition: {project_key}")
+
+        # Get project configuration
+        try:
+            from config import get_config
+
+            config = get_config()
+            project = config.get_project(project_key)
+
+            if project is None:
+                context.log.error(f"Project {project_key} not found in config")
+                return {
+                    "status": "error",
+                    "reason": f"project_not_found: {project_key}",
+                }
+
+            if not project.enabled:
+                context.log.warning(f"Project {project_key} is disabled, skipping")
+                return {"status": "skipped", "reason": "project_disabled"}
+
+            instance = config.get_project_instance(project)
+
+            base_url = instance.base_url
+            email = instance.email
+            api_token = instance.get_api_token()
+
+            context.log.info(
+                f"Using Jira instance '{project.jira_instance}' for {project_key}"
+            )
+
+        except Exception as e:
+            context.log.warning(f"Config not available, using env vars: {e}")
+            base_url = os.getenv("JIRA_BASE_URL", "")
+            email = os.getenv("JIRA_USER_EMAIL", "")
+            api_token = os.getenv("JIRA_API_TOKEN", "")
+
+        if not all([base_url, email, api_token]):
+            context.log.error("Jira credentials not configured")
+            return {"status": "error", "reason": "credentials_not_configured"}
+
+        try:
+            result = run_jira_pipeline(
+                base_url=base_url,
+                email=email,
+                api_token=api_token,
+                projects=[project_key],
+            )
+
+            context.log.info(f"Project {project_key} sync completed")
+            return result
+
+        except Exception as e:
+            context.log.error(f"Project {project_key} sync failed: {str(e)}")
+            raise
+
+except ImportError:
+    # Partitions module not available, skip partitioned asset
+    pass
