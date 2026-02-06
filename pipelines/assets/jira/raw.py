@@ -31,13 +31,32 @@ def jira_source(
         dlt resources for issues, sprints, and changelogs
     """
 
+    # Define incremental configuration to avoid B008 (function call in default arg)
+    issues_incremental = dlt.sources.incremental(
+        "fields.updated", initial_value="1970-01-01T00:00:00.000+0000"
+    )
+
     @dlt.resource(name="issues", write_disposition="merge", primary_key="id")
-    def get_issues() -> Iterator[dict[str, Any]]:
+    def get_issues(updated_at=issues_incremental) -> Iterator[dict[str, Any]]:
         """Fetch issues from Jira API with changelog."""
         jql = ""
+        jql_parts = []
         if projects:
             project_list = ",".join(projects)
-            jql = f"project in ({project_list})"
+            jql_parts.append(f"project in ({project_list})")
+
+        # Add incremental filter to JQL for efficiency
+        # Note: dlt handles the actual filtering, but adding it to JQL saves bandwidth
+        if (
+            updated_at.last_value
+            and updated_at.last_value != "1970-01-01T00:00:00.000+0000"
+        ):
+            # Jira expects specific time format, but usually accepts ISO
+            # We trust dlt state string format or wrap in quotes
+            jql_parts.append(f'updated >= "{updated_at.last_value}"')
+
+        if jql_parts:
+            jql = " AND ".join(jql_parts)
 
         max_results = 100
         next_page_token = None
@@ -304,6 +323,7 @@ def run_jira_pipeline(
     api_token: str,
     projects: list[str] | None = None,
     destination_schema: str = "raw_jira",
+    pipeline_name: str = "jira_raw",
 ) -> dict[str, Any]:
     """Run the Jira dlt pipeline to load data into raw layer.
 
@@ -337,7 +357,7 @@ def run_jira_pipeline(
 
     # Create dlt pipeline
     pipeline = dlt.pipeline(
-        pipeline_name="jira_raw",
+        pipeline_name=pipeline_name,
         destination="postgres",
         dataset_name=destination_schema,
     )
@@ -439,20 +459,45 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
 
     context.log.info(f"Starting Jira sync for projects: {projects or 'all'}")
 
-    try:
-        result = run_jira_pipeline(
-            base_url=base_url,
-            email=email,
-            api_token=api_token,
-            projects=projects,
-        )
+    results = []
 
-        context.log.info(f"Jira sync completed: {result['load_info']}")
-        return result
+    # If projects are specified, run a separate pipeline for each to maintain isolated incremental state.
+    # If no projects specified (sync all), we must use one pipeline (shared state).
+    # But usually 'projects' is populated from config.
 
-    except Exception as e:
-        context.log.error(f"Jira sync failed: {str(e)}")
-        raise
+    projects_to_sync = projects if projects else [None]
+
+    for project_key in projects_to_sync:
+        try:
+            # Determine pipeline name
+            # If project_key is None, it's a global sync (legacy/fallback)
+            p_name = f"jira_raw_{project_key}" if project_key else "jira_raw_global"
+            p_list = [project_key] if project_key else None
+
+            context.log.info(
+                f"Syncing project: {project_key or 'ALL'} (Pipeline: {p_name})"
+            )
+
+            result = run_jira_pipeline(
+                base_url=base_url,
+                email=email,
+                api_token=api_token,
+                projects=p_list,
+                pipeline_name=p_name,
+            )
+            results.append(result)
+            context.log.info(
+                f"Project {project_key or 'ALL'} sync completed: {result['load_info']}"
+            )
+
+        except Exception as e:
+            context.log.error(f"Project {project_key or 'ALL'} sync failed: {str(e)}")
+            # Raise immediately or continue?
+            # For sequential requirement, maybe better to fail hard so we don't calculate partial data?
+            # User asked "update consistently all data schemas", so failing is safer.
+            raise
+
+    return {"status": "success", "projects_synced": len(results), "details": results}
 
 
 # Import partitions for optional partitioned asset
@@ -522,6 +567,7 @@ try:
                 email=email,
                 api_token=api_token,
                 projects=[project_key],
+                pipeline_name=f"jira_raw_{project_key}",
             )
 
             context.log.info(f"Project {project_key} sync completed")

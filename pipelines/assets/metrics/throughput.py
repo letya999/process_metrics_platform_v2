@@ -106,20 +106,6 @@ def calculate_throughput(
     write_table(throughput_df, engine, table="fact_throughput", schema="metrics")
 
     # =====================================================
-    # Calculate aggregate metrics
-    # =====================================================
-    context.log.info("Calculating throughput aggregates...")
-    aggregates_df = throughput_logic.calculate_throughput_aggregates(throughput_df)
-
-    context.log.info(f"Calculated {len(aggregates_df)} aggregate rows")
-
-    # Write aggregates to database
-    context.log.info("Writing to metrics.fact_throughput_aggregates...")
-    write_table(
-        aggregates_df, engine, table="fact_throughput_aggregates", schema="metrics"
-    )
-
-    # =====================================================
     # Return summary statistics
     # =====================================================
     total_issues = (
@@ -139,5 +125,4 @@ def calculate_throughput(
         "total_issues_completed": total_issues,
         "total_weeks": total_weeks,
         "fact_rows": len(throughput_df),
-        "aggregate_rows": len(aggregates_df),
     }

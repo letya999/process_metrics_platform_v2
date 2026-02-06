@@ -45,7 +45,6 @@ def calculate_weekly_throughput(
                 "week_end_date": pl.Date,
                 "issue_type": pl.Utf8,
                 "issues_completed": pl.Int64,
-                "avg_lead_time_days": pl.Float64,
             }
         )
 
@@ -94,21 +93,8 @@ def calculate_weekly_throughput(
                 "week_end_date": pl.Date,
                 "issue_type": pl.Utf8,
                 "issues_completed": pl.Int64,
-                "avg_lead_time_days": pl.Float64,
             }
         )
-
-    # Calculate lead time for completed issues (created to completed)
-    completed_issues = completed_issues.with_columns(
-        [
-            (
-                (
-                    pl.col("completion_date") - pl.col("jira_created_at")
-                ).dt.total_seconds()
-                / 86400.0
-            ).alias("lead_time_days")
-        ]
-    )
 
     # Calculate week boundaries (ISO week: Monday = start)
     weekly_throughput = (
@@ -131,7 +117,6 @@ def calculate_weekly_throughput(
         .agg(
             [
                 pl.count().alias("issues_completed"),
-                pl.col("lead_time_days").mean().round(2).alias("avg_lead_time_days"),
             ]
         )
         .select(
@@ -141,59 +126,12 @@ def calculate_weekly_throughput(
                 "week_end_date",
                 pl.col("type_name").alias("issue_type"),
                 "issues_completed",
-                "avg_lead_time_days",
             ]
         )
         .sort(["project_id", "week_start_date"])
     )
 
     return weekly_throughput
-
-
-def calculate_throughput_aggregates(
-    weekly_throughput_df: pl.DataFrame,
-) -> pl.DataFrame:
-    """
-    Calculate aggregate throughput metrics per project and issue type.
-
-    Args:
-        weekly_throughput_df: Weekly throughput facts
-
-    Returns:
-        DataFrame: [project_id, issue_type, total_issues, total_weeks,
-                    avg_weekly_throughput, min_weekly, max_weekly]
-    """
-    if weekly_throughput_df.is_empty():
-        return pl.DataFrame(
-            schema={
-                "project_id": pl.Utf8,
-                "issue_type": pl.Utf8,
-                "total_issues": pl.Int64,
-                "total_weeks": pl.Int64,
-                "avg_weekly_throughput": pl.Float64,
-                "min_weekly": pl.Int64,
-                "max_weekly": pl.Int64,
-            }
-        )
-
-    aggregates = (
-        weekly_throughput_df.group_by(["project_id", "issue_type"])
-        .agg(
-            [
-                pl.col("issues_completed").sum().alias("total_issues"),
-                pl.count().alias("total_weeks"),
-                pl.col("issues_completed")
-                .mean()
-                .round(2)
-                .alias("avg_weekly_throughput"),
-                pl.col("issues_completed").min().alias("min_weekly"),
-                pl.col("issues_completed").max().alias("max_weekly"),
-            ]
-        )
-        .sort(["project_id", "issue_type"])
-    )
-
-    return aggregates
 
 
 def _get_done_status_ids(board_columns_df: pl.DataFrame) -> list[str]:

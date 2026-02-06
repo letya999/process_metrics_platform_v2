@@ -25,9 +25,6 @@ from pipelines.calculations import (
 from pipelines.calculations import (
     lead_time as lead_time_logic,  # Needed for base lead time data
 )
-from pipelines.calculations import (
-    lead_time_trend as trend_logic,
-)
 from pipelines.resources.database import DatabaseResource
 from pipelines.utils.polars_db import read_table, write_table
 
@@ -56,7 +53,6 @@ def calculate_advanced_metrics(
     1. Work Item Aging (fact_work_item_aging)
     2. Flow Efficiency (fact_flow_efficiency)
     3. Control Chart Stats (fact_control_chart)
-    4. Lead Time Trends (fact_lead_time_trend)
     """
     engine = database.get_engine()
     context.log.info("Loading data for Advanced Metrics...")
@@ -137,6 +133,12 @@ def calculate_advanced_metrics(
     )
 
     if not efficiency_df.is_empty():
+        # Rename columns to match DB schema (code outputs key/type_name, DB expects issue_key/issue_type)
+        if "key" in efficiency_df.columns:
+            efficiency_df = efficiency_df.rename({"key": "issue_key"})
+        if "type_name" in efficiency_df.columns:
+            efficiency_df = efficiency_df.rename({"type_name": "issue_type"})
+
         write_table(
             efficiency_df, engine, table="fact_flow_efficiency", schema="metrics"
         )
@@ -172,45 +174,6 @@ def calculate_advanced_metrics(
             )
             write_table(cc_write, engine, table="fact_control_chart", schema="metrics")
             context.log.info(f"Written {len(cc_write)} control chart records")
-
-        # Lead Time Trends
-        context.log.info("Calculating Lead Time Trends...")
-        trend_df = trend_logic.calculate_lead_time_trends(lt_df, period="1w")
-        if not trend_df.is_empty():
-            # Add implicit columns
-            # logic returns: [period_start, count, p50, p85, p95, trend_p85]
-            # DB needs: project_id, period_type
-            # CAUTION: trend logic groups by period, but if we have multiple projects,
-            # we must process per project or the logic must handle it.
-            # Current logic in lead_time_trend.py aggregates EVERYTHING passed to it.
-            # So we must loop by project.
-
-            project_ids = lt_df["project_id"].unique().to_list()
-            all_trends = []
-
-            for pid in project_ids:
-                proj_lt_df = lt_df.filter(pl.col("project_id") == pid)
-                p_trend = trend_logic.calculate_lead_time_trends(
-                    proj_lt_df, period="1w"
-                )
-                if not p_trend.is_empty():
-                    p_trend = p_trend.with_columns(
-                        [
-                            pl.lit(pid).alias("project_id"),
-                            pl.lit("weekly").alias("period_type"),
-                        ]
-                    )
-                    all_trends.append(p_trend)
-
-            if all_trends:
-                final_trend_df = pl.concat(all_trends)
-                write_table(
-                    final_trend_df,
-                    engine,
-                    table="fact_lead_time_trend",
-                    schema="metrics",
-                )
-                context.log.info(f"Written {len(final_trend_df)} trend records")
 
     return {
         "status": "success",

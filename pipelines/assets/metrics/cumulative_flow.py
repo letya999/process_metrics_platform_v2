@@ -115,18 +115,6 @@ def calculate_cumulative_flow_diagram(
     write_table(cfd_df, engine, table="fact_cfd", schema="metrics")
 
     # =====================================================
-    # Calculate CFD aggregates
-    # =====================================================
-    context.log.info("Calculating CFD aggregates...")
-    aggregates_df = cfd_logic.calculate_cfd_aggregates(cfd_df)
-
-    context.log.info(f"Calculated {len(aggregates_df)} aggregate rows")
-
-    # Write aggregates to database
-    context.log.info("Writing to metrics.fact_cfd_aggregates...")
-    write_table(aggregates_df, engine, table="fact_cfd_aggregates", schema="metrics")
-
-    # =====================================================
     # Return summary statistics
     # =====================================================
     unique_dates = len(cfd_df["date"].unique())
@@ -142,5 +130,4 @@ def calculate_cumulative_flow_diagram(
         "total_days": unique_dates,
         "total_statuses": unique_statuses,
         "fact_rows": len(cfd_df),
-        "aggregate_rows": len(aggregates_df),
     }

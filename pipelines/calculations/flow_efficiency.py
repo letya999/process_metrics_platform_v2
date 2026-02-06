@@ -157,8 +157,8 @@ def _empty_efficiency_df() -> pl.DataFrame:
         schema={
             "issue_id": pl.Utf8,
             "project_id": pl.Utf8,
-            "key": pl.Utf8,
-            "type_name": pl.Utf8,
+            "issue_key": pl.Utf8,
+            "issue_type": pl.Utf8,
             "active_days": pl.Float64,
             "wait_days": pl.Float64,
             "total_days": pl.Float64,
