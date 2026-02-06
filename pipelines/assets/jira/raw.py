@@ -158,6 +158,7 @@ def jira_source(
                     for sprint in sprints_data.get("values", []):
                         sprint["board_id"] = board_id
                         sprint["board_name"] = board.get("name")
+                        sprint["project_key"] = board_project
                         yield sprint
 
                     if sprints_data.get("isLast", True):

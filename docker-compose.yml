@@ -150,6 +150,30 @@ services:
       - ./db:/app/db
     entrypoint: [ "alembic", "-c", "db/migrations/alembic.ini" ]
 
+  # =============================================================================
+  # Metabase Init - Auto-configure Metabase (Admin, DB, Dashboard)
+  # =============================================================================
+  metabase-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: metabase-init
+    working_dir: /app
+    environment:
+      METABASE_URL: http://metabase:3000
+    env_file:
+      - .env
+    volumes:
+      - ./scripts:/app/scripts
+    depends_on:
+      metabase:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - process_metrics_network
+    entrypoint: [ "python", "scripts/setup_metabase.py" ]
+
 volumes:
   postgres_data:
   dagster_home:

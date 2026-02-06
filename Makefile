@@ -69,6 +69,13 @@ dev: docker-up
 	@echo "  - Dagster UI:  http://localhost:3000"
 	@echo "  - Metabase:    http://localhost:3001"
 
+## Setup Metabase (create admin & metrics dashboards)
+setup-metabase:
+	@echo "$(BLUE)Setting up Metabase...$(NC)"
+	docker compose up --build  metabase-init
+	@echo "$(GREEN)Metabase configured!$(NC)"
+
+
 ## Run tests with coverage
 test:
 	@echo "$(BLUE)Running tests...$(NC)"

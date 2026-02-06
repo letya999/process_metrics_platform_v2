@@ -48,12 +48,18 @@ def calculate_velocity(
     context.log.info("Loading data from clean_jira schema...")
 
     # Load all required tables into Polars DataFrames
+    # IMPORTANT: Only load sprints that have at least one associated issue (excluding Sub-tasks)
+    # This prevents duplicate sprints across projects with empty data
     sprints_df = read_table(
         engine,
         """
-        SELECT id, project_id, name, start_date, end_date, complete_date
-        FROM clean_jira.sprints
-        WHERE start_date IS NOT NULL
+        SELECT DISTINCT s.id, s.project_id, s.name, s.start_date, s.end_date, s.complete_date
+        FROM clean_jira.sprints s
+        INNER JOIN clean_jira.sprint_issues si ON si.sprint_id = s.id
+        INNER JOIN clean_jira.issues i ON i.id = si.issue_id
+        INNER JOIN clean_jira.issue_types it ON it.id = i.type_id
+        WHERE s.start_date IS NOT NULL
+          AND it.name NOT ILIKE '%%sub%%'
         """,
     )
 

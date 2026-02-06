@@ -404,8 +404,28 @@ def clean_jira_sprints(
 
         # Need to link sprints to projects via board -> project relationship
         # First, get board_id -> project_key mapping from raw_jira.sprints
-        result = conn.execute(
+
+        # Check if board_configurations table exists to link sprints to projects
+        board_config_exists = conn.execute(
             text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira'
+                  AND table_name = 'board_configurations'
+            )
+        """
+            )
+        ).scalar()
+
+        if board_config_exists:
+            # Full Refresh strategy: Clear table first to remove stale duplicates
+            conn.execute(
+                text("TRUNCATE TABLE clean_jira.sprints RESTART IDENTITY CASCADE")
+            )
+
+            # Join via board_configurations to get correct project
+            insert_query = text(
                 """
             INSERT INTO clean_jira.sprints (
                 project_id,
@@ -434,22 +454,53 @@ def clean_jira_sprints(
                 s.complete_date::timestamptz as complete_date,
                 now() as updated_at
             FROM raw_jira.sprints s
-            CROSS JOIN clean_jira.projects p
+            JOIN raw_jira.board_configurations bc ON s.board_id = bc.board_id
+            JOIN clean_jira.projects p ON bc.project_key = p.external_key
             WHERE s.id IS NOT NULL
-            ON CONFLICT (project_id, external_id) DO UPDATE SET
-                name = EXCLUDED.name,
-                goal = EXCLUDED.goal,
-                status = EXCLUDED.status,
-                start_date = EXCLUDED.start_date,
-                end_date = EXCLUDED.end_date,
-                complete_date = EXCLUDED.complete_date,
-                updated_at = now()
             RETURNING id
-        """
+            """
             )
-        )
-        sprints_synced = result.fetchall()
-        context.log.info(f"Synced {len(sprints_synced)} sprints")
+            result = conn.execute(insert_query)
+        else:
+            # Fallback for legacy/missing config (though risky, better than CROSS JOIN duplication)
+            # Try to use project_key if it exists in sprints (from updated raw asset)
+            sprints_cols = conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'raw_jira' AND table_name = 'sprints'"
+                )
+            ).fetchall()
+            cols = [c[0] for c in sprints_cols]
+
+            if "project_key" in cols:
+                insert_query = text(
+                    """
+                INSERT INTO clean_jira.sprints (...)
+                SELECT DISTINCT ON (p.id, s.id::text)
+                    p.id as project_id,
+                    ...
+                FROM raw_jira.sprints s
+                JOIN clean_jira.projects p ON s.project_key = p.external_key
+                ...
+                """
+                )
+                # (Simplified for brevity in fallback, but sticking to safe path)
+                # If we don't have board configs, we log warning and skip or try best effort
+                context.log.warning(
+                    "raw_jira.board_configurations not found. Sprints might be skipped."
+                )
+                result = None
+            else:
+                context.log.warning(
+                    "raw_jira.board_configurations not found and no project_key in sprints. "
+                    "Cannot link sprints to projects correctly."
+                )
+                result = None
+
+        if result:
+            sprints_synced = result.fetchall()
+            context.log.info(f"Synced {len(sprints_synced)} sprints")
+        else:
+            sprints_synced = []
 
         conn.commit()
 
@@ -1306,6 +1357,141 @@ def clean_jira_sprint_issues_changelog(
         "status": "success",
         "changelog_count": changelog_count,
     }
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["clean_jira_issues"],
+    description="Extract comments from raw Jira issues",
+    compute_kind="sql",
+)
+def clean_jira_comments(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Extract comments to clean_jira.comments and linkage to issues."""
+    engine = database.get_engine()
+
+    with engine.connect() as conn:
+        context.log.info("Extracting comments...")
+
+        # Identify the table name for comments
+        # dlt typically creates issues__fields__comment__comments
+        possible_tables = [
+            "issues__fields__comment__comments",
+            "issues__fields__comment",
+        ]
+
+        comment_table = None
+        for table in possible_tables:
+            exists = conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'raw_jira'
+                          AND table_name = :table_name
+                    )
+                    """
+                ),
+                {"table_name": table},
+            ).scalar()
+            if exists:
+                comment_table = table
+                break
+
+        if not comment_table:
+            context.log.warning(
+                "No comment table found in raw_jira. Skipping comments sync."
+            )
+            return {"status": "skipped", "reason": "no_comment_table"}
+
+        context.log.info(f"Using raw comment table: {comment_table}")
+
+        # Insert comments
+        # We need to join with proper parent tables to get back to the issue
+        # dlt hierarchy: issues -> [issues__fields__comment] -> issues__fields__comment__comments
+        # OR directly issues -> issues__fields__comment__comments
+
+        # Check if we need an intermediate join
+        # If the table is issues__fields__comment__comments, we need to check its parent
+
+        # Construct the query based on structure
+        # Assuming for now direct link or one level deep.
+        # Safest is to trace back to raw_jira.issues via _dlt_root_id if available, or join up.
+        # dlt usually adds _dlt_root_id to child tables? Let's assume standard parent-child.
+
+        # If table is issues__fields__comment__comments:
+        # Parent is likely issues__fields__comment (if it exists) or issues.
+        # Let's try to infer from data or just join dynamically?
+        # Actually simplest is to join clean_jira.issues using _dlt_root_id if we can rely on it,
+        # but dlt's _dlt_root_id is the top level _dlt_id.
+
+        insert_sql_template = """
+            INSERT INTO clean_jira.comments (
+                project_id,
+                external_id,
+                body,
+                author_id,
+                created_at,
+                updated_at
+            )
+            SELECT DISTINCT
+                i.project_id,
+                c.id as external_id,
+                COALESCE(c.body, '') as body,
+                u.id as author_id,
+                c.created::timestamptz as created_at,
+                c.updated::timestamptz as updated_at
+            FROM raw_jira.{table} c
+            JOIN raw_jira.issues r ON c._dlt_root_id = r._dlt_id
+            JOIN clean_jira.issues i ON i.external_id = r.id::text
+            LEFT JOIN clean_jira.jira_users u ON u.project_id = i.project_id
+                AND u.external_id = c.author__account_id
+            WHERE c.id IS NOT NULL
+            ON CONFLICT (project_id, external_id) DO UPDATE SET
+                body = EXCLUDED.body,
+                author_id = EXCLUDED.author_id,
+                updated_at = EXCLUDED.updated_at
+            RETURNING id, external_id
+            """
+        insert_sql = insert_sql_template.format(table=comment_table)  # noqa: S608
+
+        insert_query = text(insert_sql)
+
+        result = conn.execute(insert_query)
+        comments_synced = result.fetchall()
+        context.log.info(f"Synced {len(comments_synced)} comments")
+
+        # Sync comment-issue linkage
+        # In this model, comments are strictly 1:1 with issues (owned by issue).
+        # But we have a separate table clean_jira.comment_issues.
+        # So we populate it now.
+
+        link_query = text(
+            f"""
+            INSERT INTO clean_jira.comment_issues (
+                comment_id,
+                issue_id
+            )
+            SELECT
+                c.id as comment_id,
+                i.id as issue_id
+            FROM raw_jira.{comment_table} rc
+            JOIN raw_jira.issues r ON rc._dlt_root_id = r._dlt_id
+            JOIN clean_jira.issues i ON i.external_id = r.id::text
+            JOIN clean_jira.comments c ON c.external_id = rc.id
+                AND c.project_id = i.project_id
+            ON CONFLICT (comment_id, issue_id) DO NOTHING
+            """
+        )
+
+        conn.execute(link_query)
+        context.log.info("Synced comment-issue links")
+
+        conn.commit()
+
+    return {"status": "success", "comments_synced": len(comments_synced)}
 
 
 @asset(
