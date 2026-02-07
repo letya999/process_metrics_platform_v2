@@ -11,6 +11,7 @@ This migration:
 2. Creates regular tables with the same schema
 3. Prepares the schema for Python/Polars-based calculation logic
 """
+
 from alembic import op
 
 # revision identifiers, used by Alembic.

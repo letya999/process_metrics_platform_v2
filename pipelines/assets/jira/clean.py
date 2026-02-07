@@ -72,7 +72,7 @@ def clean_jira_issues(
         context.log.info("Syncing projects...")
         projects_synced = conn.execute(
             text(
-                f"""
+                """
             INSERT INTO clean_jira.projects (
                 platform_project_id,
                 external_id,
@@ -82,7 +82,7 @@ def clean_jira_issues(
                 updated_at
             )
             SELECT
-                '{platform_project_id}'::uuid as platform_project_id,
+                :platform_project_id::uuid as platform_project_id,
                 r.id::text as external_id,
                 r.key as external_key,
                 r.name,
@@ -96,7 +96,8 @@ def clean_jira_issues(
                 updated_at = now()
             RETURNING id
         """
-            )
+            ),
+            {"platform_project_id": platform_project_id},
         ).fetchall()
         context.log.info(f"Synced {len(projects_synced)} projects")
 
@@ -371,7 +372,7 @@ def clean_jira_issues(
                 jira_resolved_at = EXCLUDED.jira_resolved_at,
                 db_updated_at = now()
             RETURNING id
-        """
+        """  # noqa: S608
             )
         )
         issues_synced = issues_result.fetchall()
@@ -795,7 +796,7 @@ def clean_jira_field_values(
                     {select_clause}
                 FROM raw_jira.issues r
                 JOIN clean_jira.issues i ON i.external_id = r.id::text
-            """
+            """  # noqa: S608
             )
 
             batch_rows = conn.execute(rows_query).fetchall()
@@ -1169,11 +1170,9 @@ def clean_jira_sprint_issues(
                     ae.action
                 FROM all_events ae
                 JOIN clean_jira.issues i ON i.external_id = ae.issue_external_id
-                JOIN clean_jira.sprints s ON s.project_id = i.project_id
-                    AND (
-                        s.external_id = ae.sprint_external_id
-                        OR s.name = ae.sprint_external_id
-                    )
+                JOIN clean_jira.sprints s ON
+                    s.external_id = ae.sprint_external_id
+                    OR (s.name = ae.sprint_external_id AND s.project_id = i.project_id)
                 WHERE ae.sprint_external_id IS NOT NULL
                   AND ae.sprint_external_id != ''
             ),
@@ -1320,11 +1319,9 @@ def clean_jira_sprint_issues_changelog(
                     ae.changed_at
                 FROM all_events ae
                 JOIN clean_jira.issues i ON i.external_id = ae.issue_external_id
-                JOIN clean_jira.sprints s ON s.project_id = i.project_id
-                    AND (
-                        s.external_id = ae.sprint_external_id
-                        OR s.name = ae.sprint_external_id
-                    )
+                JOIN clean_jira.sprints s ON
+                    s.external_id = ae.sprint_external_id
+                    OR (s.name = ae.sprint_external_id AND s.project_id = i.project_id)
                 LEFT JOIN clean_jira.jira_users u ON u.project_id = i.project_id
                     AND u.external_id = ae.author_id
                 ORDER BY s.id, i.id, ae.action, ae.changed_at
@@ -1483,7 +1480,7 @@ def clean_jira_comments(
             JOIN clean_jira.comments c ON c.external_id = rc.id
                 AND c.project_id = i.project_id
             ON CONFLICT (comment_id, issue_id) DO NOTHING
-            """
+            """  # noqa: S608
         )
 
         conn.execute(link_query)

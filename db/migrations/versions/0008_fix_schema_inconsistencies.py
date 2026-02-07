@@ -5,6 +5,7 @@ Revises: 0007_add_issue_status_history
 Create Date: 2025-12-14 00:00:00.000000
 
 """
+
 from alembic import op
 
 # revision identifiers, used by Alembic.

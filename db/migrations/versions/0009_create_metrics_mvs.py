@@ -5,6 +5,7 @@ Revises: 0008_fix_schema_inconsistencies
 Create Date: 2025-12-16 00:00:00.000000
 
 """
+
 from alembic import op
 
 # revision identifiers, used by Alembic.

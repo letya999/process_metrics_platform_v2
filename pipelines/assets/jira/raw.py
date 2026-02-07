@@ -379,9 +379,9 @@ def run_jira_pipeline(
         "destination": str(pipeline.destination),
         "dataset_name": pipeline.dataset_name,
         "load_info": str(load_info),
-        "row_counts": load_info.load_packages[0].jobs
-        if load_info.load_packages
-        else {},
+        "row_counts": (
+            load_info.load_packages[0].jobs if load_info.load_packages else {}
+        ),
     }
 
 

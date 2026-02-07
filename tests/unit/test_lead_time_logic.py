@@ -138,7 +138,12 @@ class TestLeadTimeCalculation:
         status_changelog = pl.DataFrame(
             {
                 "issue_id": ["ISS-2", "ISS-2", "ISS-2", "ISS-2"],
-                "from_status_id": [None, "STATUS-IN-PROGRESS", "STATUS-TODO", "STATUS-IN-PROGRESS"],
+                "from_status_id": [
+                    None,
+                    "STATUS-IN-PROGRESS",
+                    "STATUS-TODO",
+                    "STATUS-IN-PROGRESS",
+                ],
                 "to_status_id": [
                     "STATUS-IN-PROGRESS",  # First start (Jan 1)
                     "STATUS-TODO",  # Moved back
@@ -277,7 +282,12 @@ class TestLeadTimeCalculation:
         status_changelog = pl.DataFrame(
             {
                 "issue_id": ["ISS-5", "ISS-5", "ISS-5", "ISS-5"],
-                "from_status_id": [None, "STATUS-IN-PROGRESS", "STATUS-DONE", "STATUS-IN-PROGRESS"],
+                "from_status_id": [
+                    None,
+                    "STATUS-IN-PROGRESS",
+                    "STATUS-DONE",
+                    "STATUS-IN-PROGRESS",
+                ],
                 "to_status_id": [
                     "STATUS-IN-PROGRESS",  # Start: Jan 1
                     "STATUS-DONE",  # First done: Jan 5 (should be ignored)

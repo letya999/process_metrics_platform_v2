@@ -19,7 +19,7 @@ Business Rules:
 4. All issues with either resolved_at or Done transition are included
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import polars as pl
 
@@ -195,22 +195,23 @@ def calculate_lead_time_per_issue(
         )
 
     # Get FIRST transition to Done (per issue)
-    end_events_from_changelog = (
-        done_transitions.group_by("issue_id")
-        .agg(pl.col("changed_at").min().alias("end_at_from_changelog"))
+    end_events_from_changelog = done_transitions.group_by("issue_id").agg(
+        pl.col("changed_at").min().alias("end_at_from_changelog")
     )
 
     # Join with issues and use COALESCE(changelog_event, resolved_at)
-    issues_with_end = issues_df.join(
-        end_events_from_changelog, left_on="id", right_on="issue_id", how="left"
-    ).with_columns(
-        [
-            pl.coalesce(
-                [pl.col("end_at_from_changelog"), pl.col("jira_resolved_at")]
-            ).alias("commitment_end_at")
-        ]
-    ).filter(
-        pl.col("commitment_end_at").is_not_null()
+    issues_with_end = (
+        issues_df.join(
+            end_events_from_changelog, left_on="id", right_on="issue_id", how="left"
+        )
+        .with_columns(
+            [
+                pl.coalesce(
+                    [pl.col("end_at_from_changelog"), pl.col("jira_resolved_at")]
+                ).alias("commitment_end_at")
+            ]
+        )
+        .filter(pl.col("commitment_end_at").is_not_null())
     )
 
     if issues_with_end.is_empty():
@@ -241,14 +242,11 @@ def calculate_lead_time_per_issue(
         left_on="issue_id",
         right_on="id",
         how="inner",
-    ).filter(
-        pl.col("changed_at") <= pl.col("commitment_end_at")
-    )
+    ).filter(pl.col("changed_at") <= pl.col("commitment_end_at"))
 
     # Get FIRST transition to middle columns (per issue)
-    start_events_from_changelog = (
-        start_transitions_before_end.group_by("issue_id")
-        .agg(pl.col("changed_at").min().alias("start_at_from_changelog"))
+    start_events_from_changelog = start_transitions_before_end.group_by("issue_id").agg(
+        pl.col("changed_at").min().alias("start_at_from_changelog")
     )
 
     # Join with issues_with_end and use COALESCE(changelog_event, created_at)
@@ -271,8 +269,9 @@ def calculate_lead_time_per_issue(
             [
                 # Calculate lead time in days
                 (
-                    (pl.col("commitment_end_at") - pl.col("commitment_start_at"))
-                    .dt.total_seconds()
+                    (
+                        pl.col("commitment_end_at") - pl.col("commitment_start_at")
+                    ).dt.total_seconds()
                     / 86400.0
                 ).alias("lead_time_days")
             ]

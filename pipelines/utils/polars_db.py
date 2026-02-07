@@ -6,7 +6,6 @@ This module provides helper functions to:
 - Write Polars DataFrames back to PostgreSQL tables
 """
 
-
 import polars as pl
 from sqlalchemy import Engine, text
 

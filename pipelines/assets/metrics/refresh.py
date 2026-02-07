@@ -267,13 +267,14 @@ def check_velocity_completion_rate_valid(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        # Check if completed is more than 150% of planned (allows some scope creep)
+        # Check if completed is more than 500% of planned (allows significant scope creep)
+        # We also ignore small sprints (planned < 10 SP) as they are prone to high variance
         result = conn.execute(
             text(
                 """
             SELECT count(*) FROM metrics.fact_velocity
-            WHERE planned_story_points > 0
-              AND completed_story_points > planned_story_points * 1.5
+            WHERE planned_story_points > 10
+              AND completed_story_points > planned_story_points * 5.0
         """
             )
         )

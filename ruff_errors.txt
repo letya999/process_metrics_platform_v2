@@ -1,0 +1,1591 @@
+﻿S608 Possible SQL injection vector through string-based query construction
+  --> scripts\analyze_commitment.py:36:13
+   |
+34 |       issues = conn.execute(
+35 |           text(
+36 | /             f"""
+37 | |         WITH first_added AS (
+38 | |             SELECT
+39 | |                 sic.issue_id,
+40 | |                 MIN(sic.changed_at) FILTER (WHERE sic.action = 'added') as first_added_at
+41 | |             FROM clean_jira.sprint_issues_changelog sic
+42 | |             JOIN clean_jira.sprint_issues si ON si.issue_id = sic.issue_id AND si.sprint_id = sic.sprint_id
+43 | |             JOIN clean_jira.issues i ON i.id = sic.issue_id
+44 | |             JOIN clean_jira.issue_types it ON it.id = i.type_id
+45 | |             WHERE sic.sprint_id = '{sprint_id}'
+46 | |               AND it.name NOT ILIKE '%sub%'
+47 | |             GROUP BY sic.issue_id
+48 | |         ),
+49 | |         last_action AS (
+50 | |             SELECT DISTINCT ON (sic.issue_id) sic.issue_id, sic.action as last_action
+51 | |             FROM clean_jira.sprint_issues_changelog sic
+52 | |             WHERE sic.sprint_id = '{sprint_id}'
+53 | |             ORDER BY sic.issue_id, sic.changed_at DESC
+54 | |         ),
+55 | |         sp AS (
+56 | |             SELECT fv.issue_id, MAX(
+57 | |                 CASE
+58 | |                     WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+59 | |                     THEN (fv.json_value::text)::numeric
+60 | |                     ELSE 0
+61 | |                 END
+62 | |             ) as story_points
+63 | |             FROM clean_jira.field_values fv
+64 | |             JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+65 | |             WHERE fk.external_key = 'customfield_10036'
+66 | |             GROUP BY fv.issue_id
+67 | |         )
+68 | |         SELECT
+69 | |             i.external_key,
+70 | |             fa.first_added_at,
+71 | |             la.last_action,
+72 | |             COALESCE(sp.story_points, 0) as sp,
+73 | |             CASE WHEN fa.first_added_at <= '{start_date}' THEN 'IN' ELSE 'AFTER' END as added_timing
+74 | |         FROM first_added fa
+75 | |         JOIN clean_jira.issues i ON i.id = fa.issue_id
+76 | |         LEFT JOIN last_action la ON la.issue_id = fa.issue_id
+77 | |         LEFT JOIN sp ON sp.issue_id = i.id
+78 | |         ORDER BY fa.first_added_at
+79 | |     """
+   | |_______^
+80 |           )
+81 |       ).fetchall()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\analyze_sprint37.py:34:13
+   |
+32 |       issues = conn.execute(
+33 |           text(
+34 | /             f"""
+35 | |         SELECT i.external_key, it.name,
+36 | |                (SELECT MIN(changed_at) FROM clean_jira.sprint_issues_changelog WHERE issue_id = i.id AND sprint_id = '{sprint_id}' ANDтАж
+37 | |                (SELECT MAX(changed_at) FROM clean_jira.sprint_issues_changelog WHERE issue_id = i.id AND sprint_id = '{sprint_id}') asтАж
+38 | |                (SELECT action FROM clean_jira.sprint_issues_changelog WHERE issue_id = i.id AND sprint_id = '{sprint_id}' ORDER BY chaтАж
+39 | |                COALESCE((SELECT MAX(CASE WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (fv.json_value::text)::numeric ELSE тАж
+40 | |                 FROM clean_jira.field_values fv JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+41 | |                 WHERE fv.issue_id = i.id AND fk.external_key = 'customfield_10036'), 0) as sp
+42 | |         FROM clean_jira.sprint_issues si
+43 | |         JOIN clean_jira.issues i ON i.id = si.issue_id
+44 | |         JOIN clean_jira.issue_types it ON it.id = i.type_id
+45 | |         WHERE si.sprint_id = '{sprint_id}' AND it.name NOT ILIKE '%sub%'
+46 | |     """
+   | |_______^
+47 |           )
+48 |       ).fetchall()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\analyze_twmob_velocity.py:77:25
+   |
+75 |                   sprint_info = conn.execute(
+76 |                       text(
+77 | /                         f"""
+78 | |                     SELECT s.id, s.start_date, COALESCE(s.complete_date, s.end_date) as end_date
+79 | |                     FROM clean_jira.sprints s
+80 | |                     JOIN clean_jira.projects p ON p.id = s.project_id
+81 | |                     WHERE p.external_key = 'TWMOB' AND s.name = '{sprint_name}'
+82 | |                 """
+   | |___________________^
+83 |                       )
+84 |                   ).fetchone()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\analyze_twmob_velocity.py:96:25
+    |
+ 94 |                   commitment = conn.execute(
+ 95 |                       text(
+ 96 | /                         f"""
+ 97 | |                     WITH story_points AS (
+ 98 | |                         SELECT
+ 99 | |                             fv.issue_id,
+100 | |                             MAX(
+101 | |                                 CASE
+102 | |                                     WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+103 | |                                     THEN (fv.json_value::text)::numeric
+104 | |                                     ELSE 0
+105 | |                                 END
+106 | |                             ) as sp
+107 | |                         FROM clean_jira.field_values fv
+108 | |                         JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+109 | |                         WHERE fk.external_key = 'customfield_10036'
+110 | |                         GROUP BY fv.issue_id
+111 | |                     ),
+112 | |                     at_start AS (
+113 | |                         SELECT DISTINCT issue_id
+114 | |                         FROM clean_jira.sprint_issues_changelog
+115 | |                         WHERE sprint_id = '{sprint_id}'
+116 | |                           AND action = 'added'
+117 | |                           AND changed_at <= '{start_date}'
+118 | |                     )
+119 | |                     SELECT COUNT(DISTINCT ats.issue_id) as cnt, COALESCE(SUM(sp.sp), 0) as sp
+120 | |                     FROM at_start ats
+121 | |                     JOIN clean_jira.issues i ON i.id = ats.issue_id
+122 | |                     JOIN clean_jira.issue_types it ON it.id = i.type_id
+123 | |                     LEFT JOIN story_points sp ON sp.issue_id = ats.issue_id
+124 | |                     WHERE it.name NOT ILIKE '%sub%'
+125 | |                 """
+    | |___________________^
+126 |                       )
+127 |                   ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\analyze_twmob_velocity.py:132:25
+    |
+130 |                   completed = conn.execute(
+131 |                       text(
+132 | /                         f"""
+133 | |                     WITH story_points AS (
+134 | |                         SELECT
+135 | |                             fv.issue_id,
+136 | |                             MAX(
+137 | |                                 CASE
+138 | |                                     WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+139 | |                                     THEN (fv.json_value::text)::numeric
+140 | |                                     ELSE 0
+141 | |                                 END
+142 | |                             ) as sp
+143 | |                         FROM clean_jira.field_values fv
+144 | |                         JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+145 | |                         WHERE fk.external_key = 'customfield_10036'
+146 | |                         GROUP BY fv.issue_id
+147 | |                     ),
+148 | |                     last_action AS (
+149 | |                         SELECT DISTINCT ON (issue_id) issue_id, action
+150 | |                         FROM clean_jira.sprint_issues_changelog
+151 | |                         WHERE sprint_id = '{sprint_id}'
+152 | |                         ORDER BY issue_id, changed_at DESC
+153 | |                     ),
+154 | |                     status_at_end AS (
+155 | |                         SELECT DISTINCT ON (issue_id) issue_id, to_status_id
+156 | |                         FROM clean_jira.issue_status_changelog
+157 | |                         WHERE changed_at <= '{end_date}'
+158 | |                         ORDER BY issue_id, changed_at DESC
+159 | |                     )
+160 | |                     SELECT COUNT(DISTINCT la.issue_id) as cnt, COALESCE(SUM(sp.sp), 0) as sp
+161 | |                     FROM last_action la
+162 | |                     JOIN status_at_end sae ON sae.issue_id = la.issue_id
+163 | |                     JOIN clean_jira.issue_statuses ist ON ist.id = sae.to_status_id
+164 | |                     JOIN clean_jira.issues i ON i.id = la.issue_id
+165 | |                     JOIN clean_jira.issue_types it ON it.id = i.type_id
+166 | |                     LEFT JOIN story_points sp ON sp.issue_id = la.issue_id
+167 | |                     WHERE la.action = 'added'
+168 | |                       AND it.name NOT ILIKE '%sub%'
+169 | |                       AND ist.category = 'done'
+170 | |                 """
+    | |___________________^
+171 |                       )
+172 |                   ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\analyze_twmob_velocity.py:213:21
+    |
+211 |               issues = conn.execute(
+212 |                   text(
+213 | /                     f"""
+214 | |                 WITH story_points AS (
+215 | |                     SELECT
+216 | |                         fv.issue_id,
+217 | |                         MAX(
+218 | |                             CASE
+219 | |                                 WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+220 | |                                 THEN (fv.json_value::text)::numeric
+221 | |                                 ELSE 0
+222 | |                             END
+223 | |                         ) as sp
+224 | |                     FROM clean_jira.field_values fv
+225 | |                     JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+226 | |                     WHERE fk.external_key = 'customfield_10036'
+227 | |                     GROUP BY fv.issue_id
+228 | |                 ),
+229 | |                 first_add AS (
+230 | |                     SELECT DISTINCT ON (issue_id) issue_id, changed_at as first_added
+231 | |                     FROM clean_jira.sprint_issues_changelog
+232 | |                     WHERE sprint_id = '{sprint_id}' AND action = 'added'
+233 | |                     ORDER BY issue_id, changed_at
+234 | |                 ),
+235 | |                 last_action AS (
+236 | |                     SELECT DISTINCT ON (issue_id) issue_id, action
+237 | |                     FROM clean_jira.sprint_issues_changelog
+238 | |                     WHERE sprint_id = '{sprint_id}'
+239 | |                     ORDER BY issue_id, changed_at DESC
+240 | |                 ),
+241 | |                 status_at_end AS (
+242 | |                     SELECT DISTINCT ON (issue_id) issue_id, to_status_id
+243 | |                     FROM clean_jira.issue_status_changelog
+244 | |                     WHERE changed_at <= '{end_date}'
+245 | |                     ORDER BY issue_id, changed_at DESC
+246 | |                 )
+247 | |                 SELECT
+248 | |                     i.external_key,
+249 | |                     COALESCE(sp.sp, 0) as sp,
+250 | |                     ist_end.category as status_at_end,
+251 | |                     CASE WHEN fa.first_added <= '{start_date}' THEN 'commitment' ELSE 'scope_creep' END as type
+252 | |                 FROM last_action la
+253 | |                 JOIN clean_jira.issues i ON i.id = la.issue_id
+254 | |                 JOIN clean_jira.issue_types it ON it.id = i.type_id
+255 | |                 LEFT JOIN story_points sp ON sp.issue_id = la.issue_id
+256 | |                 LEFT JOIN first_add fa ON fa.issue_id = la.issue_id
+257 | |                 LEFT JOIN status_at_end sae ON sae.issue_id = la.issue_id
+258 | |                 LEFT JOIN clean_jira.issue_statuses ist_end ON ist_end.id = sae.to_status_id
+259 | |                 WHERE la.action = 'added'
+260 | |                   AND it.name NOT ILIKE '%sub%'
+261 | |                 ORDER BY i.external_key
+262 | |             """
+    | |_______________^
+263 |                   )
+264 |               ).fetchall()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\check_missing_s37.py:25:13
+   |
+23 |       issues = conn.execute(
+24 |           text(
+25 | /             f"""
+26 | |         SELECT i.external_key,
+27 | |                (SELECT action FROM clean_jira.sprint_issues_changelog WHERE issue_id = i.id AND sprint_id = '{sprint_id}' ORDER BY chaтАж
+28 | |                COALESCE((SELECT MAX(CASE WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (fv.json_value::text)::numeric ELSE тАж
+29 | |                 FROM clean_jira.field_values fv JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+30 | |                 WHERE fv.issue_id = i.id AND fk.external_key = 'customfield_10036'), 0) as sp
+31 | |         FROM clean_jira.issues i
+32 | |         JOIN clean_jira.issue_types it ON it.id = i.type_id
+33 | |         WHERE i.id IN (
+34 | |             SELECT issue_id FROM clean_jira.sprint_issues_changelog WHERE sprint_id = '{sprint_id}'
+35 | |         )
+36 | |         AND it.name NOT ILIKE '%sub%'
+37 | |         AND i.id NOT IN (
+38 | |             SELECT issue_id FROM clean_jira.sprint_issues WHERE sprint_id = '{sprint_id}'
+39 | |         )
+40 | |     """
+   | |_______^
+41 |           )
+42 |       ).fetchall()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\check_sprint37_cl.py:25:13
+   |
+23 |       res = conn.execute(
+24 |           text(
+25 | /             f"""
+26 | |         SELECT COUNT(DISTINCT issue_id) FROM clean_jira.sprint_issues_changelog
+27 | |         WHERE sprint_id = '{sprint_id}'
+28 | |     """
+   | |_______^
+29 |           )
+30 |       ).scalar()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\check_sprint37_cl.py:35:13
+   |
+33 |       res_no_sub = conn.execute(
+34 |           text(
+35 | /             f"""
+36 | |         SELECT COUNT(DISTINCT sic.issue_id)
+37 | |         FROM clean_jira.sprint_issues_changelog sic
+38 | |         JOIN clean_jira.issues i ON i.id = sic.issue_id
+39 | |         JOIN clean_jira.issue_types it ON it.id = i.type_id
+40 | |         WHERE sic.sprint_id = '{sprint_id}' AND it.name NOT ILIKE '%sub%'
+41 | |     """
+   | |_______^
+42 |           )
+43 |       ).scalar()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\debug_plan_discrepancy.py:41:25
+   |
+39 |                   sprint_info = conn.execute(
+40 |                       text(
+41 | /                         f"""
+42 | |                     SELECT s.id, s.start_date, COALESCE(s.complete_date, s.end_date) as end_date
+43 | |                     FROM clean_jira.sprints s
+44 | |                     JOIN clean_jira.projects p ON p.id = s.project_id
+45 | |                     WHERE p.external_key = 'TWMOB' AND s.name = '{sprint_name}'
+46 | |                 """
+   | |___________________^
+47 |                       )
+48 |                   ).fetchone()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\debug_plan_discrepancy.py:68:25
+   |
+66 |                   in_sprint = conn.execute(
+67 |                       text(
+68 | /                         f"""
+69 | |                     SELECT COUNT(*) as cnt, COALESCE(SUM(
+70 | |                         CASE
+71 | |                             WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+72 | |                             THEN (fv.json_value::text)::numeric
+73 | |                             ELSE 0
+74 | |                         END
+75 | |                     ), 0) as sp
+76 | |                     FROM clean_jira.sprint_issues si
+77 | |                     JOIN clean_jira.issues i ON i.id = si.issue_id
+78 | |                     JOIN clean_jira.issue_types it ON it.id = i.type_id
+79 | |                     LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+80 | |                     LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+81 | |                         AND fk.external_key = 'customfield_10036'
+82 | |                     WHERE si.sprint_id = '{sprint_id}'
+83 | |                       AND it.name NOT ILIKE '%sub%'
+84 | |                 """
+   | |___________________^
+85 |                       )
+86 |                   ).fetchone()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_plan_discrepancy.py:94:25
+    |
+ 92 |                   with_changelog = conn.execute(
+ 93 |                       text(
+ 94 | /                         f"""
+ 95 | |                     SELECT COUNT(DISTINCT sic.issue_id) as cnt
+ 96 | |                     FROM clean_jira.sprint_issues_changelog sic
+ 97 | |                     JOIN clean_jira.issues i ON i.id = sic.issue_id
+ 98 | |                     JOIN clean_jira.issue_types it ON it.id = i.type_id
+ 99 | |                     JOIN clean_jira.sprint_issues si ON si.issue_id = sic.issue_id AND si.sprint_id = sic.sprint_id
+100 | |                     WHERE sic.sprint_id = '{sprint_id}'
+101 | |                       AND it.name NOT ILIKE '%sub%'
+102 | |                 """
+    | |___________________^
+103 |                       )
+104 |                   ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_plan_discrepancy.py:110:25
+    |
+108 |                   without_changelog = conn.execute(
+109 |                       text(
+110 | /                         f"""
+111 | |                     SELECT COUNT(*) as cnt, COALESCE(SUM(
+112 | |                         CASE
+113 | |                             WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+114 | |                             THEN (fv.json_value::text)::numeric
+115 | |                             ELSE 0
+116 | |                         END
+117 | |                     ), 0) as sp
+118 | |                     FROM clean_jira.sprint_issues si
+119 | |                     JOIN clean_jira.issues i ON i.id = si.issue_id
+120 | |                     JOIN clean_jira.issue_types it ON it.id = i.type_id
+121 | |                     LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+122 | |                     LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+123 | |                         AND fk.external_key = 'customfield_10036'
+124 | |                     WHERE si.sprint_id = '{sprint_id}'
+125 | |                       AND it.name NOT ILIKE '%sub%'
+126 | |                       AND NOT EXISTS (
+127 | |                           SELECT 1 FROM clean_jira.sprint_issues_changelog sic
+128 | |                           WHERE sic.issue_id = si.issue_id AND sic.sprint_id = '{sprint_id}'
+129 | |                       )
+130 | |                 """
+    | |___________________^
+131 |                       )
+132 |                   ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_plan_discrepancy.py:140:25
+    |
+138 |                   commitment = conn.execute(
+139 |                       text(
+140 | /                         f"""
+141 | |                     WITH added_before_start AS (
+142 | |                         SELECT DISTINCT sic.issue_id
+143 | |                         FROM clean_jira.sprint_issues_changelog sic
+144 | |                         JOIN clean_jira.issues i ON i.id = sic.issue_id
+145 | |                         JOIN clean_jira.issue_types it ON it.id = i.type_id
+146 | |                         JOIN clean_jira.sprint_issues si ON si.issue_id = sic.issue_id AND si.sprint_id = sic.sprint_id
+147 | |                         WHERE sic.sprint_id = '{sprint_id}'
+148 | |                           AND it.name NOT ILIKE '%sub%'
+149 | |                           AND sic.action = 'added'
+150 | |                           AND sic.changed_at <= '{start_date}'
+151 | |                     ),
+152 | |                     last_action AS (
+153 | |                         SELECT DISTINCT ON (sic.issue_id) sic.issue_id, sic.action
+154 | |                         FROM clean_jira.sprint_issues_changelog sic
+155 | |                         JOIN clean_jira.issues i ON i.id = sic.issue_id
+156 | |                         JOIN clean_jira.issue_types it ON it.id = i.type_id
+157 | |                         JOIN clean_jira.sprint_issues si ON si.issue_id = sic.issue_id AND si.sprint_id = sic.sprint_id
+158 | |                         WHERE sic.sprint_id = '{sprint_id}'
+159 | |                           AND it.name NOT ILIKE '%sub%'
+160 | |                         ORDER BY sic.issue_id, sic.changed_at DESC
+161 | |                     )
+162 | |                     SELECT COUNT(DISTINCT abs.issue_id) as cnt, COALESCE(SUM(
+163 | |                         CASE
+164 | |                             WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+165 | |                             THEN (fv.json_value::text)::numeric
+166 | |                             ELSE 0
+167 | |                         END
+168 | |                     ), 0) as sp
+169 | |                     FROM added_before_start abs
+170 | |                     JOIN last_action la ON la.issue_id = abs.issue_id
+171 | |                     JOIN clean_jira.issues i ON i.id = abs.issue_id
+172 | |                     LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+173 | |                     LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+174 | |                         AND fk.external_key = 'customfield_10036'
+175 | |                     WHERE la.action = 'added'
+176 | |                 """
+    | |___________________^
+177 |                       )
+178 |                   ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_plan_discrepancy.py:188:25
+    |
+186 |                   scope_creep = conn.execute(
+187 |                       text(
+188 | /                         f"""
+189 | |                     WITH first_add AS (
+190 | |                         SELECT DISTINCT ON (sic.issue_id) sic.issue_id, sic.changed_at as first_added
+191 | |                         FROM clean_jira.sprint_issues_changelog sic
+192 | |                         JOIN clean_jira.issues i ON i.id = sic.issue_id
+193 | |                         JOIN clean_jira.issue_types it ON it.id = i.type_id
+194 | |                         JOIN clean_jira.sprint_issues si ON si.issue_id = sic.issue_id AND si.sprint_id = sic.sprint_id
+195 | |                         WHERE sic.sprint_id = '{sprint_id}'
+196 | |                           AND it.name NOT ILIKE '%sub%'
+197 | |                           AND sic.action = 'added'
+198 | |                         ORDER BY sic.issue_id, sic.changed_at
+199 | |                     ),
+200 | |                     last_action AS (
+201 | |                         SELECT DISTINCT ON (sic.issue_id) sic.issue_id, sic.action
+202 | |                         FROM clean_jira.sprint_issues_changelog sic
+203 | |                         JOIN clean_jira.sprint_issues si ON si.issue_id = sic.issue_id AND si.sprint_id = sic.sprint_id
+204 | |                         WHERE sic.sprint_id = '{sprint_id}'
+205 | |                         ORDER BY sic.issue_id, sic.changed_at DESC
+206 | |                     )
+207 | |                     SELECT COUNT(*) as cnt, COALESCE(SUM(
+208 | |                         CASE
+209 | |                             WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+210 | |                             THEN (fv.json_value::text)::numeric
+211 | |                             ELSE 0
+212 | |                         END
+213 | |                     ), 0) as sp
+214 | |                     FROM first_add fa
+215 | |                     JOIN last_action la ON la.issue_id = fa.issue_id
+216 | |                     JOIN clean_jira.issues i ON i.id = fa.issue_id
+217 | |                     LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+218 | |                     LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+219 | |                         AND fk.external_key = 'customfield_10036'
+220 | |                     WHERE fa.first_added > '{start_date}'
+221 | |                       AND la.action = 'added'
+222 | |                 """
+    | |___________________^
+223 |                       )
+224 |                   ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sp_discrepancy.py:217:25
+    |
+215 |                   result = conn.execute(
+216 |                       text(
+217 | /                         f"""
+218 | |                     SELECT
+219 | |                         i.external_key,
+220 | |                         it.name as issue_type,
+221 | |                         ist.name as current_status,
+222 | |                         ist.category as current_category
+223 | |                     FROM clean_jira.issues i
+224 | |                     JOIN clean_jira.issue_types it ON it.id = i.type_id
+225 | |                     JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+226 | |                     WHERE i.external_key = '{key}'
+227 | |                 """
+    | |___________________^
+228 |                       )
+229 |                   ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sp_discrepancy.py:239:29
+    |
+237 |                       in_sprint = conn.execute(
+238 |                           text(
+239 | /                             f"""
+240 | |                         SELECT DISTINCT ON (issue_id) action
+241 | |                         FROM clean_jira.sprint_issues_changelog sic
+242 | |                         JOIN clean_jira.issues i ON i.id = sic.issue_id
+243 | |                         WHERE i.external_key = '{key}' AND sic.sprint_id = '{sprint_id}'
+244 | |                         ORDER BY issue_id, changed_at DESC
+245 | |                     """
+    | |_______________________^
+246 |                           )
+247 |                       ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sp_discrepancy.py:255:29
+    |
+253 |                       status_at_end = conn.execute(
+254 |                           text(
+255 | /                             f"""
+256 | |                         SELECT DISTINCT ON (i.id) ist.name, ist.category, isc.changed_at
+257 | |                         FROM clean_jira.issues i
+258 | |                         JOIN clean_jira.issue_status_changelog isc ON isc.issue_id = i.id
+259 | |                         JOIN clean_jira.issue_statuses ist ON ist.id = isc.to_status_id
+260 | |                         WHERE i.external_key = '{key}' AND isc.changed_at <= '{end_date}'
+261 | |                         ORDER BY i.id, isc.changed_at DESC
+262 | |                     """
+    | |_______________________^
+263 |                           )
+264 |                       ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\debug_sprint36.py:74:17
+   |
+72 |           result = conn.execute(
+73 |               text(
+74 | /                 f"""
+75 | |             SELECT
+76 | |                 i.external_key,
+77 | |                 ist.name as status,
+78 | |                 ist.category,
+79 | |                 {sp_sql} as sp,
+80 | |                 i.jira_resolved_at
+81 | |             FROM clean_jira.sprint_issues si
+82 | |             JOIN clean_jira.issues i ON i.id = si.issue_id
+83 | |             LEFT JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+84 | |             LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+85 | |             LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+86 | |                 AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+87 | |             WHERE si.sprint_id = '{sprint_id}'
+88 | |             ORDER BY i.external_key
+89 | |         """
+   | |___________^
+90 |               )
+91 |           )
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sprint36.py:114:17
+    |
+112 |           result = conn.execute(
+113 |               text(
+114 | /                 f"""
+115 | |             SELECT
+116 | |                 i.external_key,
+117 | |                 isc.action,
+118 | |                 isc.changed_at,
+119 | |                 {sp_sql} as sp
+120 | |             FROM clean_jira.issue_sprint_changelog isc
+121 | |             JOIN clean_jira.issues i ON i.id = isc.issue_id
+122 | |             LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+123 | |             LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+124 | |                 AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+125 | |             WHERE isc.sprint_id = '{sprint_id}'
+126 | |             ORDER BY isc.changed_at
+127 | |         """
+    | |___________^
+128 |               )
+129 |           )
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sprint36.py:150:17
+    |
+148 |           result = conn.execute(
+149 |               text(
+150 | /                 f"""
+151 | |             WITH first_add AS (
+152 | |                 SELECT DISTINCT ON (issue_id)
+153 | |                     issue_id,
+154 | |                     changed_at as first_added
+155 | |                 FROM clean_jira.issue_sprint_changelog
+156 | |                 WHERE sprint_id = '{sprint_id}' AND action = 'added'
+157 | |                 ORDER BY issue_id, changed_at
+158 | |             ),
+159 | |             last_action AS (
+160 | |                 SELECT DISTINCT ON (issue_id)
+161 | |                     issue_id,
+162 | |                     action as final_action
+163 | |                 FROM clean_jira.issue_sprint_changelog
+164 | |                 WHERE sprint_id = '{sprint_id}'
+165 | |                 ORDER BY issue_id, changed_at DESC
+166 | |             )
+167 | |             SELECT
+168 | |                 i.external_key,
+169 | |                 fa.first_added,
+170 | |                 la.final_action,
+171 | |                 ist.name as status,
+172 | |                 ist.category,
+173 | |                 {sp_sql} as sp
+174 | |             FROM first_add fa
+175 | |             JOIN last_action la ON la.issue_id = fa.issue_id
+176 | |             JOIN clean_jira.issues i ON i.id = fa.issue_id
+177 | |             LEFT JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+178 | |             LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+179 | |             LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+180 | |                 AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+181 | |             WHERE fa.first_added <= '{start_date}'
+182 | |             ORDER BY i.external_key
+183 | |         """
+    | |___________^
+184 |               )
+185 |           )
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sprint36.py:205:17
+    |
+203 |           result = conn.execute(
+204 |               text(
+205 | /                 f"""
+206 | |             WITH first_add AS (
+207 | |                 SELECT DISTINCT ON (issue_id)
+208 | |                     issue_id,
+209 | |                     changed_at as first_added
+210 | |                 FROM clean_jira.issue_sprint_changelog
+211 | |                 WHERE sprint_id = '{sprint_id}' AND action = 'added'
+212 | |                 ORDER BY issue_id, changed_at
+213 | |             ),
+214 | |             last_action AS (
+215 | |                 SELECT DISTINCT ON (issue_id)
+216 | |                     issue_id,
+217 | |                     action as final_action
+218 | |                 FROM clean_jira.issue_sprint_changelog
+219 | |                 WHERE sprint_id = '{sprint_id}'
+220 | |                 ORDER BY issue_id, changed_at DESC
+221 | |             )
+222 | |             SELECT
+223 | |                 i.external_key,
+224 | |                 fa.first_added,
+225 | |                 la.final_action,
+226 | |                 ist.name as status,
+227 | |                 ist.category,
+228 | |                 {sp_sql} as sp
+229 | |             FROM first_add fa
+230 | |             JOIN last_action la ON la.issue_id = fa.issue_id
+231 | |             JOIN clean_jira.issues i ON i.id = fa.issue_id
+232 | |             LEFT JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+233 | |             LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+234 | |             LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+235 | |                 AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+236 | |             WHERE fa.first_added > '{start_date}'
+237 | |               AND la.final_action = 'added'
+238 | |             ORDER BY i.external_key
+239 | |         """
+    | |___________^
+240 |               )
+241 |           )
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sprint36.py:264:17
+    |
+262 |           result = conn.execute(
+263 |               text(
+264 | /                 f"""
+265 | |             WITH final_scope AS (
+266 | |                 SELECT DISTINCT ON (issue_id) issue_id
+267 | |                 FROM clean_jira.issue_sprint_changelog
+268 | |                 WHERE sprint_id = '{sprint_id}'
+269 | |                 ORDER BY issue_id, changed_at DESC
+270 | |             )
+271 | |             SELECT
+272 | |                 i.external_key,
+273 | |                 ist.name as status,
+274 | |                 ist.category,
+275 | |                 {sp_sql} as sp,
+276 | |                 i.jira_resolved_at
+277 | |             FROM final_scope fs
+278 | |             JOIN clean_jira.issue_sprint_changelog isc ON isc.issue_id = fs.issue_id
+279 | |                 AND isc.sprint_id = '{sprint_id}'
+280 | |             JOIN clean_jira.issues i ON i.id = fs.issue_id
+281 | |             LEFT JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+282 | |             LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+283 | |             LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+284 | |                 AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+285 | |             WHERE isc.action = 'added'
+286 | |               AND isc.changed_at = (
+287 | |                   SELECT MAX(changed_at) FROM clean_jira.issue_sprint_changelog
+288 | |                   WHERE issue_id = fs.issue_id AND sprint_id = '{sprint_id}'
+289 | |               )
+290 | |               AND ist.category = 'done'
+291 | |             ORDER BY i.external_key
+292 | |         """
+    | |___________^
+293 |               )
+294 |           )
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sprint36.py:353:17
+    |
+351 |           result = conn.execute(
+352 |               text(
+353 | /                 f"""
+354 | |             SELECT
+355 | |                 i.external_key,
+356 | |                 ist.name as status,
+357 | |                 ist.category,
+358 | |                 {sp_sql} as sp
+359 | |             FROM clean_jira.sprint_issues si
+360 | |             JOIN clean_jira.issues i ON i.id = si.issue_id
+361 | |             LEFT JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+362 | |             LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+363 | |             LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+364 | |                 AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+365 | |             WHERE si.sprint_id = '{sprint_id}'
+366 | |               AND NOT EXISTS (
+367 | |                   SELECT 1 FROM clean_jira.issue_sprint_changelog isc
+368 | |                   WHERE isc.issue_id = si.issue_id AND isc.sprint_id = '{sprint_id}'
+369 | |               )
+370 | |             ORDER BY i.external_key
+371 | |         """
+    | |___________^
+372 |               )
+373 |           )
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\debug_sprint36_completed.py:47:17
+   |
+45 |           our_completed = conn.execute(
+46 |               text(
+47 | /                 f"""
+48 | |             WITH story_points AS (
+49 | |                 SELECT
+50 | |                     fv.issue_id,
+51 | |                     MAX(CASE
+52 | |                         WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+53 | |                         THEN (fv.json_value::text)::numeric
+54 | |                         ELSE 0
+55 | |                     END) as sp
+56 | |                 FROM clean_jira.field_values fv
+57 | |                 JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+58 | |                 WHERE fk.external_key = 'customfield_10036'
+59 | |                 GROUP BY fv.issue_id
+60 | |             ),
+61 | |             final_scope AS (
+62 | |                 SELECT DISTINCT ON (issue_id) issue_id, action
+63 | |                 FROM clean_jira.sprint_issues_changelog
+64 | |                 WHERE sprint_id = '{sprint_id}'
+65 | |                 ORDER BY issue_id, changed_at DESC
+66 | |             ),
+67 | |             status_at_end AS (
+68 | |                 SELECT DISTINCT ON (issue_id) issue_id, to_status_id
+69 | |                 FROM clean_jira.issue_status_changelog
+70 | |                 WHERE changed_at <= '{end_date}'
+71 | |                 ORDER BY issue_id, changed_at DESC
+72 | |             )
+73 | |             SELECT
+74 | |                 i.external_key,
+75 | |                 COALESCE(sp.sp, 0) as sp,
+76 | |                 ist.category
+77 | |             FROM final_scope fs
+78 | |             JOIN status_at_end sae ON sae.issue_id = fs.issue_id
+79 | |             JOIN clean_jira.issue_statuses ist ON ist.id = sae.to_status_id
+80 | |             JOIN clean_jira.issues i ON i.id = fs.issue_id
+81 | |             JOIN clean_jira.issue_types it ON it.id = i.type_id
+82 | |             LEFT JOIN story_points sp ON sp.issue_id = i.id
+83 | |             WHERE fs.action = 'added'
+84 | |               AND it.name NOT ILIKE '%sub%'
+85 | |               AND ist.category = 'done'
+86 | |             ORDER BY i.external_key
+87 | |         """
+   | |___________^
+88 |               )
+89 |           ).fetchall()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sprint36_completed.py:146:25
+    |
+144 |                   history = conn.execute(
+145 |                       text(
+146 | /                         f"""
+147 | |                     SELECT isc.changed_at, ist.name, ist.category
+148 | |                     FROM clean_jira.issue_status_changelog isc
+149 | |                     JOIN clean_jira.issue_statuses ist ON ist.id = isc.to_status_id
+150 | |                     JOIN clean_jira.issues i ON i.id = isc.issue_id
+151 | |                     WHERE i.external_key = '{key}'
+152 | |                     ORDER BY isc.changed_at DESC
+153 | |                     LIMIT 5
+154 | |                 """
+    | |___________________^
+155 |                       )
+156 |                   ).fetchall()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_sprint36_completed.py:168:25
+    |
+166 |                   in_scope = conn.execute(
+167 |                       text(
+168 | /                         f"""
+169 | |                     SELECT DISTINCT ON (issue_id) action
+170 | |                     FROM clean_jira.sprint_issues_changelog sic
+171 | |                     JOIN clean_jira.issues i ON i.id = sic.issue_id
+172 | |                     WHERE i.external_key = '{key}' AND sic.sprint_id = '{sprint_id}'
+173 | |                     ORDER BY issue_id, changed_at DESC
+174 | |                 """
+    | |___________________^
+175 |                       )
+176 |                   ).fetchone()
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\debug_twad_416_status.py:25:37
+   |
+24 |     with engine.connect() as conn:
+25 |         sprints = conn.execute(text(f"SELECT id, end_date, complete_date FROM clean_jira.sprints WHERE name = '{sprint_name}'")).mappiтАж
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+26 |
+27 |     str(sprints['id'])
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_twmob_velocity.py:133:20
+    |
+132 |       # Get sprint info
+133 |       sprint_query = f"""
+    |  ____________________^
+134 | |     SELECT
+135 | |         s.id, s.name, s.start_date, s.end_date, s.complete_date
+136 | |     FROM clean_jira.sprints s
+137 | |     JOIN clean_jira.projects p ON p.id = s.project_id
+138 | |     WHERE p.external_key = 'TWMOB' AND s.name = '{sprint_name}'
+139 | |     """
+    | |_______^
+140 |       sprint_df = read_table(engine, sprint_query)
+141 |       print("\nSprint Info:")
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_twmob_velocity.py:153:24
+    |
+152 |       # 1. Current sprint membership
+153 |       membership_query = f"""
+    |  ________________________^
+154 | |     SELECT
+155 | |         i.external_key,
+156 | |         i.summary,
+157 | |         ist.name as status,
+158 | |         ist.category as status_category,
+159 | |         COALESCE((fv.json_value::text)::numeric, 0) as story_points,
+160 | |         i.jira_resolved_at,
+161 | |         CASE WHEN ist.category = 'done' THEN 'Yes' ELSE 'No' END as is_done
+162 | |     FROM clean_jira.sprint_issues si
+163 | |     JOIN clean_jira.issues i ON i.id = si.issue_id
+164 | |     LEFT JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+165 | |     LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+166 | |     LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+167 | |         AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+168 | |     WHERE si.sprint_id = '{sprint_id}'
+169 | |     ORDER BY i.external_key
+170 | |     """
+    | |_______^
+171 |       members = read_table(engine, membership_query)
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_twmob_velocity.py:184:23
+    |
+183 |       # 2. Changelog history
+184 |       changelog_query = f"""
+    |  _______________________^
+185 | |     SELECT
+186 | |         i.external_key,
+187 | |         sc.action,
+188 | |         sc.changed_at,
+189 | |         COALESCE((fv.json_value::text)::numeric, 0) as story_points
+190 | |     FROM clean_jira.sprint_changelog sc
+191 | |     JOIN clean_jira.issues i ON i.id = sc.issue_id
+192 | |     LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+193 | |     LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+194 | |         AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+195 | |     WHERE sc.sprint_id = '{sprint_id}'
+196 | |     ORDER BY sc.changed_at
+197 | |     """
+    | |_______^
+198 |       changelog = read_table(engine, changelog_query)
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_twmob_velocity.py:212:21
+    |
+211 |       # 3. Check removed issues
+212 |       removed_query = f"""
+    |  _____________________^
+213 | |     SELECT DISTINCT
+214 | |         i.external_key,
+215 | |         i.summary,
+216 | |         ist.name as status,
+217 | |         ist.category as status_category,
+218 | |         COALESCE((fv.json_value::text)::numeric, 0) as story_points,
+219 | |         sc.changed_at as removed_at
+220 | |     FROM clean_jira.sprint_changelog sc
+221 | |     JOIN clean_jira.issues i ON i.id = sc.issue_id
+222 | |     LEFT JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+223 | |     LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+224 | |     LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+225 | |         AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+226 | |     WHERE sc.sprint_id = '{sprint_id}' AND sc.action = 'removed'
+227 | |     ORDER BY i.external_key
+228 | |     """
+    | |_______^
+229 |       removed = read_table(engine, removed_query)
+230 |       print(f"\nIssues REMOVED from sprint: {len(removed)}")
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_twmob_velocity.py:237:27
+    |
+236 |       # 4. Check completed status at sprint end
+237 |       status_at_end_query = f"""
+    |  ___________________________^
+238 | |     WITH last_status AS (
+239 | |         SELECT DISTINCT ON (isc.issue_id)
+240 | |             isc.issue_id,
+241 | |             isc.to_status_id,
+242 | |             isc.changed_at
+243 | |         FROM clean_jira.issue_status_changelog isc
+244 | |         JOIN clean_jira.sprint_issues si ON si.issue_id = isc.issue_id
+245 | |         WHERE si.sprint_id = '{sprint_id}'
+246 | |           AND isc.changed_at <= '{end_date}'
+247 | |         ORDER BY isc.issue_id, isc.changed_at DESC
+248 | |     )
+249 | |     SELECT
+250 | |         i.external_key,
+251 | |         ist_now.name as current_status,
+252 | |         ist_now.category as current_category,
+253 | |         ist_end.name as status_at_end,
+254 | |         ist_end.category as category_at_end,
+255 | |         ls.changed_at as last_status_change,
+256 | |         COALESCE((fv.json_value::text)::numeric, 0) as story_points
+257 | |     FROM clean_jira.sprint_issues si
+258 | |     JOIN clean_jira.issues i ON i.id = si.issue_id
+259 | |     LEFT JOIN clean_jira.issue_statuses ist_now ON ist_now.id = i.status_id
+260 | |     LEFT JOIN last_status ls ON ls.issue_id = i.id
+261 | |     LEFT JOIN clean_jira.issue_statuses ist_end ON ist_end.id = ls.to_status_id
+262 | |     LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+263 | |     LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+264 | |         AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+265 | |     WHERE si.sprint_id = '{sprint_id}'
+266 | |     ORDER BY i.external_key
+267 | |     """
+    | |_______^
+268 |       status_at_end = read_table(engine, status_at_end_query)
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_twmob_velocity.py:379:24
+    |
+377 |       for sprint_name in ["Sprint 35", "Sprint 36", "Sprint 37", "Sprint 38"]:
+378 |           # Get sprint dates
+379 |           sprint_query = f"""
+    |  ________________________^
+380 | |         SELECT s.id, s.name, s.start_date, COALESCE(s.complete_date, s.end_date) as end_date
+381 | |         FROM clean_jira.sprints s
+382 | |         JOIN clean_jira.projects p ON p.id = s.project_id
+383 | |         WHERE p.external_key = 'TWMOB' AND s.name = '{sprint_name}'
+384 | |         """
+    | |___________^
+385 |           sprint_df = read_table(engine, sprint_query)
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+   --> scripts\debug_twmob_velocity.py:395:29
+    |
+394 |           # Find issues added after start
+395 |           scope_creep_query = f"""
+    |  _____________________________^
+396 | |         WITH first_add AS (
+397 | |             SELECT issue_id, MIN(changed_at) as first_added
+398 | |             FROM clean_jira.sprint_changelog
+399 | |             WHERE sprint_id = '{sprint_id}' AND action = 'added'
+400 | |             GROUP BY issue_id
+401 | |         ),
+402 | |         final_state AS (
+403 | |             SELECT DISTINCT ON (issue_id) issue_id, action
+404 | |             FROM clean_jira.sprint_changelog
+405 | |             WHERE sprint_id = '{sprint_id}'
+406 | |             ORDER BY issue_id, changed_at DESC
+407 | |         )
+408 | |         SELECT
+409 | |             i.external_key,
+410 | |             ist.name as status,
+411 | |             ist.category,
+412 | |             COALESCE((fv.json_value::text)::numeric, 0) as story_points,
+413 | |             fa.first_added,
+414 | |             CASE WHEN ist.category = 'done' THEN 'Yes' ELSE 'No' END as is_done
+415 | |         FROM first_add fa
+416 | |         JOIN final_state fs ON fs.issue_id = fa.issue_id
+417 | |         JOIN clean_jira.issues i ON i.id = fa.issue_id
+418 | |         LEFT JOIN clean_jira.issue_statuses ist ON ist.id = i.status_id
+419 | |         LEFT JOIN clean_jira.field_values fv ON fv.issue_id = i.id
+420 | |         LEFT JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+421 | |             AND (fk.external_key = 'customfield_10036' OR fk.name ILIKE '%story point%')
+422 | |         WHERE fa.first_added > '{start_date}'
+423 | |           AND fs.action = 'added'  -- Still in sprint (not removed later)
+424 | |         ORDER BY i.external_key
+425 | |         """
+    | |___________^
+426 |
+427 |           scope_creep = read_table(engine, scope_creep_query)
+    |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\debug_velocity_logic_interactive.py:62:17
+   |
+61 |     issues_df = read_table(
+62 |         engine, f"SELECT * FROM clean_jira.issues WHERE id IN ('{issues_ids_str}')"
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+63 |     )
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\debug_velocity_logic_interactive.py:68:9
+   |
+66 |       status_changelog_df = read_table(
+67 |           engine,
+68 | /         f"""
+69 | |         SELECT * FROM clean_jira.issue_status_changelog
+70 | |         WHERE issue_id IN ('{issues_ids_str}')
+71 | |     """,
+   | |_______^
+72 |       )
+   |
+
+E402 Module level import not at top of file
+  --> scripts\debug_velocity_steps.py:20:1
+   |
+18 | engine = create_engine(DATABASE_URL)
+19 |
+20 | import polars as pl
+   | ^^^^^^^^^^^^^^^^^^^
+21 |
+22 | from pipelines.calculations import velocity as velocity_logic
+   |
+
+E402 Module level import not at top of file
+  --> scripts\debug_velocity_steps.py:22:1
+   |
+20 | import polars as pl
+21 |
+22 | from pipelines.calculations import velocity as velocity_logic
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+23 | from pipelines.utils.polars_db import read_table
+   |
+
+E402 Module level import not at top of file
+  --> scripts\debug_velocity_steps.py:23:1
+   |
+22 | from pipelines.calculations import velocity as velocity_logic
+23 | from pipelines.utils.polars_db import read_table
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+24 |
+25 | OUTPUT_FILE = "debug_velocity_steps_output.txt"
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\quick_check.py:34:13
+   |
+32 |       si_count = conn.execute(
+33 |           text(
+34 | /             f"""
+35 | |         SELECT COUNT(DISTINCT si.issue_id)
+36 | |         FROM clean_jira.sprint_issues si
+37 | |         JOIN clean_jira.issues i ON i.id = si.issue_id
+38 | |         JOIN clean_jira.issue_types it ON it.id = i.type_id
+39 | |         WHERE si.sprint_id = '{sprint_id}'
+40 | |           AND it.name NOT ILIKE '%sub%'
+41 | |     """
+   | |_______^
+42 |           )
+43 |       ).fetchone()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\quick_check.py:49:13
+   |
+47 |       cl_count = conn.execute(
+48 |           text(
+49 | /             f"""
+50 | |         SELECT COUNT(DISTINCT sic.issue_id)
+51 | |         FROM clean_jira.sprint_issues_changelog sic
+52 | |         JOIN clean_jira.sprint_issues si ON si.issue_id = sic.issue_id AND si.sprint_id = sic.sprint_id
+53 | |         JOIN clean_jira.issues i ON i.id = sic.issue_id
+54 | |         JOIN clean_jira.issue_types it ON it.id = i.type_id
+55 | |         WHERE sic.sprint_id = '{sprint_id}'
+56 | |           AND it.name NOT ILIKE '%sub%'
+57 | |     """
+   | |_______^
+58 |           )
+59 |       ).fetchone()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\quick_check.py:65:13
+   |
+63 |       no_cl = conn.execute(
+64 |           text(
+65 | /             f"""
+66 | |         SELECT COUNT(DISTINCT si.issue_id)
+67 | |         FROM clean_jira.sprint_issues si
+68 | |         JOIN clean_jira.issues i ON i.id = si.issue_id
+69 | |         JOIN clean_jira.issue_types it ON it.id = i.type_id
+70 | |         WHERE si.sprint_id = '{sprint_id}'
+71 | |           AND it.name NOT ILIKE '%sub%'
+72 | |           AND NOT EXISTS (
+73 | |               SELECT 1 FROM clean_jira.sprint_issues_changelog sic
+74 | |               WHERE sic.issue_id = si.issue_id AND sic.sprint_id = '{sprint_id}'
+75 | |           )
+76 | |     """
+   | |_______^
+77 |           )
+78 |       ).fetchone()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_grace_periods.py:24:13
+   |
+22 |       result = conn.execute(
+23 |           text(
+24 | /             f"""
+25 | |         WITH added_before_grace AS (
+26 | |             SELECT DISTINCT sic.issue_id
+27 | |             FROM clean_jira.sprint_issues_changelog sic
+28 | |             JOIN clean_jira.sprint_issues si ON si.issue_id = sic.issue_id AND si.sprint_id = sic.sprint_id
+29 | |             JOIN clean_jira.issues i ON i.id = sic.issue_id
+30 | |             JOIN clean_jira.issue_types it ON it.id = i.type_id
+31 | |             WHERE sic.sprint_id = '{sprint_id}'
+32 | |               AND it.name NOT ILIKE '%sub%'
+33 | |               AND sic.action = 'added'
+34 | |               AND sic.changed_at <= '{grace_time}'
+35 | |         ),
+36 | |         last_action AS (
+37 | |             SELECT DISTINCT ON (sic.issue_id) sic.issue_id, sic.action as last_action
+38 | |             FROM clean_jira.sprint_issues_changelog sic
+39 | |             WHERE sic.sprint_id = '{sprint_id}'
+40 | |             ORDER BY sic.issue_id, sic.changed_at DESC
+41 | |         ),
+42 | |         sp AS (
+43 | |             SELECT fv.issue_id, MAX(
+44 | |                 CASE
+45 | |                     WHEN fv.json_value::text ~ '^-?[0-9]+(\\.[0-9]+)?$'
+46 | |                     THEN (fv.json_value::text)::numeric
+47 | |                     ELSE 0
+48 | |                 END
+49 | |             ) as story_points
+50 | |             FROM clean_jira.field_values fv
+51 | |             JOIN clean_jira.field_keys fk ON fk.id = fv.field_key_id
+52 | |             WHERE fk.external_key = 'customfield_10036'
+53 | |             GROUP BY fv.issue_id
+54 | |         )
+55 | |         SELECT COALESCE(SUM(sp.story_points), 0)
+56 | |         FROM added_before_grace abg
+57 | |         JOIN last_action la ON la.issue_id = abg.issue_id
+58 | |         LEFT JOIN sp ON sp.issue_id = abg.issue_id
+59 | |         WHERE la.last_action = 'added'
+60 | |     """
+   | |_______^
+61 |           )
+62 |       ).fetchone()
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_grace_periods.py:92:21
+   |
+90 |               sprint_info = conn.execute(
+91 |                   text(
+92 | /                     f"""
+93 | |                 SELECT s.id, s.start_date
+94 | |                 FROM clean_jira.sprints s
+95 | |                 JOIN clean_jira.projects p ON p.id = s.project_id
+96 | |                 WHERE p.external_key = 'TWMOB' AND s.name = '{sprint_name}'
+97 | |             """
+   | |_______________^
+98 |                   )
+99 |               ).fetchone()
+   |
+
+E402 Module level import not at top of file
+  --> scripts\test_sprint_23_full.py:14:1
+   |
+12 | sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+13 |
+14 | from pipelines.calculations import velocity as velocity_logic
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+15 | from pipelines.utils.polars_db import read_table
+   |
+
+E402 Module level import not at top of file
+  --> scripts\test_sprint_23_full.py:15:1
+   |
+14 | from pipelines.calculations import velocity as velocity_logic
+15 | from pipelines.utils.polars_db import read_table
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_full.py:31:37
+   |
+30 |     with engine.connect() as conn:
+31 |         sprints = conn.execute(text(f"SELECT id FROM clean_jira.sprints WHERE name = '{sprint_name}'")).mappings().first()
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+32 |     sprint_id = str(sprints['id'])
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_full.py:37:37
+   |
+36 |     # Load all necessary tables
+37 |     sprints_df = read_table(engine, f"SELECT * FROM clean_jira.sprints WHERE id = '{sprint_id}'")
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+38 |     sprint_issues_df = read_table(engine, f"SELECT issue_id, sprint_id FROM clean_jira.sprint_issues WHERE sprint_id = '{sprint_id}'")
+39 |     sprint_changelog_df = read_table(engine, f"SELECT issue_id, sprint_id, action, changed_at FROM clean_jira.sprint_issues_changelog тАж
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_full.py:38:43
+   |
+36 | тАжary tables
+37 | тАж_table(engine, f"SELECT * FROM clean_jira.sprints WHERE id = '{sprint_id}'")
+38 | тАж= read_table(engine, f"SELECT issue_id, sprint_id FROM clean_jira.sprint_issues WHERE sprint_id = '{sprint_id}'")
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+39 | тАжdf = read_table(engine, f"SELECT issue_id, sprint_id, action, changed_at FROM clean_jira.sprint_issues_changelog WHERE sprint_id = '{тАж
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_full.py:39:46
+   |
+37 | тАжELECT * FROM clean_jira.sprints WHERE id = '{sprint_id}'")
+38 | тАжe, f"SELECT issue_id, sprint_id FROM clean_jira.sprint_issues WHERE sprint_id = '{sprint_id}'")
+39 | тАжgine, f"SELECT issue_id, sprint_id, action, changed_at FROM clean_jira.sprint_issues_changelog WHERE sprint_id = '{sprint_id}'")
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+40 | тАж
+41 | тАж
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_full.py:50:9
+   |
+48 |       issues_df = read_table(
+49 |           engine,
+50 | /         f"""
+51 | |         SELECT i.id, i.project_id, i.external_key, i.jira_created_at, i.status_id, it.name as type_name
+52 | |         FROM clean_jira.issues i
+53 | |         JOIN clean_jira.issue_types it ON i.type_id = it.id
+54 | |         WHERE i.id IN ('{ids_tuple}')
+55 | |         """
+   | |___________^
+56 |       )
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_full.py:58:42
+   |
+56 | тАж
+57 | тАж
+58 | тАжable(engine, f"SELECT issue_id, field_key_id, json_value FROM clean_jira.field_values WHERE issue_id IN ('{ids_tuple}')")
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+59 | тАжle(engine, "SELECT id, external_key, name FROM clean_jira.field_keys")
+60 | тАж = read_table(engine, f"SELECT issue_id, field_key_id, old_value, new_value, changed_at FROM clean_jira.field_value_changelog WHERE iтАж
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_full.py:60:51
+   |
+58 | тАжLECT issue_id, field_key_id, json_value FROM clean_jira.field_values WHERE issue_id IN ('{ids_tuple}')")
+59 | тАжT id, external_key, name FROM clean_jira.field_keys")
+60 | тАжine, f"SELECT issue_id, field_key_id, old_value, new_value, changed_at FROM clean_jira.field_value_changelog WHERE issue_id IN ('{ids_tuple}')")
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+61 | тАжf"SELECT issue_id, to_status_id, from_status_id, changed_at FROM clean_jira.issue_status_changelog WHERE issue_id IN ('{ids_tuple}')")
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_full.py:61:46
+   |
+59 | тАжSELECT id, external_key, name FROM clean_jira.field_keys")
+60 | тАжe(engine, f"SELECT issue_id, field_key_id, old_value, new_value, changed_at FROM clean_jira.field_value_changelog WHERE issue_id IN ('{ids_tuplтАж
+61 | тАжine, f"SELECT issue_id, to_status_id, from_status_id, changed_at FROM clean_jira.issue_status_changelog WHERE issue_id IN ('{ids_tuple}')")
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+62 | тАж
+63 | тАжCT id, project_id, name FROM clean_jira.boards")
+   |
+
+E402 Module level import not at top of file
+  --> scripts\test_sprint_23_logic.py:11:1
+   |
+ 9 | sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+10 |
+11 | from pipelines.calculations import velocity as velocity_logic
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+12 | from pipelines.utils.polars_db import read_table
+   |
+
+E402 Module level import not at top of file
+  --> scripts\test_sprint_23_logic.py:12:1
+   |
+11 | from pipelines.calculations import velocity as velocity_logic
+12 | from pipelines.utils.polars_db import read_table
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_logic.py:28:37
+   |
+27 |     with engine.connect() as conn:
+28 |         sprints = conn.execute(text(f"SELECT id FROM clean_jira.sprints WHERE name = '{sprint_name}'")).mappings().first()
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+29 |     sprint_id = str(sprints['id'])
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_logic.py:34:37
+   |
+33 |     # Load tables
+34 |     sprints_df = read_table(engine, f"SELECT * FROM clean_jira.sprints WHERE id = '{sprint_id}'")
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+35 |     sprint_issues_df = read_table(engine, f"SELECT issue_id, sprint_id FROM clean_jira.sprint_issues WHERE sprint_id = '{sprint_id}'")
+36 |     sprint_changelog_df = read_table(engine, f"SELECT issue_id, sprint_id, action, changed_at FROM clean_jira.sprint_issues_changelog тАж
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_logic.py:35:43
+   |
+33 | тАж
+34 | тАж_table(engine, f"SELECT * FROM clean_jira.sprints WHERE id = '{sprint_id}'")
+35 | тАж= read_table(engine, f"SELECT issue_id, sprint_id FROM clean_jira.sprint_issues WHERE sprint_id = '{sprint_id}'")
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+36 | тАжdf = read_table(engine, f"SELECT issue_id, sprint_id, action, changed_at FROM clean_jira.sprint_issues_changelog WHERE sprint_id = '{тАж
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_logic.py:36:46
+   |
+34 | тАжELECT * FROM clean_jira.sprints WHERE id = '{sprint_id}'")
+35 | тАжe, f"SELECT issue_id, sprint_id FROM clean_jira.sprint_issues WHERE sprint_id = '{sprint_id}'")
+36 | тАжgine, f"SELECT issue_id, sprint_id, action, changed_at FROM clean_jira.sprint_issues_changelog WHERE sprint_id = '{sprint_id}'")
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+37 | тАж
+38 | тАж
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_logic.py:47:9
+   |
+45 |       issues_df = read_table(
+46 |           engine,
+47 | /         f"""
+48 | |         SELECT i.id, i.project_id, i.external_key, i.jira_created_at, i.status_id, it.name as type_name
+49 | |         FROM clean_jira.issues i
+50 | |         JOIN clean_jira.issue_types it ON i.type_id = it.id
+51 | |         WHERE i.id IN ('{ids_tuple}')
+52 | |         """
+   | |___________^
+53 |       )
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_logic.py:55:46
+   |
+53 | тАж
+54 | тАж
+55 | тАжine, f"SELECT issue_id, to_status_id, from_status_id, changed_at FROM clean_jira.issue_status_changelog WHERE issue_id IN ('{ids_tuple}')")
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+56 | тАжCT id, project_id, name FROM clean_jira.boards")
+57 | тАж, "SELECT bc.id, bc.board_id, bc.name, bcs.status_id FROM clean_jira.board_columns bc LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.boaтАж
+   |
+
+E402 Module level import not at top of file
+  --> scripts\test_sprint_23_simple.py:14:1
+   |
+12 | sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+13 |
+14 | from pipelines.calculations import velocity as velocity_logic
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+15 | from pipelines.utils.polars_db import read_table
+   |
+
+E402 Module level import not at top of file
+  --> scripts\test_sprint_23_simple.py:15:1
+   |
+14 | from pipelines.calculations import velocity as velocity_logic
+15 | from pipelines.utils.polars_db import read_table
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_simple.py:31:37
+   |
+30 |     with engine.connect() as conn:
+31 |         sprints = conn.execute(text(f"SELECT id FROM clean_jira.sprints WHERE name = '{sprint_name}'")).mappings().first()
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+32 |     sprint_id = str(sprints['id'])
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_simple.py:37:37
+   |
+36 |     # Load Tables
+37 |     sprints_df = read_table(engine, f"SELECT * FROM clean_jira.sprints WHERE id = '{sprint_id}'")
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+38 |
+39 |     sprint_issues_df = read_table(
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_simple.py:41:9
+   |
+39 |     sprint_issues_df = read_table(
+40 |         engine,
+41 |         f"SELECT issue_id, sprint_id FROM clean_jira.sprint_issues WHERE sprint_id = '{sprint_id}'"
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+42 |     )
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_simple.py:46:9
+   |
+44 |     sprint_changelog_df = read_table(
+45 |         engine,
+46 |         f"SELECT issue_id, sprint_id, action, changed_at FROM clean_jira.sprint_issues_changelog WHERE sprint_id = '{sprint_id}'"
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+47 |     )
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\test_sprint_23_simple.py:59:9
+   |
+57 |       issues_df = read_table(
+58 |           engine,
+59 | /         f"""
+60 | |         SELECT i.id, i.project_id, i.external_key, i.jira_created_at, it.name as type_name
+61 | |         FROM clean_jira.issues i
+62 | |         JOIN clean_jira.issue_types it ON i.type_id = it.id
+63 | |         WHERE i.id IN ('{ids_tuple}')
+64 | |         """
+   | |___________^
+65 |       )
+   |
+
+E402 Module level import not at top of file
+  --> scripts\test_velocity.py:23:1
+   |
+21 | engine = create_engine(DATABASE_URL)
+22 |
+23 | from pipelines.calculations import velocity as velocity_logic
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+24 | from pipelines.utils.polars_db import read_table
+   |
+
+E402 Module level import not at top of file
+  --> scripts\test_velocity.py:24:1
+   |
+23 | from pipelines.calculations import velocity as velocity_logic
+24 | from pipelines.utils.polars_db import read_table
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+
+E402 Module level import not at top of file
+  --> scripts\validate_sprint_23.py:15:1
+   |
+13 | sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+14 |
+15 | from pipelines.calculations import velocity as velocity_logic
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16 | from pipelines.utils.polars_db import read_table
+   |
+
+E402 Module level import not at top of file
+  --> scripts\validate_sprint_23.py:16:1
+   |
+15 | from pipelines.calculations import velocity as velocity_logic
+16 | from pipelines.utils.polars_db import read_table
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\validate_sprint_23.py:32:37
+   |
+31 |     with engine.connect() as conn:
+32 |         sprints = conn.execute(text(f"SELECT id FROM clean_jira.sprints WHERE name = '{sprint_name}'")).mappings().first()
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+33 |     sprint_id = str(sprints['id'])
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\validate_sprint_23.py:36:37
+   |
+35 |     # Load Tables
+36 |     sprints_df = read_table(engine, f"SELECT * FROM clean_jira.sprints WHERE id = '{sprint_id}'")
+   |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+37 |
+38 |     # Issues - Need all potentially relevant issues
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\validate_sprint_23.py:41:9
+   |
+39 |       sprint_issues_df = read_table(
+40 |           engine,
+41 | /         f"""
+42 | |         SELECT si.issue_id, si.sprint_id
+43 | |         FROM clean_jira.sprint_issues si
+44 | |         WHERE si.sprint_id = '{sprint_id}'
+45 | |         """
+   | |___________^
+46 |       )
+47 |       sprint_changelog_df = read_table(
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\validate_sprint_23.py:49:9
+   |
+47 |       sprint_changelog_df = read_table(
+48 |           engine,
+49 | /         f"""
+50 | |         SELECT issue_id, sprint_id, action, changed_at
+51 | |         FROM clean_jira.sprint_issues_changelog
+52 | |         WHERE sprint_id = '{sprint_id}'
+53 | |         """
+   | |___________^
+54 |       )
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\validate_sprint_23.py:66:9
+   |
+64 |     issues_df = read_table(
+65 |         engine,
+66 |         f"SELECT id, project_id, external_key as key, type_id, jira_created_at FROM clean_jira.issues WHERE id IN ('{ids_tuple}')"
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+67 |     )
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\validate_sprint_23.py:74:24
+   |
+73 |     # SP
+74 |     read_table(engine, f"SELECT issue_id, 1.0 as story_points FROM clean_jira.issues WHERE id IN ('{ids_tuple}')").select(["issue_id",тАж
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+75 |
+76 |     # Plan
+   |
+
+S608 Possible SQL injection vector through string-based query construction
+  --> scripts\validate_sprint_23.py:93:9
+   |
+91 |       status_changelog_df = read_table(
+92 |           engine,
+93 | /         f"""
+94 | |         SELECT issue_id, to_status_id, from_status_id, changed_at
+95 | |         FROM clean_jira.issue_status_changelog
+96 | |         WHERE issue_id IN ('{ids_tuple}')
+97 | |         """
+   | |___________^
+98 |       )
+99 |       boards_df = read_table(engine, "SELECT id, project_id, name FROM clean_jira.boards")
+   |
+
+Found 81 errors.

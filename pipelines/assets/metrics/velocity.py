@@ -112,7 +112,7 @@ def calculate_velocity(
     status_changelog_df = read_table(
         engine,
         """
-        SELECT issue_id, to_status_id, changed_at
+        SELECT issue_id, from_status_id, to_status_id, changed_at
         FROM clean_jira.issue_status_changelog
         """,
     )
@@ -139,6 +139,10 @@ def calculate_velocity(
         """,
     )
 
+    issue_statuses_df = read_table(
+        engine, "SELECT id, name, category FROM clean_jira.issue_statuses"
+    )
+
     context.log.info(
         f"Loaded {len(sprints_df)} sprints, {len(issues_df)} issues, "
         f"{len(sprint_issues_df)} sprint-issue memberships"
@@ -159,6 +163,7 @@ def calculate_velocity(
         boards_df=boards_df,
         board_columns_df=board_columns_df,
         field_value_changelog_df=field_value_changelog_df,
+        issue_statuses_df=issue_statuses_df,
     )
 
     context.log.info(f"Calculated velocity for {len(velocity_df)} sprints")
@@ -182,6 +187,7 @@ def calculate_velocity(
         boards_df=boards_df,
         board_columns_df=board_columns_df,
         field_value_changelog_df=field_value_changelog_df,
+        issue_statuses_df=issue_statuses_df,
     )
 
     context.log.info(f"Calculated {len(velocity_slice_df)} velocity slice rows")
