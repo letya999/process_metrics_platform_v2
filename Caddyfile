@@ -1,0 +1,38 @@
+# Замените YOUR_DOMAIN.com на ваш домен
+# Или используйте nip.io для тестирования, например: metrics.111.111.111.111.nip.io
+
+# Metabase (BI Dashboard)
+metrics.YOUR_DOMAIN.com {
+    reverse_proxy metabase:3000
+
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
+
+# Dagster UI (ETL мониторинг)
+dagster.YOUR_DOMAIN.com {
+    # Basic Auth - замените hash на ваш (caddy hash-password)
+    # Пример пользователя admin
+    basicauth * {
+        admin $2a$14$vetZVoq/KqVsKzS92IhfdOT336esGFvAkddfCOjMjXKid6gwziEai
+    }
+
+    reverse_proxy dagster:3000
+
+    header {
+        X-Content-Type-Options "nosniff"
+    }
+}
+
+# FastAPI (Admin Panel / API)
+api.YOUR_DOMAIN.com {
+    reverse_proxy app:8000
+
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+    }
+}

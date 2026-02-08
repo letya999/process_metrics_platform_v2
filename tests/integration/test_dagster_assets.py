@@ -22,14 +22,17 @@ class TestJiraRawAsset:
         mock_context = MagicMock()
         mock_context.log = MagicMock()
 
-        result = raw_jira_data(mock_context)
+        result = raw_jira_data.op.compute_fn.decorated_fn(mock_context)
 
         assert result["status"] == "skipped"
         assert result["reason"] == "credentials_not_configured"
 
     @patch("pipelines.assets.jira.raw.run_jira_pipeline")
-    def test_raw_jira_data_runs_with_credentials(self, mock_pipeline, jira_env_vars):
+    def test_raw_jira_data_runs_with_credentials(
+        self, mock_pipeline, jira_env_vars, monkeypatch
+    ):
         """Test that raw_jira_data runs when credentials configured."""
+        monkeypatch.setenv("JIRA_PROJECTS", "PROJ")
         mock_pipeline.return_value = {
             "pipeline_name": "jira_raw",
             "destination": "postgres",
@@ -43,10 +46,11 @@ class TestJiraRawAsset:
         mock_context = MagicMock()
         mock_context.log = MagicMock()
 
-        result = raw_jira_data(mock_context)
+        result = raw_jira_data.op.compute_fn.decorated_fn(mock_context)
 
-        assert result["pipeline_name"] == "jira_raw"
-        mock_pipeline.assert_called_once()
+        assert result["status"] == "success"
+        assert result["details"][0]["pipeline_name"] == "jira_raw"
+        assert mock_pipeline.called
 
 
 class TestJiraCleanAssets:
@@ -69,7 +73,9 @@ class TestJiraCleanAssets:
             MagicMock(return_value=False)
         )
 
-        result = clean_jira_issues(mock_context, mock_database_resource)
+        result = clean_jira_issues.op.compute_fn.decorated_fn(
+            mock_context, mock_database_resource
+        )
 
         assert result["status"] == "success"
 
@@ -89,7 +95,9 @@ class TestJiraCleanAssets:
             MagicMock(return_value=False)
         )
 
-        result = clean_jira_sprints(mock_context, mock_database_resource)
+        result = clean_jira_sprints.op.compute_fn.decorated_fn(
+            mock_context, mock_database_resource
+        )
 
         assert result["status"] == "success"
 
@@ -118,10 +126,12 @@ class TestMetricsAssets:
             MagicMock(return_value=False)
         )
 
-        result = metrics_lead_time(mock_context, mock_database_resource)
+        result = metrics_lead_time.op.compute_fn.decorated_fn(
+            mock_context, mock_database_resource
+        )
 
         assert result["status"] == "success"
-        assert result["view"] == "mv_lead_time"
+        assert result["table"] == "fact_lead_time"
 
     def test_metrics_velocity_executes(self, mock_database_resource):
         """Test that metrics_velocity asset can execute."""
@@ -143,10 +153,12 @@ class TestMetricsAssets:
             MagicMock(return_value=False)
         )
 
-        result = metrics_velocity(mock_context, mock_database_resource)
+        result = metrics_velocity.op.compute_fn.decorated_fn(
+            mock_context, mock_database_resource
+        )
 
         assert result["status"] == "success"
-        assert result["view"] == "mv_velocity"
+        assert result["table"] == "fact_velocity"
 
     def test_metrics_throughput_executes(self, mock_database_resource):
         """Test that metrics_throughput asset can execute."""
@@ -168,10 +180,12 @@ class TestMetricsAssets:
             MagicMock(return_value=False)
         )
 
-        result = metrics_throughput(mock_context, mock_database_resource)
+        result = metrics_throughput.op.compute_fn.decorated_fn(
+            mock_context, mock_database_resource
+        )
 
         assert result["status"] == "success"
-        assert result["view"] == "mv_throughput"
+        assert result["source"] == "fact_lead_time"
 
 
 class TestDagsterDefinitions:

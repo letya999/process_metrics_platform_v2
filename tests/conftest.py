@@ -224,7 +224,7 @@ def api_client() -> Generator[TestClient, None, None]:
 # =============================================================================
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def jira_env_vars(monkeypatch):
     """Set up Jira environment variables for testing."""
     monkeypatch.setenv("JIRA_BASE_URL", "https://test.atlassian.net")
@@ -233,10 +233,22 @@ def jira_env_vars(monkeypatch):
     monkeypatch.setenv("JIRA_PROJECTS", "PROJ,TEST")
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def database_env_vars(monkeypatch):
-    """Set up database environment variables for testing."""
-    monkeypatch.setenv(
-        "DATABASE_URL",
-        "postgresql://postgres:postgres@localhost:5432/test_process_metrics",
-    )
+    """Set up database environment variables for testing.
+
+    Uses credentials matching the local development environment (.env).
+    """
+    # Use the complex password from .env which seems to be the one used in the environment
+    password = "woJX9+pYcU+y2JApOCcqs5HP"
+    db_name = "process_metrics_v2"
+    db_url = f"postgresql://postgres:{password}@localhost:5432/{db_name}"
+
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    monkeypatch.setenv("POSTGRES_USER", "postgres")
+    monkeypatch.setenv("POSTGRES_PASSWORD", password)
+    monkeypatch.setenv("POSTGRES_DB", db_name)
+    monkeypatch.setenv("DAGSTER_POSTGRES_USER", "postgres")
+    monkeypatch.setenv("DAGSTER_POSTGRES_PASSWORD", password)
+    monkeypatch.setenv("DAGSTER_POSTGRES_DB", db_name)
+    monkeypatch.setenv("DAGSTER_POSTGRES_HOST", "localhost")

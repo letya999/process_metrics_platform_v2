@@ -1,10 +1,14 @@
 """FastAPI application entrypoint."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.api import health, integrations, metrics, projects
 from app.database import close_db, init_db
@@ -15,6 +19,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Initialize Rate Limiter
+limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -50,13 +57,35 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
+# Set up Rate Limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Define allowed origins
+ALLOWED_ORIGINS = [
+    "https://metrics.your-domain.com",
+    "https://dagster.your-domain.com",
+    "https://api.your-domain.com",
+]
+
+# Add localhost for development environments
+if os.getenv("ENVIRONMENT") != "production":
+    ALLOWED_ORIGINS.extend(
+        [
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:8000",
+        ]
+    )
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Include routers

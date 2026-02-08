@@ -83,8 +83,8 @@ def load_config_from_file(config_path: Path | str | None = None) -> PlatformConf
     config_path = Path(config_path)
 
     if not config_path.exists():
-        # Try example config as fallback (for development)
-        if EXAMPLE_CONFIG_FILE.exists():
+        # Try example config as fallback ONLY if we are using the default path
+        if config_path == DEFAULT_CONFIG_FILE and EXAMPLE_CONFIG_FILE.exists():
             config_path = EXAMPLE_CONFIG_FILE
         else:
             raise ConfigurationError(

@@ -7,7 +7,6 @@ from datetime import date, datetime
 import polars as pl
 
 from pipelines.calculations.throughput import (
-    calculate_throughput_aggregates,
     calculate_weekly_throughput,
 )
 
@@ -89,18 +88,3 @@ class TestThroughput:
 
         assert result.is_empty()
         assert "issues_completed" in result.columns
-
-    def test_aggregates(self):
-        """Test aggregate calculation."""
-        weekly = pl.DataFrame(
-            {
-                "project_id": ["P1", "P1"],
-                "issue_type": ["Task", "Task"],
-                "issues_completed": [10, 20],
-            }
-        )
-
-        agg = calculate_throughput_aggregates(weekly)
-
-        assert agg["total_issues"][0] == 30
-        assert agg["avg_weekly_throughput"][0] == 15.0

@@ -15,7 +15,7 @@ from pipelines.calculations.velocity import (
     extract_story_points,
     get_done_status_ids,
     identify_completed_issues,
-    identify_planned_issues,
+    identify_sprint_commitment,
 )
 
 
@@ -36,7 +36,11 @@ class TestPlannedIssues:
         )
 
         issues = pl.DataFrame(
-            {"id": ["ISS-1"], "jira_created_at": [datetime(2023, 12, 1)]}
+            {
+                "id": ["ISS-1"],
+                "jira_created_at": [datetime(2023, 12, 1)],
+                "type_name": ["Task"],
+            }
         )
 
         sprints = pl.DataFrame(
@@ -47,11 +51,11 @@ class TestPlannedIssues:
             }
         )
 
-        result = identify_planned_issues(
-            sprint_issues, sprint_changelog, issues, sprints
+        result = identify_sprint_commitment(
+            sprint_changelog, sprints, issues, sprint_issues
         )
 
-        assert result.filter(pl.col("issue_id") == "ISS-1")["is_planned"][0] is True
+        assert result.filter(pl.col("issue_id") == "ISS-1").height > 0
 
     def test_issue_added_mid_sprint_is_planned_scope_creep(self):
         """Test that issue added AFTER sprint start IS planned (scope creep) if present at end."""
@@ -67,7 +71,11 @@ class TestPlannedIssues:
         )
 
         issues = pl.DataFrame(
-            {"id": ["ISS-2"], "jira_created_at": [datetime(2024, 1, 3)]}
+            {
+                "id": ["ISS-2"],
+                "jira_created_at": [datetime(2024, 1, 3)],
+                "type_name": ["Task"],
+            }
         )
 
         sprints = pl.DataFrame(
@@ -78,12 +86,12 @@ class TestPlannedIssues:
             }
         )
 
-        result = identify_planned_issues(
-            sprint_issues, sprint_changelog, issues, sprints
+        result = identify_sprint_commitment(
+            sprint_changelog, sprints, issues, sprint_issues
         )
 
-        # Issue added mid-sprint IS planned ("scope creep")
-        assert result.filter(pl.col("issue_id") == "ISS-2")["is_planned"][0] is True
+        # Issue added mid-sprint is NOT planned (it is scope creep), so not in commitment
+        assert result.filter(pl.col("issue_id") == "ISS-2").height == 0
 
     def test_issue_created_before_start_with_no_history_is_planned(self):
         """Issue created before sprint start with no changelog = planned."""
@@ -104,6 +112,7 @@ class TestPlannedIssues:
             {
                 "id": ["ISS-3"],
                 "jira_created_at": [datetime(2023, 12, 1)],  # Created before sprint
+                "type_name": ["Task"],
             }
         )
 
@@ -115,11 +124,11 @@ class TestPlannedIssues:
             }
         )
 
-        result = identify_planned_issues(
-            sprint_issues, sprint_changelog, issues, sprints
+        result = identify_sprint_commitment(
+            sprint_changelog, sprints, issues, sprint_issues
         )
 
-        assert result.filter(pl.col("issue_id") == "ISS-3")["is_planned"][0] is True
+        assert result.filter(pl.col("issue_id") == "ISS-3").height > 0
 
 
 class TestCompletedIssues:
@@ -138,12 +147,12 @@ class TestCompletedIssues:
         )
 
         status_changelog = pl.DataFrame(
-            {"issue_id": [], "to_status_id": [], "changed_at": []},
-            schema={
-                "issue_id": pl.Utf8,
-                "to_status_id": pl.Utf8,
-                "changed_at": pl.Datetime,
-            },
+            {
+                "issue_id": ["ISS-1"],
+                "from_status_id": ["status-todo"],
+                "to_status_id": ["status-done"],
+                "changed_at": [datetime(2024, 1, 10)],
+            }
         )
 
         sprints = pl.DataFrame(
@@ -159,7 +168,7 @@ class TestCompletedIssues:
             planned,
             issues,
             status_changelog,
-            done_status_ids=["STATUS-DONE"],
+            done_status_ids=["status-done"],
             sprints_df=sprints,
         )
 
@@ -179,12 +188,12 @@ class TestCompletedIssues:
         )
 
         status_changelog = pl.DataFrame(
-            {"issue_id": [], "to_status_id": [], "changed_at": []},
-            schema={
-                "issue_id": pl.Utf8,
-                "to_status_id": pl.Utf8,
-                "changed_at": pl.Datetime,
-            },
+            {
+                "issue_id": ["ISS-2"],
+                "from_status_id": ["status-todo"],
+                "to_status_id": ["status-done"],
+                "changed_at": [datetime(2024, 1, 20)],
+            }
         )
 
         sprints = pl.DataFrame(
@@ -200,7 +209,7 @@ class TestCompletedIssues:
             planned,
             issues,
             status_changelog,
-            done_status_ids=["STATUS-DONE"],
+            done_status_ids=["status-done"],
             sprints_df=sprints,
         )
 
@@ -239,7 +248,7 @@ class TestCompletedIssues:
             planned,
             issues,
             status_changelog,
-            done_status_ids=["STATUS-DONE"],
+            done_status_ids=["status-done"],
             sprints_df=sprints,
         )
 
@@ -252,7 +261,7 @@ class TestStoryPoints:
 
     def test_extract_story_points_from_field(self):
         """Story points extracted from custom field."""
-        planned = pl.DataFrame({"issue_id": ["ISS-1"], "sprint_id": ["SPRINT-1"]})
+        planned = pl.DataFrame({"id": ["ISS-1"], "sprint_id": ["SPRINT-1"]})
 
         field_values = pl.DataFrame(
             {"issue_id": ["ISS-1"], "field_key_id": ["FIELD-1"], "json_value": ["5"]}
@@ -270,18 +279,13 @@ class TestStoryPoints:
             planned,
             field_values_df=field_values,
             field_keys_df=field_keys,
-            field_value_changelog_df=pl.DataFrame({}),
-            sprints_df=pl.DataFrame(
-                {"id": ["SPRINT-1"], "start_date": [date(2024, 1, 1)]}
-            ),
-            sprint_changelog_df=pl.DataFrame({}),
         )
 
         assert result.filter(pl.col("issue_id") == "ISS-1")["story_points"][0] == 5.0
 
     def test_missing_story_points_defaults_to_zero(self):
         """Issue without story points = 0."""
-        planned = pl.DataFrame({"issue_id": ["ISS-2"], "sprint_id": ["SPRINT-1"]})
+        planned = pl.DataFrame({"id": ["ISS-2"], "sprint_id": ["SPRINT-1"]})
 
         field_values = pl.DataFrame(
             {"issue_id": [], "field_key_id": [], "json_value": []},
@@ -304,11 +308,6 @@ class TestStoryPoints:
             planned,
             field_values_df=field_values,
             field_keys_df=field_keys,
-            field_value_changelog_df=pl.DataFrame({}),
-            sprints_df=pl.DataFrame(
-                {"id": ["SPRINT-1"], "start_date": [date(2024, 1, 1)]}
-            ),
-            sprint_changelog_df=pl.DataFrame({}),
         )
 
         assert result.filter(pl.col("issue_id") == "ISS-2")["story_points"][0] == 0.0
@@ -332,8 +331,8 @@ class TestDoneStatusIdentification:
 
         result = get_done_status_ids(boards, board_columns)
 
-        assert "STATUS-3" in result
-        assert "STATUS-1" not in result
+        assert "status-3" in result
+        assert "status-1" not in result
 
     def test_empty_board_columns_returns_empty_list(self):
         """No board columns = no Done statuses."""

@@ -1,0 +1,190 @@
+# =============================================================================
+# Simple Production Deployment - DigitalOcean Droplet
+# =============================================================================
+#
+# Usage: docker compose -f docker-compose.simple.yml up -d
+#
+# =============================================================================
+
+networks:
+  internal:
+    driver: bridge
+
+services:
+  # ===========================================================================
+  # Caddy - Reverse Proxy with Auto-SSL
+  # ===========================================================================
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+    depends_on:
+      - app
+      - dagster
+      - metabase
+
+  # ===========================================================================
+  # PostgreSQL
+  # ===========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+    # НЕ открываем порт наружу!
+
+    # ===========================================================================
+    # FastAPI App
+    # ===========================================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: app
+    restart: unless-stopped
+    # НЕ открываем порт наружу - через Caddy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DAGSTER_GRAPHQL_URL: http://dagster:3000/graphql
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-WARNING}
+    env_file:
+      - .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ===========================================================================
+  # Dagster
+  # ===========================================================================
+  dagster:
+    build:
+      context: .
+      dockerfile: Dockerfile.dagster
+    container_name: dagster
+    restart: unless-stopped
+    # НЕ открываем порт наружу - через Caddy
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_USER: ${POSTGRES_USER}
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DAGSTER_POSTGRES_DB: ${POSTGRES_DB}
+      DESTINATION__POSTGRES__CREDENTIALS__HOST: postgres
+      DESTINATION__POSTGRES__CREDENTIALS__PORT: 5432
+      DESTINATION__POSTGRES__CREDENTIALS__DATABASE: ${POSTGRES_DB}
+      DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${POSTGRES_USER}
+      DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${POSTGRES_PASSWORD}
+    env_file:
+      - .env.production
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+      - ./config:/opt/dagster/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:3000/server_info" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ===========================================================================
+  # Metabase
+  # ===========================================================================
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    restart: unless-stopped
+    # НЕ открываем порт наружу - через Caddy
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: ${POSTGRES_DB}
+      MB_DB_PORT: 5432
+      MB_DB_USER: ${POSTGRES_USER}
+      MB_DB_PASS: ${POSTGRES_PASSWORD}
+      MB_DB_HOST: postgres
+      MB_ENCRYPTION_SECRET_KEY: ${METABASE_SECRET_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:3000/api/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ===========================================================================
+  # Alembic - Migrations
+  # ===========================================================================
+  alembic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: alembic
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    env_file:
+      - .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    volumes:
+      - ./db:/app/db
+    entrypoint: [ "alembic", "-c", "db/migrations/alembic.ini" ]
+
+volumes:
+  postgres_data:
+  dagster_home:
+  caddy_data:
+  caddy_config:
