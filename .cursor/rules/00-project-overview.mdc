@@ -11,8 +11,8 @@ globs:
 
 **Name:** Process Metrics Platform v2
 **Type:** Open-source self-hosted ETL + BI platform for development team metrics
-**Architecture:** Monolith (not microservices)
-**Deployment:** Single `docker-compose up` on personal computer or company server
+**Architecture:** Monolith (FastAPI + Dagster + Metabase + Caddy)
+**Deployment:** Single `docker-compose.simple.yml` with automatic HTTPS (Caddy)
 
 ---
 
