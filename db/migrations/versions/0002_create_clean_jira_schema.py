@@ -61,7 +61,7 @@ def upgrade() -> None:
         """
         CREATE TABLE IF NOT EXISTS clean_jira.projects (
             id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-            platform_project_id uuid NOT NULL REFERENCES platform.projects(id) ON DELETE CASCADE,
+            platform_project_id uuid NOT NULL,
             external_id text NOT NULL,
             external_key text NOT NULL,
             name text NOT NULL,
