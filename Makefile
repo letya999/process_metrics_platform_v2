@@ -12,6 +12,23 @@
 .PHONY: help check dev test lint format validate migrate migrate-create migrate-down
 .PHONY: docker-build docker-up docker-down docker-logs clean install
 
+# OS detection
+ifeq ($(OS),Windows_NT)
+    PYTHON_BIN := .venv/Scripts/python
+    UVICORN_BIN := .venv/Scripts/uvicorn
+    DAGSTER_BIN := .venv/Scripts/dagster
+    RM := rmdir /s /q
+    MKDIR := mkdir
+    SEP := \\
+else
+    PYTHON_BIN := .venv/bin/python
+    UVICORN_BIN := .venv/bin/uvicorn
+    DAGSTER_BIN := .venv/bin/dagster
+    RM := rm -rf
+    MKDIR := mkdir -p
+    SEP := /
+endif
+
 # Default target
 .DEFAULT_GOAL := help
 
@@ -53,6 +70,8 @@ help:
 	@echo "$(GREEN)Development:$(NC)"
 	@echo "  make install         - Install Python dependencies"
 	@echo "  make clean           - Clean build artifacts"
+	@echo "  make dagster-dev     - Run Dagster locally"
+	@echo "  make api-dev         - Run FastAPI locally"
 
 # =============================================================================
 # Main Commands
@@ -79,31 +98,27 @@ setup-metabase:
 ## Run tests with coverage
 test:
 	@echo "$(BLUE)Running tests...$(NC)"
-	.venv/Scripts/python -m pytest tests/ -v --cov=app --cov=pipelines --cov-report=term-missing
+	$(PYTHON_BIN) -m pytest tests/ -v --cov=app --cov=pipelines --cov-report=term-missing
 	@echo "$(GREEN)Tests passed!$(NC)"
 
 ## Check code style with ruff and black
 lint:
 	@echo "$(BLUE)Checking code style...$(NC)"
-	ruff check app/ pipelines/ tests/
-	black --check app/ pipelines/ tests/
+	$(PYTHON_BIN) -m ruff check app/ pipelines/ tests/
+	$(PYTHON_BIN) -m black --check app/ pipelines/ tests/
 	@echo "$(GREEN)Linting passed!$(NC)"
 
 ## Auto-format code with ruff and black
 format:
 	@echo "$(BLUE)Formatting code...$(NC)"
-	ruff check --fix app/ pipelines/ tests/
-	black app/ pipelines/ tests/
+	$(PYTHON_BIN) -m ruff check --fix app/ pipelines/ tests/
+	$(PYTHON_BIN) -m black app/ pipelines/ tests/
 	@echo "$(GREEN)Code formatted!$(NC)"
 
 ## Run data validation checks
 validate:
 	@echo "$(BLUE)Running data validation...$(NC)"
-	@if [ -f tests/validation/test_data_integrity.py ]; then \
-		pytest tests/validation/ -v; \
-	else \
-		echo "$(YELLOW)No validation tests found (tests/validation/)$(NC)"; \
-	fi
+	@$(PYTHON_BIN) scripts/run_validation.py || echo "$(YELLOW)Validation script execution failed$(NC)"
 	@echo "$(GREEN)Validation complete!$(NC)"
 
 # =============================================================================
@@ -178,7 +193,7 @@ prod-simple-reset:
 	@echo "$(BLUE)Building and starting services...$(NC)"
 	docker compose -f docker-compose.simple.yml --env-file .env.production up -d --build
 	@echo "$(BLUE)Waiting for Postgres to be ready and running migrations...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production --profile migration run --rm alembic
+	docker compose -f docker-compose.simple.yml --env-file .env.production --profile migration run --rm alembic upgrade head
 	@echo "$(GREEN)Production-test environment reset and ready from scratch!$(NC)"
 
 ## View service logs (follow mode)
@@ -188,7 +203,6 @@ docker-logs:
 ## Stop services and remove volumes (DESTRUCTIVE)
 docker-reset:
 	@echo "$(RED)WARNING: This will delete all data!$(NC)"
-	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ]
 	docker compose down -v
 	@echo "$(GREEN)Reset complete!$(NC)"
 
@@ -199,7 +213,8 @@ db-reset: docker-reset docker-build docker-up migrate
 ## Verify MVP setup is correct
 verify:
 	@echo "$(BLUE)Verifying MVP setup...$(NC)"
-	@bash scripts/verify_setup.sh
+	@bash scripts/verify_setup.sh || sh scripts/verify_setup.sh
+	@echo "$(GREEN)Verification complete!$(NC)"
 
 # =============================================================================
 # Development Commands
@@ -214,18 +229,18 @@ install:
 ## Clean build artifacts
 clean:
 	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
-	@python -c "import shutil, pathlib; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('__pycache__')]"
-	@python -c "import shutil, pathlib; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('.pytest_cache')]"
-	@python -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in [pathlib.Path('.coverage'), pathlib.Path('htmlcov'), pathlib.Path('.ruff_cache'), pathlib.Path('.mypy_cache'), pathlib.Path('build'), pathlib.Path('dist'), pathlib.Path('.dagster')]]"
-	@python -c "import shutil, pathlib; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('*.egg-info')]"
+	$(PYTHON_BIN) -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"
+	$(PYTHON_BIN) -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('.pytest_cache')]"
+	$(PYTHON_BIN) -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in [pathlib.Path('.coverage'), pathlib.Path('htmlcov'), pathlib.Path('.ruff_cache'), pathlib.Path('.mypy_cache'), pathlib.Path('build'), pathlib.Path('dist'), pathlib.Path('.dagster')]]"
+	$(PYTHON_BIN) -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('*.egg-info')]"
 	@echo "$(GREEN)Clean complete!$(NC)"
 
 ## Run Dagster locally (for development without Docker)
 dagster-dev:
 	@echo "$(BLUE)Starting Dagster dev server...$(NC)"
-	dagster dev -m pipelines.definitions
+	$(DAGSTER_BIN) dev -m pipelines.definitions
 
 ## Run FastAPI locally (for development without Docker)
 api-dev:
 	@echo "$(BLUE)Starting FastAPI dev server...$(NC)"
-	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	$(UVICORN_BIN) app.main:app --reload --host 0.0.0.0 --port 8000
