@@ -174,3 +174,5 @@ config/projects.yaml
 # OS files
 .DS_Store
 Thumbs.db
+.serena/*
+.serena/
