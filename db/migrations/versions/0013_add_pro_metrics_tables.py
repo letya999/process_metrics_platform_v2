@@ -48,6 +48,9 @@ def upgrade():
             "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")
         ),
         sa.ForeignKeyConstraint(
+            ["issue_id"], ["clean_jira.issues.id"], ondelete="CASCADE"
+        ),
+        sa.ForeignKeyConstraint(
             ["project_id"], ["clean_jira.projects.id"], ondelete="CASCADE"
         ),
         schema="metrics",
@@ -79,6 +82,9 @@ def upgrade():
             "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")
         ),
         sa.ForeignKeyConstraint(
+            ["issue_id"], ["clean_jira.issues.id"], ondelete="CASCADE"
+        ),
+        sa.ForeignKeyConstraint(
             ["project_id"], ["clean_jira.projects.id"], ondelete="CASCADE"
         ),
         schema="metrics",
@@ -102,11 +108,7 @@ def upgrade():
             server_default=sa.text("gen_random_uuid()"),
         ),
         sa.Column("project_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column(
-            "issue_id", sa.Text(), nullable=False
-        ),  # keeping as Text to match Polars sometimes, but UUID is better if consistent. Using Text to be safe or UUID if source is consistent. Source is `fact_lead_time.issue_id` which is UUID. Let's use UUID.
-        # Actually, let's stick to UUID if we can, but Polars output might need casting.
-        # Given existing tables use UUID for issue_id, I will use UUID.
+        sa.Column("issue_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("commitment_end_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("lead_time_days", sa.Numeric(), nullable=True),
         sa.Column("rolling_mean", sa.Numeric(), nullable=True),
@@ -116,6 +118,9 @@ def upgrade():
         sa.Column("is_outlier", sa.Boolean(), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()")
+        ),
+        sa.ForeignKeyConstraint(
+            ["issue_id"], ["clean_jira.issues.id"], ondelete="CASCADE"
         ),
         sa.ForeignKeyConstraint(
             ["project_id"], ["clean_jira.projects.id"], ondelete="CASCADE"

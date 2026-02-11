@@ -161,26 +161,6 @@ docker-down:
 	docker compose down
 	@echo "$(GREEN)Services stopped!$(NC)"
 
-## Prod Simple (Local Production Test)
-prod-simple-up:
-	@echo "$(BLUE)Starting services in SIMPLE PRODUCTION mode...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production up -d
-	@echo "$(GREEN)Services started in SIMPLE PRODUCTION mode!$(NC)"
-
-prod-simple-down:
-	@echo "$(BLUE)Stopping SIMPLE PRODUCTION services...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production down
-	@echo "$(GREEN)Services stopped!$(NC)"
-
-prod-simple-reset:
-	@echo "$(RED)WARNING: This will delete ALL data in SIMPLE PRODUCTION mode!$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production down -v --remove-orphans
-	@echo "$(BLUE)Building and starting services...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production up -d --build
-	@echo "$(BLUE)Waiting for Postgres to be ready and running migrations...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production --profile migration run --rm alembic
-	@echo "$(GREEN)Production-test environment reset and ready from scratch!$(NC)"
-
 ## View service logs (follow mode)
 docker-logs:
 	docker compose logs -f

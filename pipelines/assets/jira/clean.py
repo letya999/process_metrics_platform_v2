@@ -82,7 +82,7 @@ def clean_jira_issues(
                 updated_at
             )
             SELECT
-                :platform_project_id::uuid as platform_project_id,
+                CAST(:platform_project_id AS uuid) as platform_project_id,
                 r.id::text as external_id,
                 r.key as external_key,
                 r.name,
@@ -1952,7 +1952,7 @@ def clean_jira_issue_status_changelog(
                 ON u.project_id = sc.project_id
                 AND u.external_id = sc.author_external_id
             WHERE s_to.id IS NOT NULL
-            ON CONFLICT (issue_id, changed_at) DO NOTHING
+            ON CONFLICT (issue_id, to_status_id, changed_at) DO NOTHING
             RETURNING id
         """
             )
