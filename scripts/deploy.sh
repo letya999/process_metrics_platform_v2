@@ -27,7 +27,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Default values
-COMPOSE_FILE="docker-compose.prod.yml"
+COMPOSE_FILE="docker-compose.simple.yml"
 ENV_FILE=".env.production"
 ACTION="deploy"  # deploy, build, pull, migrate
 
@@ -110,7 +110,7 @@ case $ACTION in
 
     migrate)
         echo -e "\n${YELLOW}Running database migrations...${NC}"
-        $COMPOSE_CMD -f $COMPOSE_FILE run --rm app alembic -c db/migrations/alembic.ini upgrade head
+        $COMPOSE_CMD -f $COMPOSE_FILE --profile migration run --rm alembic
         echo -e "${GREEN}Migrations complete!${NC}"
         exit 0
         ;;
@@ -119,15 +119,17 @@ case $ACTION in
         echo -e "\n${YELLOW}Pulling latest images...${NC}"
         $COMPOSE_CMD -f $COMPOSE_FILE pull 2>/dev/null || true
 
-        echo -e "\n${YELLOW}Starting services...${NC}"
+        echo -e "\n${YELLOW}Starting main services...${NC}"
         $COMPOSE_CMD -f $COMPOSE_FILE up -d
 
         echo -e "\n${YELLOW}Waiting for database to be ready...${NC}"
         sleep 10
 
         echo -e "\n${YELLOW}Running database migrations...${NC}"
-        $COMPOSE_CMD -f $COMPOSE_FILE exec -T app alembic -c db/migrations/alembic.ini upgrade head || \
-            $COMPOSE_CMD -f $COMPOSE_FILE run --rm app alembic -c db/migrations/alembic.ini upgrade head
+        $COMPOSE_CMD -f $COMPOSE_FILE --profile migration run --rm alembic
+
+        echo -e "\n${YELLOW}Initializing Metabase configuration...${NC}"
+        $COMPOSE_CMD -f $COMPOSE_FILE --profile migration run --rm metabase-init
         ;;
 esac
 

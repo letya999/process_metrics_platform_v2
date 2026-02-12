@@ -816,7 +816,7 @@ def calculate_velocity_slice_by_issue_type(
     )
 
     # Join with Sprint Details
-    result = sprints_df.join(combined, left_on="id", right_on="sprint_id", how="inner")
+    result = sprints_df.join(combined, left_on="id", right_on="sprint_id", how="left")
 
     # Deduplicate
     final_metrics = (

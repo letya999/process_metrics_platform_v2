@@ -186,6 +186,35 @@ services:
     entrypoint: [ "alembic", "-c", "db/migrations/alembic.ini" ]
     command: [ "upgrade", "head" ]
 
+  # ===========================================================================
+  # Metabase Init - Auto-configure Metabase (Admin, DB, Dashboard)
+  # ===========================================================================
+  metabase-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: metabase-init
+    profiles:
+      - migration
+    environment:
+      METABASE_URL: http://metabase:3000
+    env_file:
+      - .env.production
+    volumes:
+      - ./scripts:/app/scripts
+    depends_on:
+      metabase:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    entrypoint: [ "python", "scripts/setup_metabase.py" ]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
 volumes:
   postgres_data:
   dagster_home:

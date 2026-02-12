@@ -136,24 +136,27 @@ chmod +x scripts/deploy.sh
 ./scripts/deploy.sh --build
 
 # OR use docker compose directly:
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.simple.yml up -d
 ```
 
-### Step 6: Run Migrations
+### Step 6: Run Migrations and Initialize
 
 ```bash
-docker compose -f docker-compose.prod.yml exec app \
-  alembic -c db/migrations/alembic.ini upgrade head
+# Run database migrations
+docker compose -f docker-compose.simple.yml --profile migration run --rm alembic
+
+# Initialize Metabase (Admin, DB, Dashboard)
+docker compose -f docker-compose.simple.yml --profile migration run --rm metabase-init
 ```
 
 ### Step 7: Verify Deployment
 
 ```bash
 # Check services
-docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.simple.yml ps
 
 # View logs
-docker compose -f docker-compose.prod.yml logs -f
+docker compose -f docker-compose.simple.yml logs -f
 
 # Test health endpoints
 curl http://localhost:8000/health
@@ -162,44 +165,23 @@ curl http://localhost:3000/server_info
 
 ---
 
-## Setting Up HTTPS (Recommended)
+### HTTPS with Caddy (Included)
 
-### Option A: Caddy Reverse Proxy (Easiest)
+The `docker-compose.simple.yml` already includes a **Caddy** service that handles automatic SSL (via Let's Encrypt) and reverse proxying.
 
-Create `Caddyfile`:
+To configure your domains, edit the `Caddyfile` in the project root:
 
 ```caddy
-metrics.yourdomain.com {
-    reverse_proxy app:8000
-}
-
-dagster.yourdomain.com {
-    reverse_proxy dagster:3000
-}
-
-metabase.yourdomain.com {
+# Replace with your domain or IP
+http://metrics.YOUR_IP.nip.io {
     reverse_proxy metabase:3000
 }
+# ...
 ```
 
-Add to `docker-compose.prod.yml`:
-
-```yaml
-services:
-  caddy:
-    image: caddy:latest
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-    networks:
-      - process_metrics_network
-
-volumes:
-  caddy_data:
+Then restart Caddy:
+```bash
+docker compose -f docker-compose.simple.yml restart caddy
 ```
 
 ### Option B: Digital Ocean Load Balancer
@@ -222,7 +204,7 @@ For production, consider using Digital Ocean Managed PostgreSQL:
 DATABASE_URL=postgresql://doadmin:<PASSWORD>@<HOST>:25060/process_metrics?sslmode=require
 ```
 
-4. Remove postgres service from docker-compose.prod.yml
+4. Remove postgres service from docker-compose.simple.yml
 
 Benefits:
 - Automatic backups
@@ -258,16 +240,16 @@ ufw enable
 
 ```bash
 # All services
-docker compose -f docker-compose.prod.yml logs -f
+docker compose -f docker-compose.simple.yml logs -f
 
 # Specific service
-docker compose -f docker-compose.prod.yml logs -f dagster
+docker compose -f docker-compose.simple.yml logs -f dagster
 ```
 
 ### Restart Services
 
 ```bash
-docker compose -f docker-compose.prod.yml restart
+docker compose -f docker-compose.simple.yml restart
 ```
 
 ### Update Deployment
@@ -282,11 +264,11 @@ git pull
 
 ```bash
 # Create backup
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.simple.yml exec postgres \
   pg_dump -U metrics_app process_metrics > backup_$(date +%Y%m%d).sql
 
 # Restore
-cat backup_20240101.sql | docker compose -f docker-compose.prod.yml exec -T postgres \
+cat backup_20240101.sql | docker compose -f docker-compose.simple.yml exec -T postgres \
   psql -U metrics_app process_metrics
 ```
 
@@ -298,17 +280,17 @@ cat backup_20240101.sql | docker compose -f docker-compose.prod.yml exec -T post
 
 ```bash
 # Check logs
-docker compose -f docker-compose.prod.yml logs app
+docker compose -f docker-compose.simple.yml logs app
 
 # Check container status
-docker compose -f docker-compose.prod.yml ps -a
+docker compose -f docker-compose.simple.yml ps -a
 ```
 
 ### Database connection issues
 
 ```bash
 # Test connection
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose -f docker-compose.simple.yml exec postgres \
   psql -U metrics_app -d process_metrics -c "SELECT 1"
 ```
 

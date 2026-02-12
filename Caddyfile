@@ -4,7 +4,7 @@
 # =============================================================================
 
 # Metabase (BI Dashboard)
-metrics.134.209.90.127.nip.io {
+http://metrics.134.209.90.127.nip.io {
     reverse_proxy metabase:3000
 
     header {
@@ -15,7 +15,7 @@ metrics.134.209.90.127.nip.io {
 }
 
 # Dagster UI (ETL monitoring)
-dagster.134.209.90.127.nip.io {
+http://dagster.134.209.90.127.nip.io {
     # Basic Auth for security
     # Replace the hash below with your own (generated via 'caddy hash-password')
     basicauth * {
@@ -30,7 +30,7 @@ dagster.134.209.90.127.nip.io {
 }
 
 # FastAPI (Admin Panel / API)
-api.134.209.90.127.nip.io {
+http://api.134.209.90.127.nip.io {
     reverse_proxy app:8000
 
     header {
