@@ -19,7 +19,7 @@ http://dagster.134.209.90.127.nip.io {
     # Basic Auth for security
     # Replace the hash below with your own (generated via 'caddy hash-password')
     basicauth * {
-        admin $2a$14$vetZVoq/KqVsKzS92IhfdOT336esGFvAkddfCOjMjXKid6gwziEai
+        admin $2a$14$PhYoC4cISk0DMibmnE7ozuiPjO18h2u26BLdnJ5FbSVzh5urqYsi6
     }
 
     reverse_proxy dagster:3000
