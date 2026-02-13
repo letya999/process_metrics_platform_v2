@@ -18,8 +18,10 @@ from pipelines.utils.polars_db import read_table, write_table
     group_name="metrics",
     deps=[
         "clean_jira_issues",
+        "clean_jira_issue_types",
         "clean_jira_sprints",
         "clean_jira_boards",
+        "clean_jira_board_columns",
         "clean_jira_sprint_issues",
         "clean_jira_sprint_issues_changelog",
         "clean_jira_issue_status_changelog",

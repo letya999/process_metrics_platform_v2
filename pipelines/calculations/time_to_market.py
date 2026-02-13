@@ -42,7 +42,7 @@ def calculate_time_to_market(
         board_columns_df: Board configuration
 
     Returns:
-        DataFrame: [issue_id, project_id, issue_key, issue_type, created_at,
+        DataFrame: [issue_id, project_id, issue_key, issue_type, jira_created_at,
                     released_at, time_to_market_days]
     """
     if issues_df.is_empty():
@@ -52,7 +52,7 @@ def calculate_time_to_market(
                 "project_id": pl.Utf8,
                 "issue_key": pl.Utf8,
                 "issue_type": pl.Utf8,
-                "created_at": pl.Datetime,
+                "jira_created_at": pl.Datetime,
                 "released_at": pl.Datetime,
                 "time_to_market_days": pl.Float64,
             }
@@ -81,7 +81,7 @@ def calculate_time_to_market(
                 "project_id": pl.Utf8,
                 "issue_key": pl.Utf8,
                 "issue_type": pl.Utf8,
-                "created_at": pl.Datetime,
+                "jira_created_at": pl.Datetime,
                 "released_at": pl.Datetime,
                 "time_to_market_days": pl.Float64,
             }
@@ -104,7 +104,7 @@ def calculate_time_to_market(
                 "project_id",
                 pl.col("key").alias("issue_key"),
                 pl.col("name").alias("issue_type"),
-                pl.col("jira_created_at").alias("created_at"),
+                "jira_created_at",
             ]
         )
         .join(released_at, on="issue_id", how="inner")
@@ -112,7 +112,9 @@ def calculate_time_to_market(
             [
                 # Calculate TTM in days
                 (
-                    (pl.col("released_at") - pl.col("created_at")).dt.total_seconds()
+                    (
+                        pl.col("released_at") - pl.col("jira_created_at")
+                    ).dt.total_seconds()
                     / 86400.0
                 ).alias("time_to_market_days")
             ]

@@ -80,7 +80,8 @@ def calculate_cumulative_flow_diagram(
     if not board_columns_df.is_empty():
         status_positions = (
             board_columns_df.select(["status_id", "position"])
-            .unique()
+            .sort("position")
+            .unique(subset=["status_id"], keep="first")
             .rename({"position": "column_position"})
         )
 
@@ -142,6 +143,15 @@ def calculate_cumulative_flow_diagram(
         )
         # Fill missing counts with 0
         .with_columns([pl.col("issue_count").fill_null(0)])
+        # Group by status name to merge duplicate status names in same project
+        .group_by(["project_id", "date", "status_name"])
+        .agg(
+            [
+                pl.col("status_category").first(),
+                pl.col("issue_count").sum(),
+                pl.col("column_position").min(),
+            ]
+        )
         .select(
             [
                 "project_id",

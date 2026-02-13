@@ -37,7 +37,7 @@ from pipelines.utils.polars_db import read_table, write_table
         "clean_jira_board_columns",
         "clean_jira_issue_status_changelog",
         "clean_jira_projects",
-        "clean_jira_statuses",  # Needed for wait status detection
+        "clean_jira_issue_statuses",  # Needed for wait status detection
     ],
     description="Calculate Advanced/Pro metrics (Aging, Flow Efficiency, etc.)",
     compute_kind="python",

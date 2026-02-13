@@ -21,6 +21,162 @@ from pipelines.resources.database import DatabaseResource
 @asset(
     group_name="jira_clean",
     deps=["raw_jira_data"],
+    description="Sync Jira projects to clean layer",
+    compute_kind="sql",
+)
+def clean_jira_projects(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync projects from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        # Use a fixed platform_project_id for grouping all Jira projects
+        platform_project_id = "00000000-0000-0000-0000-000000000001"
+        context.log.info("Syncing projects...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.projects (
+                platform_project_id,
+                external_id,
+                external_key,
+                name,
+                created_at,
+                updated_at
+            )
+            SELECT
+                CAST(:platform_project_id AS uuid) as platform_project_id,
+                r.id::text as external_id,
+                r.key as external_key,
+                r.name,
+                now() as created_at,
+                now() as updated_at
+            FROM raw_jira.projects r
+            ON CONFLICT (platform_project_id, external_id)
+            DO UPDATE SET
+                external_key = EXCLUDED.external_key,
+                name = EXCLUDED.name,
+                updated_at = now()
+            RETURNING id
+        """
+            ),
+            {"platform_project_id": platform_project_id},
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["raw_jira_data", "clean_jira_projects"],
+    description="Sync Jira issue types to clean layer",
+    compute_kind="sql",
+)
+def clean_jira_issue_types(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync issue types from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        context.log.info("Syncing issue types...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.issue_types (
+                project_id,
+                external_id,
+                name,
+                hierarchy_level
+            )
+            SELECT DISTINCT
+                p.id as project_id,
+                r.fields__issuetype__id as external_id,
+                r.fields__issuetype__name as name,
+                CASE
+                    WHEN r.fields__issuetype__name ILIKE '%epic%'
+                        THEN 'epic'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__name ILIKE '%subtask%'
+                        THEN 'subtask'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__name ILIKE '%story%'
+                        THEN 'story'::clean_jira.issue_hierarchy_level
+                    ELSE 'task'::clean_jira.issue_hierarchy_level
+                END as hierarchy_level
+            FROM raw_jira.issues r
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            WHERE r.fields__issuetype__id IS NOT NULL
+            ON CONFLICT (project_id, external_id) DO UPDATE SET
+                name = EXCLUDED.name
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["raw_jira_data"],
+    description="Sync Jira issue statuses to clean layer",
+    compute_kind="sql",
+)
+def clean_jira_issue_statuses(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync issue statuses from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        context.log.info("Syncing issue statuses...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.issue_statuses (
+                project_id,
+                external_id,
+                name,
+                category
+            )
+            SELECT DISTINCT
+                p.id as project_id,
+                r.fields__status__id as external_id,
+                r.fields__status__name as name,
+                CASE r.fields__status__status_category__key
+                    WHEN 'new'
+                        THEN 'to_do'::clean_jira.issue_status_category
+                    WHEN 'indeterminate'
+                        THEN 'in_progress'::clean_jira.issue_status_category
+                    WHEN 'done'
+                        THEN 'done'::clean_jira.issue_status_category
+                    ELSE 'to_do'::clean_jira.issue_status_category
+                END as category
+            FROM raw_jira.issues r
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            WHERE r.fields__status__id IS NOT NULL
+            ON CONFLICT (project_id, external_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                category = EXCLUDED.category
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=[
+        "raw_jira_data",
+        "clean_jira_projects",
+        "clean_jira_issue_types",
+        "clean_jira_issue_statuses",
+    ],
     description="Transform raw Jira issues to clean normalized format",
     compute_kind="sql",
 )
@@ -32,9 +188,8 @@ def clean_jira_issues(
 
     This asset:
     - Normalizes issue data from raw layer
-    - Creates/updates project, issue_type, and status dimension tables
+    - Creates/updates dimension tables
     - Links issues to their parent issues
-    - Extracts changelog into status_changes
     """
     engine = database.get_engine()
 
@@ -63,110 +218,6 @@ def clean_jira_issues(
 
         system_integration_id = system_integration[0]
         context.log.info(f"Using system integration: {system_integration_id}")
-
-        # Use a fixed platform_project_id for grouping all Jira projects
-        # This represents the logical "Jira" platform project in clean layer
-        platform_project_id = "00000000-0000-0000-0000-000000000001"
-
-        # Sync projects from raw to clean
-        context.log.info("Syncing projects...")
-        projects_synced = conn.execute(
-            text(
-                """
-            INSERT INTO clean_jira.projects (
-                platform_project_id,
-                external_id,
-                external_key,
-                name,
-                created_at,
-                updated_at
-            )
-            SELECT
-                CAST(:platform_project_id AS uuid) as platform_project_id,
-                r.id::text as external_id,
-                r.key as external_key,
-                r.name,
-                now() as created_at,
-                now() as updated_at
-            FROM raw_jira.projects r
-            ON CONFLICT (platform_project_id, external_id)
-            DO UPDATE SET
-                external_key = EXCLUDED.external_key,
-                name = EXCLUDED.name,
-                updated_at = now()
-            RETURNING id
-        """
-            ),
-            {"platform_project_id": platform_project_id},
-        ).fetchall()
-        context.log.info(f"Synced {len(projects_synced)} projects")
-
-        # Sync issue types
-        context.log.info("Syncing issue types...")
-        conn.execute(
-            text(
-                """
-            INSERT INTO clean_jira.issue_types (
-                project_id,
-                external_id,
-                name,
-                hierarchy_level
-            )
-            SELECT DISTINCT
-                p.id as project_id,
-                r.fields__issuetype__id as external_id,
-                r.fields__issuetype__name as name,
-                CASE
-                    WHEN r.fields__issuetype__name ILIKE '%epic%'
-                        THEN 'epic'::clean_jira.issue_hierarchy_level
-                    WHEN r.fields__issuetype__name ILIKE '%subtask%'
-                        THEN 'subtask'::clean_jira.issue_hierarchy_level
-                    WHEN r.fields__issuetype__name ILIKE '%story%'
-                        THEN 'story'::clean_jira.issue_hierarchy_level
-                    ELSE 'task'::clean_jira.issue_hierarchy_level
-                END as hierarchy_level
-            FROM raw_jira.issues r
-            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
-            WHERE r.fields__issuetype__id IS NOT NULL
-            ON CONFLICT (project_id, external_id) DO UPDATE SET
-                name = EXCLUDED.name
-        """
-            )
-        )
-
-        # Sync issue statuses
-        context.log.info("Syncing issue statuses...")
-        conn.execute(
-            text(
-                """
-            INSERT INTO clean_jira.issue_statuses (
-                project_id,
-                external_id,
-                name,
-                category
-            )
-            SELECT DISTINCT
-                p.id as project_id,
-                r.fields__status__id as external_id,
-                r.fields__status__name as name,
-                CASE r.fields__status__status_category__key
-                    WHEN 'new'
-                        THEN 'to_do'::clean_jira.issue_status_category
-                    WHEN 'indeterminate'
-                        THEN 'in_progress'::clean_jira.issue_status_category
-                    WHEN 'done'
-                        THEN 'done'::clean_jira.issue_status_category
-                    ELSE 'to_do'::clean_jira.issue_status_category
-                END as category
-            FROM raw_jira.issues r
-            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
-            WHERE r.fields__status__id IS NOT NULL
-            ON CONFLICT (project_id, external_id) DO UPDATE SET
-                name = EXCLUDED.name,
-                category = EXCLUDED.category
-        """
-            )
-        )
 
         # Sync Jira users from raw_jira.users
         context.log.info("Syncing Jira users...")
@@ -382,7 +433,6 @@ def clean_jira_issues(
 
     return {
         "status": "success",
-        "projects_synced": len(projects_synced),
         "issues_synced": len(issues_synced),
     }
 
@@ -1968,134 +2018,118 @@ def clean_jira_issue_status_changelog(
 @asset(
     group_name="jira_clean",
     deps=["raw_jira_data", "clean_jira_issues"],
-    description="Transform raw Jira board configurations to clean format",
+    description="Sync Jira boards to clean layer",
     compute_kind="sql",
 )
 def clean_jira_boards(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Transform raw Jira board configurations to clean_jira.
-
-    Target tables: boards, board_columns, and board_column_statuses.
-    """
+    """Sync boards from raw to clean."""
     engine = database.get_engine()
-
     with engine.connect() as conn:
         context.log.info("Syncing boards...")
-
-        # Check if board_configurations table exists
         boards_exists = conn.execute(
             text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira' AND table_name = 'board_configurations'
-            )
-        """
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'raw_jira' AND table_name = 'board_configurations')"
             )
         ).scalar()
-
         if not boards_exists:
-            context.log.warning("No board_configurations table found in raw_jira")
             return {"status": "skipped", "reason": "no_board_configurations_table"}
 
-        # Sync boards
-        boards_result = conn.execute(
+        result = conn.execute(
             text(
                 """
-            INSERT INTO clean_jira.boards (
-                project_id,
-                external_id,
-                name,
-                created_at
-            )
-            SELECT
-                p.id as project_id,
-                bc.board_id::text as external_id,
-                bc.board_name as name,
-                now() as created_at
+            INSERT INTO clean_jira.boards (project_id, external_id, name, created_at)
+            SELECT DISTINCT ON (p.id, bc.board_id::text)
+                p.id, bc.board_id::text, bc.board_name, now()
             FROM raw_jira.board_configurations bc
             JOIN clean_jira.projects p ON p.external_key = bc.project_key
             WHERE bc.board_id IS NOT NULL
-            ON CONFLICT (project_id, external_id) DO UPDATE SET
-                name = EXCLUDED.name
+            ORDER BY p.id, bc.board_id::text, bc._dlt_id DESC
+            ON CONFLICT (project_id, external_id) DO UPDATE SET name = EXCLUDED.name
             RETURNING id
         """
             )
         )
-        boards_count = len(boards_result.fetchall())
-        context.log.info(f"Synced {boards_count} boards")
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
 
-        # Sync board columns from columns_config JSON
+
+@asset(
+    group_name="jira_clean",
+    deps=["raw_jira_data", "clean_jira_boards"],
+    description="Sync Jira board columns to clean layer",
+    compute_kind="sql",
+)
+def clean_jira_board_columns(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync board columns from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
         context.log.info("Syncing board columns...")
-        columns_result = conn.execute(
+        result = conn.execute(
             text(
                 """
-            INSERT INTO clean_jira.board_columns (
-                board_id,
-                name,
-                position
-            )
-            SELECT
-                b.id as board_id,
-                col.name as name,
-                col._dlt_list_idx::int as position
+            INSERT INTO clean_jira.board_columns (board_id, name, position)
+            SELECT DISTINCT ON (b.id, col.name)
+                b.id, col.name, col._dlt_list_idx::int
             FROM raw_jira.board_configurations__columns_config__columns col
             JOIN raw_jira.board_configurations bc ON col._dlt_parent_id = bc._dlt_id
             JOIN clean_jira.projects p ON p.external_key = bc.project_key
-            JOIN clean_jira.boards b
-                ON b.project_id = p.id AND b.external_id = bc.board_id::text
+            JOIN clean_jira.boards b ON b.project_id = p.id AND b.external_id = bc.board_id::text
             WHERE col.name IS NOT NULL
-            ON CONFLICT (board_id, name) DO UPDATE SET
-                position = EXCLUDED.position
+            ORDER BY b.id, col.name, bc._dlt_id DESC
+            ON CONFLICT (board_id, name) DO UPDATE SET position = EXCLUDED.position
             RETURNING id
         """
             )
         )
-        columns_count = len(columns_result.fetchall())
-        context.log.info(f"Synced {columns_count} board columns")
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
 
-        # Sync board column statuses
+
+@asset(
+    group_name="jira_clean",
+    deps=["raw_jira_data", "clean_jira_board_columns", "clean_jira_issue_statuses"],
+    description="Sync Jira board column statuses to clean layer",
+    compute_kind="sql",
+)
+def clean_jira_board_column_statuses(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync board column statuses from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
         context.log.info("Syncing board column statuses...")
-        statuses_result = conn.execute(
+        result = conn.execute(
             text(
                 """
-            INSERT INTO clean_jira.board_column_statuses (
-                board_column_id,
-                status_id
-            )
-            SELECT
-                bc_col.id as board_column_id,
-                ist.id as status_id
+            INSERT INTO clean_jira.board_column_statuses (board_column_id, status_id)
+            SELECT DISTINCT ON (bc_col.id, ist.id)
+                bc_col.id, ist.id
             FROM raw_jira.board_configurations__columns_config__columns__statuses st
-            JOIN raw_jira.board_configurations__columns_config__columns col
-                ON st._dlt_parent_id = col._dlt_id
+            JOIN raw_jira.board_configurations__columns_config__columns col ON st._dlt_parent_id = col._dlt_id
             JOIN raw_jira.board_configurations bc ON col._dlt_parent_id = bc._dlt_id
             JOIN clean_jira.projects p ON p.external_key = bc.project_key
-            JOIN clean_jira.boards b
-                ON b.project_id = p.id AND b.external_id = bc.board_id::text
-            JOIN clean_jira.board_columns bc_col ON bc_col.board_id = b.id
-                AND bc_col.name = col.name
-            JOIN clean_jira.issue_statuses ist ON ist.project_id = p.id
-                AND ist.external_id = st.id
+            JOIN clean_jira.boards b ON b.project_id = p.id AND b.external_id = bc.board_id::text
+            JOIN clean_jira.board_columns bc_col ON bc_col.board_id = b.id AND bc_col.name = col.name
+            JOIN clean_jira.issue_statuses ist ON ist.project_id = p.id AND ist.external_id = st.id
             WHERE st.id IS NOT NULL
+            ORDER BY bc_col.id, ist.id, bc._dlt_id DESC
             ON CONFLICT (board_column_id, status_id) DO NOTHING
             RETURNING id
         """
             )
         )
-        statuses_count = len(statuses_result.fetchall())
-        context.log.info(f"Synced {statuses_count} board column statuses")
-
+        count = len(result.fetchall())
         conn.commit()
-
-    return {
-        "status": "success",
-        "boards_count": boards_count,
-        "columns_count": columns_count,
-        "statuses_count": statuses_count,
-    }
+    return {"status": "success", "count": count}
 
 
 # Asset checks for data quality
