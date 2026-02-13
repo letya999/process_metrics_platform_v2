@@ -180,7 +180,9 @@ docker-down:
 prod-simple-up:
 	@echo "$(BLUE)Starting services in SIMPLE PRODUCTION mode...$(NC)"
 	docker compose -f docker-compose.simple.yml --env-file .env.production up -d
-	@echo "$(GREEN)Services started in SIMPLE PRODUCTION mode!$(NC)"
+	@echo "$(BLUE)Running database migrations...$(NC)"
+	docker compose -f docker-compose.simple.yml --env-file .env.production --profile migration run --rm alembic upgrade head
+	@echo "$(GREEN)Services started and migrated in SIMPLE PRODUCTION mode!$(NC)"
 
 prod-simple-down:
 	@echo "$(BLUE)Stopping SIMPLE PRODUCTION services...$(NC)"
