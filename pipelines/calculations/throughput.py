@@ -25,17 +25,7 @@ def calculate_weekly_throughput(
     board_columns_df: pl.DataFrame,
 ) -> pl.DataFrame:
     """
-    Calculate weekly throughput (issues completed per week).
-
-    Args:
-        issues_df: Issue details (id, project_id, key, type_name, jira_resolved_at)
-        status_changelog_df: Status change history
-        boards_df: Board definitions
-        board_columns_df: Board column configuration
-
-    Returns:
-        DataFrame: [project_id, week_start_date, week_end_date, issue_type,
-                    issues_completed, avg_lead_time_days]
+    Calculate weekly throughput broken down by issue type (Legacy/Default behavior).
     """
     if issues_df.is_empty():
         return pl.DataFrame(
@@ -47,6 +37,62 @@ def calculate_weekly_throughput(
                 "issues_completed": pl.Int64,
             }
         )
+
+    # Use generic calculation grouping by type_name
+    # Note: Using issues_df "type_name" if available, assuming caller ensures columns
+    df = calculate_generic_throughput(
+        issues_df,
+        status_changelog_df,
+        boards_df,
+        board_columns_df,
+        group_by=["type_name"],
+    )
+
+    if df.is_empty():
+        return pl.DataFrame(
+            schema={
+                "project_id": pl.Utf8,
+                "week_start_date": pl.Date,
+                "week_end_date": pl.Date,
+                "issue_type": pl.Utf8,
+                "issues_completed": pl.Int64,
+            }
+        )
+
+    return df.select(
+        [
+            "project_id",
+            "week_start_date",
+            "week_end_date",
+            pl.col("type_name").alias("issue_type"),
+            "issues_completed",
+        ]
+    )
+
+
+def calculate_generic_throughput(
+    issues_df: pl.DataFrame,
+    status_changelog_df: pl.DataFrame,
+    boards_df: pl.DataFrame,
+    board_columns_df: pl.DataFrame,
+    group_by: list = None,
+) -> pl.DataFrame:
+    """
+    Generic weekly throughput calculation.
+
+    Args:
+        issues_df: Issue details (id, project_id, key, type_name, jira_resolved_at, jira_created_at)
+        status_changelog_df: Status change history
+        boards_df: Board definitions
+        board_columns_df: Board column configuration
+        group_by: Optional additional columns to group by (e.g. ['type_name'])
+
+    Returns:
+        DataFrame: [project_id, week_start_date, week_end_date, ...group_by,
+                    issues_completed, avg_lead_time_days]
+    """
+    if issues_df.is_empty():
+        return pl.DataFrame()
 
     # Identify "Done" statuses from board configuration
     done_status_ids = _get_done_status_ids(board_columns_df)
@@ -86,17 +132,27 @@ def calculate_weekly_throughput(
         )
 
     if completed_issues.is_empty():
-        return pl.DataFrame(
-            schema={
-                "project_id": pl.Utf8,
-                "week_start_date": pl.Date,
-                "week_end_date": pl.Date,
-                "issue_type": pl.Utf8,
-                "issues_completed": pl.Int64,
-            }
-        )
+        return pl.DataFrame()
 
     # Calculate week boundaries (ISO week: Monday = start)
+    # Also ensure jira_created_at exists for lead time calc
+    has_created = "jira_created_at" in completed_issues.columns
+
+    aggs = [pl.count().alias("issues_completed")]
+
+    if has_created:
+        aggs.append(
+            (
+                (
+                    pl.col("completion_date") - pl.col("jira_created_at")
+                ).dt.total_seconds()
+                / 86400.0
+            )
+            .mean()
+            .round(2)
+            .alias("avg_lead_time_days")
+        )
+
     weekly_throughput = (
         completed_issues.with_columns(
             [
@@ -113,23 +169,16 @@ def calculate_weekly_throughput(
                 (pl.col("week_start_date") + pl.duration(days=6)).alias("week_end_date")
             ]
         )
-        .group_by(["project_id", "week_start_date", "week_end_date", "type_name"])
-        .agg(
-            [
-                pl.count().alias("issues_completed"),
-            ]
-        )
-        .select(
-            [
-                "project_id",
-                "week_start_date",
-                "week_end_date",
-                pl.col("type_name").alias("issue_type"),
-                "issues_completed",
-            ]
-        )
+        .group_by(["project_id", "week_start_date", "week_end_date"] + (group_by or []))
+        .agg(aggs)
         .sort(["project_id", "week_start_date"])
     )
+
+    # If avg_lead_time_days not calculated, add it as null
+    if "avg_lead_time_days" not in weekly_throughput.columns:
+        weekly_throughput = weekly_throughput.with_columns(
+            pl.lit(None).cast(pl.Float64).alias("avg_lead_time_days")
+        )
 
     return weekly_throughput
 

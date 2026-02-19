@@ -58,8 +58,8 @@ def calculate_time_to_market(
             }
         )
 
-    # Filter to high-level items (Epic, Story, Feature)
-    high_level_types = ["Epic", "Story", "Feature"]
+    # Filter to high-level items (Epic only)
+    high_level_types = ["Epic"]
 
     issues_with_type = issues_df.join(
         issue_types_df.select(["id", "name", "hierarchy_level"]),
@@ -68,11 +68,8 @@ def calculate_time_to_market(
         how="inner",
     )
 
-    # Focus on epics and stories (strategic items)
-    strategic_issues = issues_with_type.filter(
-        pl.col("name").is_in(high_level_types)
-        | pl.col("hierarchy_level").is_in(["epic", "story"])
-    )
+    # Focus on epics
+    strategic_issues = issues_with_type.filter(pl.col("name").is_in(high_level_types))
 
     if strategic_issues.is_empty():
         return pl.DataFrame(
@@ -204,7 +201,8 @@ def _get_release_dates(
                 result.join(
                     completed_via_status,
                     on="issue_id",
-                    how="outer",
+                    how="full",
+                    coalesce=True,
                     suffix="_completion",
                 )
                 .with_columns(
@@ -222,7 +220,8 @@ def _get_release_dates(
             result.join(
                 resolved_fallback,
                 on="issue_id",
-                how="outer",
+                how="full",
+                coalesce=True,
                 suffix="_resolved",
             )
             .with_columns(
@@ -243,7 +242,8 @@ def _get_release_dates(
             result.join(
                 resolved_fallback,
                 on="issue_id",
-                how="outer",
+                how="full",
+                coalesce=True,
                 suffix="_resolved",
             )
             .with_columns(
@@ -290,7 +290,7 @@ def calculate_ttm_aggregates(ttm_df: pl.DataFrame) -> pl.DataFrame:
         ttm_df.group_by(["project_id", "issue_type"])
         .agg(
             [
-                pl.count().alias("total_issues"),
+                pl.len().alias("total_issues"),
                 pl.col("time_to_market_days").mean().round(2).alias("avg_ttm_days"),
                 pl.col("time_to_market_days")
                 .quantile(0.5)
@@ -388,7 +388,7 @@ def calculate_release_cadence(
         releases_with_gaps.group_by("project_id")
         .agg(
             [
-                pl.count().alias("total_releases"),
+                pl.len().alias("total_releases"),
                 pl.col("days_since_prev")
                 .mean()
                 .round(2)

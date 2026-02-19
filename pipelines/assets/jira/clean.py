@@ -470,12 +470,8 @@ def clean_jira_sprints(
         ).scalar()
 
         if board_config_exists:
-            # Full Refresh strategy: Clear table first to remove stale duplicates
-            conn.execute(
-                text("TRUNCATE TABLE clean_jira.sprints RESTART IDENTITY CASCADE")
-            )
-
-            # Join via board_configurations to get correct project
+            # Use UPSERT strategy instead of TRUNCATE to avoid cascading deletes
+            # This is safer if the job is interrupted or if other tables reference sprints
             insert_query = text(
                 """
             INSERT INTO clean_jira.sprints (
@@ -508,6 +504,14 @@ def clean_jira_sprints(
             JOIN raw_jira.board_configurations bc ON s.board_id = bc.board_id
             JOIN clean_jira.projects p ON bc.project_key = p.external_key
             WHERE s.id IS NOT NULL
+            ON CONFLICT (project_id, external_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                goal = EXCLUDED.goal,
+                status = EXCLUDED.status,
+                start_date = EXCLUDED.start_date,
+                end_date = EXCLUDED.end_date,
+                complete_date = EXCLUDED.complete_date,
+                updated_at = now()
             RETURNING id
             """
             )
@@ -1237,7 +1241,7 @@ def clean_jira_sprint_issues(
                 FROM normalized_events
                 ORDER BY issue_external_id, sprint_id, changed_at DESC, action DESC
             )
-            -- Insert only pairs where final action is 'added'
+            -- Insert pairs where final action is 'added' or 'removed'
             INSERT INTO clean_jira.sprint_issues (
                 sprint_id,
                 issue_id,
@@ -1246,10 +1250,10 @@ def clean_jira_sprint_issues(
             SELECT
                 la.sprint_id,
                 i.id as issue_id,
-                true as is_active
+                CASE WHEN la.action = 'added' THEN true ELSE false END as is_active
             FROM latest_action la
             JOIN clean_jira.issues i ON i.external_id = la.issue_external_id
-            WHERE la.action = 'added'
+            WHERE la.action IN ('added', 'removed')
             ON CONFLICT (sprint_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
             RETURNING id

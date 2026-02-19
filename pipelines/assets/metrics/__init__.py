@@ -23,7 +23,6 @@ __all__ = [
     "calculate_cumulative_flow_diagram",
     "calculate_backlog_health",
     "calculate_time_to_market",
-    "calculate_advanced_metrics",
     "metrics_all",
     "metrics_lead_time",
     "metrics_throughput",
@@ -32,4 +31,5 @@ __all__ = [
     "check_lead_time_positive",
     "check_throughput_no_future_dates",
     "check_velocity_completion_rate_valid",
+    "calculate_advanced_metrics",
 ]

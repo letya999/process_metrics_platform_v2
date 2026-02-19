@@ -1,30 +1,16 @@
 """
-Advanced Metrics Dagster Assets
+Advanced Metrics Dagster Asset
 
-This asset calculates Pro/Advanced metrics using Python/Polars logic:
-- Work Item Aging
-- Flow Efficiency
-- Control Chart
-- Lead Time Trends
+This asset calculates Advanced / Pro metrics, currently implementing
+Work Item Aging and its slices. Logic for Flow Efficiency and
+Control Chart will be added here subsequently.
 """
 
 from typing import Any
 
-import polars as pl
 from dagster import AssetExecutionContext, asset
 
-from pipelines.calculations import (
-    aging as aging_logic,
-)
-from pipelines.calculations import (
-    control_chart as control_chart_logic,
-)
-from pipelines.calculations import (
-    flow_efficiency as flow_efficiency_logic,
-)
-from pipelines.calculations import (
-    lead_time as lead_time_logic,  # Needed for base lead time data
-)
+from pipelines.calculations import aging as aging_logic
 from pipelines.resources.database import DatabaseResource
 from pipelines.utils.polars_db import read_table, write_table
 
@@ -33,13 +19,13 @@ from pipelines.utils.polars_db import read_table, write_table
     group_name="metrics",
     deps=[
         "clean_jira_issues",
+        "clean_jira_issue_types",
+        "clean_jira_issue_statuses",
         "clean_jira_boards",
         "clean_jira_board_columns",
         "clean_jira_issue_status_changelog",
-        "clean_jira_projects",
-        "clean_jira_issue_statuses",  # Needed for wait status detection
     ],
-    description="Calculate Advanced/Pro metrics (Aging, Flow Efficiency, etc.)",
+    description="Calculate Advanced metrics (Work Item Aging)",
     compute_kind="python",
 )
 def calculate_advanced_metrics(
@@ -47,23 +33,21 @@ def calculate_advanced_metrics(
     database: DatabaseResource,
 ) -> dict[str, Any]:
     """
-    Calculate generic 'Pro' metrics that augment base lead time/velocity.
+    Calculate Advanced metrics (Work Item Aging, etc.).
 
-    This unified asset handles:
-    1. Work Item Aging (fact_work_item_aging)
-    2. Flow Efficiency (fact_flow_efficiency)
-    3. Control Chart Stats (fact_control_chart)
+    Outputs:
+    - metrics.fact_work_item_aging
+    - metrics.fact_work_item_aging_slices
     """
     engine = database.get_engine()
-    context.log.info("Loading data for Advanced Metrics...")
 
-    # 1. Load Data
+    context.log.info("Loading data for advanced metrics...")
+
     issues_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, i.external_key AS key, i.summary, i.type_id, i.status_id,
-               it.name AS type_name, i.jira_created_at, i.jira_resolved_at,
-               i.status_id AS current_status_id -- Important for Aging
+        SELECT i.id, i.project_id, i.external_key AS key, it.name AS type_name,
+               i.status_id, i.jira_created_at
         FROM clean_jira.issues i
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
         """,
@@ -72,13 +56,13 @@ def calculate_advanced_metrics(
     status_changelog_df = read_table(
         engine,
         """
-        SELECT issue_id, from_status_id, to_status_id, changed_at
+        SELECT issue_id, to_status_id, changed_at
         FROM clean_jira.issue_status_changelog
         ORDER BY changed_at
         """,
     )
 
-    boards_df = read_table(engine, "SELECT id, project_id, name FROM clean_jira.boards")
+    boards_df = read_table(engine, "SELECT id, project_id FROM clean_jira.boards")
 
     board_columns_df = read_table(
         engine,
@@ -89,94 +73,59 @@ def calculate_advanced_metrics(
         """,
     )
 
-    statuses_df = read_table(
-        engine, "SELECT id, project_id, name, category FROM clean_jira.issue_statuses"
+    issue_statuses_df = read_table(
+        engine, "SELECT id, category, name FROM clean_jira.issue_statuses"
     )
 
-    context.log.info(f"Loaded {len(issues_df)} issues for processing")
-
-    # =====================================================
-    # 1. WORK ITEM AGING
-    # =====================================================
+    # 1. Calculate Work Item Aging
     context.log.info("Calculating Work Item Aging...")
-    aging_df = aging_logic.calculate_aging_work(
-        issues_df, status_changelog_df, boards_df, board_columns_df
+    aging_df = aging_logic.calculate_work_item_aging_facts(
+        issues_df=issues_df,
+        status_changelog_df=status_changelog_df,
+        boards_df=boards_df,
+        board_columns_df=board_columns_df,
+        issue_statuses_df=issue_statuses_df,
     )
 
     if not aging_df.is_empty():
-        # Ensure column names match DB exact spec if needed, usually logic matches
-        write_table(aging_df, engine, table="fact_work_item_aging", schema="metrics")
-        context.log.info(f"Written {len(aging_df)} aging records")
-    else:
-        context.log.info("No active aging items found")
-
-    # =====================================================
-    # 2. FLOW EFFICIENCY
-    # =====================================================
-    context.log.info("Calculating Flow Efficiency...")
-
-    # Heuristic for wait statuses if not strictly defined in DB
-    # In a real app, this should come from a config table
-    wait_status_ids = []
-    if not statuses_df.is_empty():
-        # Case-insensitive check for 'blocked', 'hold', 'wait'
-        wait_pattern = "(?i)blocked|hold|wait|review"
-        wait_statuses = statuses_df.filter(pl.col("name").str.contains(wait_pattern))
-        if not wait_statuses.is_empty():
-            wait_status_ids = wait_statuses["id"].to_list()
-            context.log.info(
-                f"Using wait statuses ids: {wait_status_ids} ({len(wait_status_ids)} found)"
-            )
-
-    efficiency_df = flow_efficiency_logic.calculate_flow_efficiency(
-        issues_df, status_changelog_df, boards_df, board_columns_df, wait_status_ids
-    )
-
-    if not efficiency_df.is_empty():
-        # Rename columns to match DB schema (code outputs key/type_name, DB expects issue_key/issue_type)
-        if "key" in efficiency_df.columns:
-            efficiency_df = efficiency_df.rename({"key": "issue_key"})
-        if "type_name" in efficiency_df.columns:
-            efficiency_df = efficiency_df.rename({"type_name": "issue_type"})
-
-        write_table(
-            efficiency_df, engine, table="fact_flow_efficiency", schema="metrics"
+        context.log.info(
+            f"Writing {len(aging_df)} rows to metrics.fact_work_item_aging..."
         )
-        context.log.info(f"Written {len(efficiency_df)} flow efficiency records")
+        write_table(aging_df, engine, table="fact_work_item_aging", schema="metrics")
 
-    # =====================================================
-    # 3. CONTROL CHART & 4. TRENDS (Require Lead Time Base)
-    # =====================================================
-    # We recalculate base lead time in-memory to ensure we have the latest data
-    # without depending strictly on the DB state of another asset, primarily for robustness
-    lt_df = lead_time_logic.calculate_lead_time_facts(
-        issues_df, status_changelog_df, boards_df, board_columns_df
-    )
+        # Calculate slices
+        from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 
-    if not lt_df.is_empty():
-        # Control Chart
-        context.log.info("Calculating Control Chart Stats...")
-        cc_df = control_chart_logic.calculate_control_chart_stats(lt_df)
-        if not cc_df.is_empty():
-            # Select only DB columns
-            cc_write = cc_df.select(
-                [
-                    "project_id",
-                    "issue_id",
-                    "commitment_end_at",
-                    "lead_time_days",
-                    "rolling_mean",
-                    "rolling_std",
-                    "ucl_2sigma",
-                    "ucl_3sigma",
-                    "is_outlier",
-                ]
+        rules_df = get_slice_rules(engine, target_metric_table="fact_work_item_aging")
+
+        def aging_slice_identity(df_subset):
+            return df_subset  # raw rows
+
+        slice_df = apply_slicing(
+            aging_df.rename(
+                {"issue_type": "type_name"}
+            ),  # apply_slicing might expect type_name or issue_type
+            rules_df,
+            aging_slice_identity,
+        )
+        # Fix back column name if rename happened
+        if "type_name" in aging_df.columns:
+            pass  # it was issue_type in aging_df result
+
+        if not slice_df.is_empty():
+            context.log.info(
+                f"Writing {len(slice_df)} rows to metrics.fact_work_item_aging_slices..."
             )
-            write_table(cc_write, engine, table="fact_control_chart", schema="metrics")
-            context.log.info(f"Written {len(cc_write)} control chart records")
+            write_table(
+                slice_df, engine, table="fact_work_item_aging_slices", schema="metrics"
+            )
+    else:
+        context.log.warning("No aging data calculated.")
 
     return {
         "status": "success",
-        "aging_records": len(aging_df),
-        "flow_records": len(efficiency_df),
+        "aging_rows": len(aging_df) if not aging_df.is_empty() else 0,
+        "aging_slices": len(slice_df)
+        if "slice_df" in locals() and not slice_df.is_empty()
+        else 0,
     }

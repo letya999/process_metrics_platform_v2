@@ -6,6 +6,7 @@ This asset calculates Weekly Throughput metrics using Python/Polars logic.
 
 from typing import Any
 
+import polars as pl
 from dagster import AssetExecutionContext, asset
 
 from pipelines.calculations import throughput as throughput_logic
@@ -37,7 +38,6 @@ def calculate_throughput(
 
     Outputs:
     - metrics.fact_throughput (weekly throughput facts)
-    - metrics.fact_throughput_aggregates (summary statistics)
     """
     engine = database.get_engine()
 
@@ -104,6 +104,43 @@ def calculate_throughput(
     # Write throughput facts to database
     context.log.info("Writing to metrics.fact_throughput...")
     write_table(throughput_df, engine, table="fact_throughput", schema="metrics")
+
+    # =====================================================
+    # Calculate Throughput Slices (Generic)
+    # =====================================================
+    context.log.info("Calculating throughput slices...")
+    from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
+
+    rules_df = get_slice_rules(engine, target_metric_table="fact_throughput")
+
+    def throughput_slice_calc(df_subset):
+        return throughput_logic.calculate_generic_throughput(
+            issues_df=df_subset,
+            status_changelog_df=status_changelog_df,
+            boards_df=boards_df,
+            board_columns_df=board_columns_df,
+            group_by=[
+                "issue_type"
+            ],  # Slice calculation should also know its type if possible
+        )
+
+    # Alias type_name to issue_type for the default rule
+    issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
+
+    slice_df = apply_slicing(
+        issues_for_slicing, rules_df, throughput_slice_calc, base_columns=["project_id"]
+    )
+
+    if not slice_df.is_empty():
+        # Remove empty weeks for slices (to avoid zeros for unused types in specific weeks)
+        slice_df = slice_df.filter(pl.col("issues_completed") > 0)
+
+    if not slice_df.is_empty():
+        # Match schema: project_id, slice_rule_name, slice_value, week_start_date, week_end_date, issue_type, issues_completed, avg_lead_time_days
+        context.log.info(
+            f"Writing {len(slice_df)} rows to metrics.fact_throughput_slices..."
+        )
+        write_table(slice_df, engine, table="fact_throughput_slices", schema="metrics")
 
     # =====================================================
     # Return summary statistics

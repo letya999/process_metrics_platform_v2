@@ -104,7 +104,7 @@ def calculate_backlog_health(
         ]
     )
 
-    # Calculate backlog growth (issues created in last week/month)
+    # Calculate backlog growth (issues created in last week/month) - Keep existing logic for backward compatibility/summary
     last_week = now - timedelta(days=7)
     last_month = now - timedelta(days=30)
 
@@ -120,6 +120,23 @@ def calculate_backlog_health(
             .otherwise(pl.lit(0))
             .sum()
             .alias("created_last_month"),
+            # COMPLETED COUNTS for calculating net growth
+            pl.when(
+                (pl.col("jira_resolved_at").is_not_null())
+                & (pl.col("jira_resolved_at") >= last_week)
+            )
+            .then(pl.lit(1))
+            .otherwise(pl.lit(0))
+            .sum()
+            .alias("completed_last_week"),
+            pl.when(
+                (pl.col("jira_resolved_at").is_not_null())
+                & (pl.col("jira_resolved_at") >= last_month)
+            )
+            .then(pl.lit(1))
+            .otherwise(pl.lit(0))
+            .sum()
+            .alias("completed_last_month"),
         ]
     )
 
@@ -146,7 +163,17 @@ def calculate_backlog_health(
                 .alias("stale_percentage")
             ]
         )
-        .join(backlog_growth, on="project_id", how="left")
+        .join(backlog_growth, on="project_id", how="left", coalesce=True)
+        .with_columns(
+            [
+                (pl.col("created_last_week") - pl.col("completed_last_week")).alias(
+                    "backlog_growth_last_week"
+                ),
+                (pl.col("created_last_month") - pl.col("completed_last_month")).alias(
+                    "backlog_growth_last_month"
+                ),
+            ]
+        )
         .select(
             [
                 "project_id",
@@ -155,14 +182,119 @@ def calculate_backlog_health(
                 "stale_issues_count",
                 "stale_percentage",
                 "oldest_issue_days",
-                pl.col("created_last_week").alias("backlog_growth_last_week"),
-                pl.col("created_last_month").alias("backlog_growth_last_month"),
+                "backlog_growth_last_week",
+                "backlog_growth_last_month",
             ]
         )
         .sort("project_id")
     )
 
     return backlog_health
+
+
+def calculate_backlog_growth_trends(
+    issues_df: pl.DataFrame,
+    issue_statuses_df: pl.DataFrame,
+    period: str = "weekly",  # weekly or monthly
+) -> pl.DataFrame:
+    """
+    Calculate backlog growth trends (Created, Completed, Net Growth) over time.
+
+    Args:
+        issues_df: Issue details including resolved_at
+        issue_statuses_df: Status definitions
+        period: "weekly" or "monthly"
+
+    Returns:
+        DataFrame: [project_id, period_start, period_type, created_count, completed_count, net_growth]
+    """
+    if issues_df.is_empty():
+        return pl.DataFrame(
+            schema={
+                "project_id": pl.Utf8,
+                "period_start": pl.Date,
+                "period_type": pl.Utf8,
+                "created_count": pl.Int64,
+                "completed_count": pl.Int64,
+                "net_growth": pl.Int64,
+            }
+        )
+
+    # Prepare created data
+    # Truncate dates to week/month start
+    if period == "weekly":
+        trunc_str = "1w"
+    else:
+        trunc_str = "1mo"
+
+    created_counts = (
+        issues_df.with_columns(
+            [
+                pl.col("jira_created_at")
+                .dt.truncate(trunc_str)
+                .cast(pl.Date)
+                .alias("period_start")
+            ]
+        )
+        .group_by(["project_id", "period_start"])
+        .agg([pl.len().alias("created_count")])
+    )
+
+    # Prepare completed data
+    # Use jira_resolved_at for completed date
+    completed_counts = (
+        issues_df.filter(pl.col("jira_resolved_at").is_not_null())
+        .with_columns(
+            [
+                pl.col("jira_resolved_at")
+                .dt.truncate(trunc_str)
+                .cast(pl.Date)
+                .alias("period_start")
+            ]
+        )
+        .group_by(["project_id", "period_start"])
+        .agg([pl.len().alias("completed_count")])
+    )
+
+    # Join and calculate net
+    # We need a full outer join on project_id and period_start
+    # Polars doesn't support multi-key outer join easily in all versions,
+    # but we can concat keys and dedup, then join left.
+
+    # Simple approach: Outer join via special logic or align periods
+
+    # Get all unique periods per project
+    all_periods = pl.concat(
+        [
+            created_counts.select(["project_id", "period_start"]),
+            completed_counts.select(["project_id", "period_start"]),
+        ]
+    ).unique()
+
+    growth_df = (
+        all_periods.join(
+            created_counts, on=["project_id", "period_start"], how="left", coalesce=True
+        )
+        .join(
+            completed_counts,
+            on=["project_id", "period_start"],
+            how="left",
+            coalesce=True,
+        )
+        .with_columns(
+            [
+                pl.col("created_count").fill_null(0),
+                pl.col("completed_count").fill_null(0),
+                pl.lit(period).alias("period_type"),
+            ]
+        )
+        .with_columns(
+            [(pl.col("created_count") - pl.col("completed_count")).alias("net_growth")]
+        )
+        .sort(["project_id", "period_start"])
+    )
+
+    return growth_df
 
 
 def calculate_backlog_distribution(
@@ -224,6 +356,7 @@ def calculate_backlog_distribution(
         left_on="type_id",
         right_on="id",
         how="left",
+        coalesce=True,
     ).select(
         [
             "id",
@@ -256,7 +389,7 @@ def calculate_backlog_distribution(
         )
 
         backlog_with_priority = backlog_with_type.join(
-            priorities, left_on="id", right_on="issue_id", how="left"
+            priorities, left_on="id", right_on="issue_id", how="left", coalesce=True
         ).with_columns([pl.col("priority").fill_null("Unknown")])
     else:
         # No priority field - use "Unknown"
@@ -277,7 +410,7 @@ def calculate_backlog_distribution(
     )
 
     distribution_with_pct = (
-        distribution.join(project_totals, on="project_id", how="left")
+        distribution.join(project_totals, on="project_id", how="left", coalesce=True)
         .with_columns(
             [
                 (pl.col("issue_count") * 100.0 / pl.col("project_total"))
@@ -367,7 +500,7 @@ def calculate_age_distribution(
 
     # Count by bucket
     distribution = backlog_with_age.group_by(["project_id", "age_bucket"]).agg(
-        [pl.count().alias("issue_count")]
+        [pl.len().alias("issue_count")]
     )
 
     # Calculate percentages

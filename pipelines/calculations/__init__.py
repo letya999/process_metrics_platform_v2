@@ -6,27 +6,19 @@ replacing SQL Materialized Views with debuggable Polars DataFrames.
 
 Modules:
 - velocity: Sprint Velocity metrics (Plan vs Fact)
-- lead_time: Lead Time metrics (In Progress → Done)
+- lead_time: Lead Time metrics (In Progress -> Done)
 """
 
 from pipelines.calculations import (
-    aging,
-    control_chart,
     cumulative_flow,
-    flow_efficiency,
     lead_time,
-    lead_time_trend,
     throughput,
     velocity,
 )
 
 __all__ = [
-    "aging",
-    "control_chart",
     "cumulative_flow",
-    "flow_efficiency",
     "lead_time",
-    "lead_time_trend",
     "throughput",
     "velocity",
 ]

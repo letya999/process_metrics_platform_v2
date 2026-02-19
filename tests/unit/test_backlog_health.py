@@ -8,6 +8,7 @@ import polars as pl
 
 from pipelines.calculations.backlog_health import (
     calculate_backlog_distribution,
+    calculate_backlog_growth_trends,
     calculate_backlog_health,
 )
 
@@ -34,6 +35,7 @@ class TestBacklogHealth:
                 "type_id": ["TYPE-1"],
                 "jira_created_at": [created_at_utc],
                 "jira_updated_at": [updated_at_utc],
+                "jira_resolved_at": [None],
             }
         )
 
@@ -110,6 +112,7 @@ class TestBacklogHealth:
                 "type_id": ["TYPE-1", "TYPE-1"],
                 "jira_created_at": [now - timedelta(days=50), now - timedelta(days=60)],
                 "jira_updated_at": [now - timedelta(days=2), now - timedelta(days=40)],
+                "jira_resolved_at": [None, None],
             }
         )
 
@@ -139,15 +142,12 @@ class TestBacklogHealth:
         assert result["stale_issues_count"][0] == 1
         assert result["stale_percentage"][0] == 50.0
 
-    def test_calculate_backlog_distribution_attribute_error_fix(self):
-        """
-        Verify that accessing priority field ID uses index access [0] instead of .first()
-        to prevent AttributeError: 'Series' object has no attribute 'first'.
-        """
+    def test_calculate_backlog_distribution(self):
+        """Test backlog distribution by priority."""
         issues = pl.DataFrame(
             {
-                "id": ["ISS-1"],
-                "project_id": ["PROJ-1"],
+                "id": ["I1"],
+                "project_id": ["P1"],
                 "status_id": ["S1"],
                 "type_id": ["T1"],
             }
@@ -155,23 +155,61 @@ class TestBacklogHealth:
         statuses = pl.DataFrame({"id": ["S1"], "category": ["todo"]})
         types = pl.DataFrame({"id": ["T1"], "name": ["Bug"]})
 
-        # Mock field_keys returning a match for 'priority'
+        # Priority Field
         field_keys = pl.DataFrame(
-            {"id": ["FIELD-1"], "name": ["Priority"], "project_id": ["PROJ-1"]}
+            {"id": ["F1"], "name": ["Priority"], "project_id": ["P1"]}
         )
-
         field_values = pl.DataFrame(
             {
-                "issue_id": ["ISS-1"],
-                "field_key_id": ["FIELD-1"],
+                "issue_id": ["I1"],
+                "field_key_id": ["F1"],
                 "json_value": ['{"name": "High"}'],
             }
         )
 
-        # This calls the function that had the .first() error
         result = calculate_backlog_distribution(
             issues, statuses, types, field_values, field_keys
         )
 
-        assert not result.is_empty()
         assert result["priority"][0] == "High"
+        assert result["issue_count"][0] == 1
+
+    def test_calculate_backlog_growth_trends(self):
+        """Test backlog growth trends (Created vs Completed)."""
+        # Week 1: Mon Jan 1
+        d1 = datetime(2024, 1, 1, 10, 0, 0)
+        # Week 2: Mon Jan 8
+        d2 = datetime(2024, 1, 8, 10, 0, 0)
+
+        issues = pl.DataFrame(
+            {
+                "project_id": ["P1", "P1", "P1"],
+                "jira_created_at": [d1, d1, d2],
+                "jira_resolved_at": [None, d1, d2],
+            }
+        )
+
+        # d1: Created 2, Completed 1 -> Net +1
+        # d2: Created 1, Completed 1 -> Net 0
+
+        result = calculate_backlog_growth_trends(
+            issues,
+            pl.DataFrame(
+                {}
+            ),  # Statuses not used for basic created/resolved check in current impl
+            period="weekly",
+        )
+
+        assert result.height == 2
+
+        # Check first week
+        w1 = result.filter(pl.col("period_start") == d1.date())
+        assert w1["created_count"][0] == 2
+        assert w1["completed_count"][0] == 1
+        assert w1["net_growth"][0] == 1
+
+        # Check second week
+        w2 = result.filter(pl.col("period_start") == d2.date())
+        assert w2["created_count"][0] == 1
+        assert w2["completed_count"][0] == 1
+        assert w2["net_growth"][0] == 0

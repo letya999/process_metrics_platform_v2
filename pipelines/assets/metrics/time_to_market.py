@@ -6,6 +6,7 @@ This asset calculates Time to Market (TTM) - time from creation to release/deplo
 
 from typing import Any
 
+import polars as pl
 from dagster import AssetExecutionContext, asset
 
 from pipelines.calculations import time_to_market as ttm_logic
@@ -133,34 +134,54 @@ def calculate_time_to_market(
     write_table(ttm_df, engine, table="fact_time_to_market", schema="metrics")
 
     # =====================================================
-    # Calculate TTM aggregates
+    # Calculate Custom Slices (Generic)
     # =====================================================
-    context.log.info("Calculating TTM aggregates...")
-    aggregates_df = ttm_logic.calculate_ttm_aggregates(ttm_df)
+    context.log.info("Calculating time to market slices...")
+    from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 
-    context.log.info(f"Calculated {len(aggregates_df)} aggregate rows")
+    rules_df = get_slice_rules(engine, target_metric_table="fact_time_to_market")
 
-    # Write aggregates to database
-    context.log.info("Writing to metrics.fact_ttm_aggregates...")
-    write_table(aggregates_df, engine, table="fact_ttm_aggregates", schema="metrics")
+    def ttm_slice_identity(df_subset):
+        # Return raw rows for the slice (NO AGGREGATION)
+        if df_subset.is_empty():
+            return pl.DataFrame()
+        return df_subset.select(
+            [
+                "project_id",
+                pl.col("issue_id"),
+                "issue_key",
+                "jira_created_at",
+                "released_at",
+                "time_to_market_days",
+            ]
+        )
 
-    # =====================================================
-    # Calculate release cadence
-    # =====================================================
-    context.log.info("Calculating release cadence...")
-    cadence_df = ttm_logic.calculate_release_cadence(
-        releases_df=releases_df,
-        days_back=180,
+    slice_df = apply_slicing(
+        ttm_df, rules_df, ttm_slice_identity, base_columns=["project_id"]
     )
 
-    if not cadence_df.is_empty():
-        context.log.info(f"Calculated cadence for {len(cadence_df)} projects")
+    if not slice_df.is_empty():
+        context.log.info(
+            f"Writing {len(slice_df)} rows to metrics.fact_time_to_market_slices..."
+        )
+        # Note: 0015 migration created fact_time_to_market_slices
+        write_table(
+            slice_df, engine, table="fact_time_to_market_slices", schema="metrics"
+        )
 
-        # Write cadence to database
-        context.log.info("Writing to metrics.fact_release_cadence...")
-        write_table(cadence_df, engine, table="fact_release_cadence", schema="metrics")
-    else:
-        context.log.info("No release cadence data (no releases found)")
+    # =====================================================
+    # Calculate TTM aggregates (Legacy/Summary compatibility)
+    # =====================================================
+    # context.log.info("Calculating TTM aggregates...")
+    # aggregates_df = ttm_logic.calculate_ttm_aggregates(ttm_df)
+    # write_table(aggregates_df, engine, table="fact_ttm_aggregates", schema="metrics")
+
+    # =====================================================
+    # Calculate release cadence -> REMOVED
+    # =====================================================
+    # context.log.info("Calculating release cadence...")
+    # cadence_df = ttm_logic.calculate_release_cadence(releases_df, days_back=180)
+    # write_table(cadence_df, engine, table="fact_release_cadence", schema="metrics")
 
     # =====================================================
     # Return summary statistics
@@ -184,6 +205,6 @@ def calculate_time_to_market(
         "total_issues": len(ttm_df),
         "avg_ttm_days": round(avg_ttm, 2),
         "median_ttm_days": round(median_ttm, 2),
-        "aggregate_rows": len(aggregates_df),
-        "cadence_rows": len(cadence_df) if not cadence_df.is_empty() else 0,
+        # "aggregate_rows": len(aggregates_df),
+        # "cadence_rows": len(cadence_df),
     }

@@ -7,9 +7,11 @@ This asset calculates Velocity metrics using Python/Polars logic
 
 from typing import Any
 
+import polars as pl
 from dagster import AssetExecutionContext, asset
 
 from pipelines.calculations import velocity as velocity_logic
+from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
 from pipelines.utils.polars_db import read_table, write_table
 
@@ -175,30 +177,53 @@ def calculate_velocity(
     write_table(velocity_df, engine, table="fact_velocity", schema="metrics")
 
     # =====================================================
-    # Calculate SLICED velocity facts (by issue type)
+    # Calculate SLICED velocity facts (Generic)
     # =====================================================
-    context.log.info("Calculating velocity slices by issue type...")
-    velocity_slice_df = velocity_logic.calculate_velocity_slice_by_issue_type(
-        sprint_issues_df=sprint_issues_df,
-        sprint_changelog_df=sprint_changelog_df,
-        issues_df=issues_df,
-        sprints_df=sprints_df,
-        field_values_df=field_values_df,
-        field_keys_df=field_keys_df,
-        status_changelog_df=status_changelog_df,
-        boards_df=boards_df,
-        board_columns_df=board_columns_df,
-        field_value_changelog_df=field_value_changelog_df,
-        issue_statuses_df=issue_statuses_df,
+    context.log.info("Calculating velocity slices...")
+
+    rules_df = get_slice_rules(engine, target_metric_table="fact_velocity")
+
+    # Alias type_name to issue_type for the default rule
+    issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
+
+    def velocity_slice_calc(df_subset):
+        # Calculate velocity using ONLY the subset of issues
+        # calculate_velocity_facts handles filtering commitment/completion based on issues_df provided
+        return velocity_logic.calculate_velocity_facts(
+            sprints_df=sprints_df,
+            sprint_issues_df=sprint_issues_df,
+            sprint_changelog_df=sprint_changelog_df,
+            issues_df=df_subset,  # Pass filtered issues
+            field_values_df=field_values_df,
+            field_keys_df=field_keys_df,
+            status_changelog_df=status_changelog_df,
+            boards_df=boards_df,
+            board_columns_df=board_columns_df,
+            field_value_changelog_df=field_value_changelog_df,
+            issue_statuses_df=issue_statuses_df,
+        )
+
+    slice_df = apply_slicing(
+        issues_for_slicing, rules_df, velocity_slice_calc, base_columns=["project_id"]
     )
 
-    context.log.info(f"Calculated {len(velocity_slice_df)} velocity slice rows")
+    if not slice_df.is_empty():
+        # Remove "spooky zeros": rows where there was NO plan AND NO completion for this slice
+        slice_df = slice_df.filter(
+            (pl.col("planned_issues") > 0)
+            | (pl.col("completed_issues") > 0)
+            | (pl.col("planned_story_points") > 0)
+            | (pl.col("completed_story_points") > 0)
+        )
 
-    # Write slices to database
-    context.log.info("Writing to metrics.fact_velocity_slice...")
-    write_table(
-        velocity_slice_df, engine, table="fact_velocity_slice", schema="metrics"
-    )
+    if not slice_df.is_empty():
+        context.log.info(
+            f"Writing {len(slice_df)} rows to metrics.fact_velocity_slices..."
+        )
+
+        # Match schema: project_id, iteration_id, slice_rule_name, slice_value, iteration_name, start_date, end_date, planned_issues, completed_issues, planned_story_points, completed_story_points
+        # The slice_df already has these from velocity_slice_calc, we just need to select/verify.
+        write_table(slice_df, engine, table="fact_velocity_slices", schema="metrics")
 
     # =====================================================
     # Return summary statistics
@@ -220,5 +245,5 @@ def calculate_velocity(
         "sprints_processed": len(velocity_df),
         "total_planned_issues": total_planned,
         "total_completed_issues": total_completed,
-        "slice_rows": len(velocity_slice_df),
+        "slice_rows": len(slice_df) if not slice_df.is_empty() else 0,
     }

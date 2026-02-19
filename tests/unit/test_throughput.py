@@ -7,12 +7,13 @@ from datetime import date, datetime
 import polars as pl
 
 from pipelines.calculations.throughput import (
+    calculate_generic_throughput,
     calculate_weekly_throughput,
 )
 
 
 class TestThroughput:
-    """Tests for calculate_weekly_throughput."""
+    """Tests for calculate_weekly_throughput and calculate_generic_throughput."""
 
     def test_calculate_throughput_basic(self):
         """Test basic weekly aggregation."""
@@ -88,3 +89,74 @@ class TestThroughput:
 
         assert result.is_empty()
         assert "issues_completed" in result.columns
+
+    def test_calculate_generic_throughput_basic(self):
+        """Test generic throughput calculation."""
+        issues = pl.DataFrame(
+            {
+                "id": ["1", "2"],
+                "project_id": ["P1", "P1"],
+                "key": ["K1", "K2"],
+                "type_name": ["Task", "Bug"],
+                "jira_created_at": [datetime(2024, 1, 1), datetime(2024, 1, 1)],
+                "jira_resolved_at": [datetime(2024, 1, 2), datetime(2024, 1, 3)],
+            }
+        )
+
+        # Basic calculation without grouping
+        result = calculate_generic_throughput(
+            issues, pl.DataFrame({}), pl.DataFrame({}), pl.DataFrame({})
+        )
+
+        assert result.height == 1
+        assert result["issues_completed"][0] == 2
+        assert result["avg_lead_time_days"][0] is not None
+
+    def test_calculate_generic_throughput_grouping(self):
+        """Test generic throughput with grouping."""
+        issues = pl.DataFrame(
+            {
+                "id": ["1", "2"],
+                "project_id": ["P1", "P1"],
+                "key": ["K1", "K2"],
+                "type_name": ["Task", "Bug"],
+                "jira_created_at": [datetime(2024, 1, 1), datetime(2024, 1, 1)],
+                "jira_resolved_at": [datetime(2024, 1, 2), datetime(2024, 1, 3)],
+            }
+        )
+
+        result = calculate_generic_throughput(
+            issues,
+            pl.DataFrame({}),
+            pl.DataFrame({}),
+            pl.DataFrame({}),
+            group_by=["type_name"],
+        )
+
+        assert result.height == 2
+        types = result["type_name"].to_list()
+        assert "Task" in types
+        assert "Bug" in types
+
+    def test_calculate_generic_throughput_lead_time(self):
+        """Test lead time calculation in throughput."""
+        # Issue 1: Created Jan 1, Resolved Jan 2 (1 day)
+        # Issue 2: Created Jan 1, Resolved Jan 6 (5 days)
+        # Avg: 3.0 days
+        issues = pl.DataFrame(
+            {
+                "id": ["1", "2"],
+                "project_id": ["P1", "P1"],
+                "key": ["K1", "K2"],
+                "type_name": ["Task", "Task"],
+                "jira_created_at": [datetime(2024, 1, 1), datetime(2024, 1, 1)],
+                "jira_resolved_at": [datetime(2024, 1, 2), datetime(2024, 1, 6)],
+            }
+        )
+
+        result = calculate_generic_throughput(
+            issues, pl.DataFrame({}), pl.DataFrame({}), pl.DataFrame({})
+        )
+
+        assert result["issues_completed"][0] == 2
+        assert result["avg_lead_time_days"][0] == 3.0

@@ -7,6 +7,7 @@ This asset calculates Lead Time metrics using Python/Polars logic
 
 from typing import Any
 
+import polars as pl
 from dagster import AssetExecutionContext, asset
 
 from pipelines.calculations import lead_time as lead_time_logic
@@ -39,7 +40,6 @@ def calculate_lead_time(
     - metrics.fact_lead_time (base facts: per-issue lead time)
     - metrics.fact_lead_time_slice (aggregated by issue type)
     - metrics.fact_lead_time_bins (histogram distribution)
-    - metrics.fact_lead_time_bins_slice (histogram sliced by type)
     """
     engine = database.get_engine()
 
@@ -110,44 +110,48 @@ def calculate_lead_time(
     write_table(lead_time_df, engine, table="fact_lead_time", schema="metrics")
 
     # =====================================================
-    # Calculate SLICED facts (by issue type)
+    # Calculate SLICED facts (Generic)
     # =====================================================
-    context.log.info("Calculating lead time slices by issue type...")
-    lead_time_slice_df = lead_time_logic.calculate_lead_time_slice(lead_time_df)
+    context.log.info("Calculating lead time slices...")
+    from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 
-    context.log.info(f"Calculated {len(lead_time_slice_df)} lead time slice rows")
+    rules_df = get_slice_rules(engine, target_metric_table="fact_lead_time")
 
-    # Write slices to database
-    context.log.info("Writing to metrics.fact_lead_time_slice...")
-    write_table(
-        lead_time_slice_df, engine, table="fact_lead_time_slice", schema="metrics"
+    def lead_time_slice_identity(df_subset):
+        # Return raw rows for the slice (NO AGGREGATION)
+        # Match schema: project_id, issue_id, issue_key, issue_type, commitment_start_at, commitment_end_at, lead_time_days
+        if df_subset.is_empty():
+            return pl.DataFrame()
+
+        return df_subset.select(
+            [
+                "project_id",
+                "issue_id",
+                "issue_key",
+                "issue_type",
+                "commitment_start_at",
+                "commitment_end_at",
+                "lead_time_days",
+            ]
+        )
+
+    # lead_time_df already has issue_type column (from type_name)
+    slice_df = apply_slicing(
+        lead_time_df, rules_df, lead_time_slice_identity, base_columns=["project_id"]
     )
 
-    # =====================================================
-    # Calculate HISTOGRAM BINS
-    # =====================================================
-    context.log.info("Calculating histogram bins...")
-    bins_df = lead_time_logic.calculate_histogram_bins(lead_time_df)
-
-    context.log.info(f"Calculated {len(bins_df)} histogram bins")
-
-    # Write bins to database
-    context.log.info("Writing to metrics.fact_lead_time_bins...")
-    write_table(bins_df, engine, table="fact_lead_time_bins", schema="metrics")
+    if not slice_df.is_empty():
+        context.log.info(
+            f"Writing {len(slice_df)} rows to metrics.fact_lead_time_slices..."
+        )
+        write_table(slice_df, engine, table="fact_lead_time_slices", schema="metrics")
 
     # =====================================================
-    # Calculate HISTOGRAM BINS SLICED (by issue type)
+    # Calculate HISTOGRAM BINS (Base) - DEPRECATED / DROPPED
     # =====================================================
-    context.log.info("Calculating histogram bins sliced by issue type...")
-    bins_slice_df = lead_time_logic.calculate_histogram_bins_slice(lead_time_df)
-
-    context.log.info(f"Calculated {len(bins_slice_df)} histogram bins slice rows")
-
-    # Write bins slices to database
-    context.log.info("Writing to metrics.fact_lead_time_bins_slice...")
-    write_table(
-        bins_slice_df, engine, table="fact_lead_time_bins_slice", schema="metrics"
-    )
+    # context.log.info("Calculating histogram bins... (Skipped - table dropped)")
+    # bins_df = lead_time_logic.calculate_histogram_bins(lead_time_df)
+    # write_table(bins_df, engine, table="fact_lead_time_bins", schema="metrics")
 
     # =====================================================
     # Return summary statistics
@@ -167,7 +171,6 @@ def calculate_lead_time(
         "status": "success",
         "fact_rows": len(lead_time_df),
         "avg_lead_time_days": round(avg_lead_time, 2),
-        "slice_rows": len(lead_time_slice_df),
-        "bins_rows": len(bins_df),
-        "bins_slice_rows": len(bins_slice_df),
+        "slice_rows": len(slice_df) if not slice_df.is_empty() else 0,
+        "bins_rows": 0,  # DEPRECATED / DROPPED
     }
