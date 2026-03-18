@@ -14,11 +14,11 @@ def get_slice_rules(
     """
     query = """
     SELECT
-        id,
+        id as slice_rule_id,
         project_id,
         target_metric_table,
         slice_table_name,
-        rule_name,
+        rule_name as slice_rule_name,
         source_table,
         group_by_column,
         filter_condition,
@@ -26,10 +26,6 @@ def get_slice_rules(
     FROM metrics.metric_slice_rules
     WHERE enabled = true
     """
-
-    # In a real scenario, we might want to fetch all and filter in memory if the table is small,
-    # or filter in SQL. Here we'll fetch all active rules and filter in Python for flexibility
-    # as we need to handle the "default" logic which involves checking for NULLs and specific strings.
 
     try:
         rules_df = pl.read_database(query, conn_str_or_engine)
@@ -75,7 +71,7 @@ def apply_slicing(
         base_columns: Optional list of columns to ensure are in the output if calculation_func doesn't preserve them (not used in this simplified version).
 
     Returns:
-        concatenated DataFrame with slice_rule_name and slice_value.
+        concatenated DataFrame with slice_rule_id, slice_rule_name and slice_value.
     """
     if df.is_empty() or rules_df.is_empty():
         return pl.DataFrame()
@@ -85,17 +81,44 @@ def apply_slicing(
     rules = rules_df.to_dicts()
 
     for rule in rules:
-        rule_name = rule["rule_name"]
+        rule_id = rule["slice_rule_id"]
+        rule_name = rule["slice_rule_name"]
         group_col = rule["group_by_column"]
         source_table = rule.get("source_table", "")
         rule_project_id = rule.get("project_id")
+        filter_cond = rule.get("filter_condition")
+
+        # --- Filter Condition Logic ---
+        # Apply SQL-like filter if present.
+        # Note: For Polars, we assume filter_condition is a string that can be evaluated or is a simple equality.
+        # Since these are curated rules, we'll start with a basic evaluation if it looks like a Polars expression,
+        # otherwise we skip or handle very basic SQL-like strings.
+        current_rule_df = df
+        if filter_cond:
+            try:
+                # Basic support for SQL-like equality: "column = 'value'" -> pl.col("column") == "value"
+                if "==" in filter_cond or "=" in filter_cond:
+                    # Very simple parser for common cases
+                    parts = filter_cond.replace("==", "=").split("=")
+                    if len(parts) == 2:
+                        col = parts[0].strip().strip('"').strip("'")
+                        val = parts[1].strip().strip('"').strip("'")
+                        if col in current_rule_df.columns:
+                            current_rule_df = current_rule_df.filter(pl.col(col) == val)
+                # If we want to support more complex Polars expressions, we could use eval() but it's risky.
+                # For now, we'll stick to simple equality or provide a way for the user to define rules.
+            except Exception as e:
+                print(f"Error applying filter condition '{filter_cond}': {e}")
+
+        if current_rule_df.is_empty():
+            continue
 
         # --- Robust Column Matching Logic ---
-        df_cols_lower = {c.lower(): c for c in df.columns}
+        df_cols_lower = {c.lower(): c for c in current_rule_df.columns}
         target_col = None
 
         # 1. Direct match
-        if group_col in df.columns:
+        if group_col in current_rule_df.columns:
             target_col = group_col
         else:
             # 2. Heuristic match
@@ -117,19 +140,21 @@ def apply_slicing(
             continue
 
         # --- Project-Aware Slicing ---
-        # If the rule is specific to a project, filter data to that project
-        if rule_project_id is not None and "project_id" in df.columns:
-            rule_df = df.filter(pl.col("project_id") == rule_project_id)
+        if rule_project_id is not None and "project_id" in current_rule_df.columns:
+            rule_df = current_rule_df.filter(pl.col("project_id") == rule_project_id)
             if rule_df.is_empty():
                 continue
 
             projects_to_process = [rule_project_id]
         else:
-            # Global rule: process all projects in df individually to respect project-specific values
-            rule_df = df
-            if "project_id" in df.columns:
+            rule_df = current_rule_df
+            if "project_id" in current_rule_df.columns:
                 projects_to_process = (
-                    df.select("project_id").unique().drop_nulls().to_series().to_list()
+                    current_rule_df.select("project_id")
+                    .unique()
+                    .drop_nulls()
+                    .to_series()
+                    .to_list()
                 )
             else:
                 projects_to_process = [None]
@@ -162,6 +187,7 @@ def apply_slicing(
 
                 result_df = metrics_df.with_columns(
                     [
+                        pl.lit(rule_id).alias("slice_rule_id"),
                         pl.lit(rule_name).alias("slice_rule_name"),
                         pl.lit(str(val)).alias("slice_value"),
                     ]

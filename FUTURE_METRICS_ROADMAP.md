@@ -40,7 +40,8 @@
 **Общие колонки:**
 *   `id` (PK): UUID
 *   `project_id`: UUID (FK)
-*   `slice_rule_name`: Название примененного правила (например, "By Issue Type").
+*   `slice_rule_id`: Стабильный ID правила (FK).
+*   `slice_rule_name`: Название правила (денормализовано для BI).
 *   `slice_value`: Значение среза (например, "Bug", "High").
 *   `created_at`: Timestamp.
 
