@@ -644,14 +644,14 @@ def calculate_velocity_facts(
     # 6. Aggregate by Sprint
     plan_agg = commitment_with_sp.group_by("sprint_id").agg(
         [
-            pl.col("issue_id").count().alias("planned_issues"),
+            pl.col("issue_id").count().cast(pl.Int64).alias("planned_issues"),
             pl.col("story_points").sum().alias("planned_story_points"),
         ]
     )
 
     fact_agg = completed_with_sp.group_by("sprint_id").agg(
         [
-            pl.col("issue_id").count().alias("completed_issues"),
+            pl.col("issue_id").count().cast(pl.Int64).alias("completed_issues"),
             pl.col("story_points").sum().alias("completed_story_points"),
         ]
     )
@@ -791,14 +791,14 @@ def calculate_velocity_slice_by_issue_type(
     # Aggregate by Sprint and Type
     plan_agg = commitment_full.group_by(["sprint_id", "type_name"]).agg(
         [
-            pl.col("issue_id").count().alias("planned_issues"),
+            pl.col("issue_id").count().cast(pl.Int64).alias("planned_issues"),
             pl.col("story_points").sum().alias("planned_story_points"),
         ]
     )
 
     fact_agg = completed_full.group_by(["sprint_id", "type_name"]).agg(
         [
-            pl.col("issue_id").count().alias("completed_issues"),
+            pl.col("issue_id").count().cast(pl.Int64).alias("completed_issues"),
             pl.col("story_points").sum().alias("completed_story_points"),
         ]
     )

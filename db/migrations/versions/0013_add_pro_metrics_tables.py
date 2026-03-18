@@ -40,7 +40,7 @@ def upgrade():
         sa.Column("issue_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("issue_key", sa.Text(), nullable=True),
         sa.Column("issue_type", sa.Text(), nullable=True),
-        sa.Column("current_status_id", sa.Text(), nullable=True),
+        sa.Column("current_status", sa.Text(), nullable=True),
         sa.Column("commitment_start_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("age_days", sa.Numeric(), nullable=True),
         sa.Column("age_in_status_days", sa.Numeric(), nullable=True),

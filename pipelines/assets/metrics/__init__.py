@@ -1,5 +1,5 @@
 from .advanced import calculate_advanced_metrics
-from .backlog_health import calculate_backlog_health
+from .backlog_growth import calculate_backlog_growth
 from .cumulative_flow import calculate_cumulative_flow_diagram
 from .lead_time import calculate_lead_time
 from .refresh import (
@@ -21,7 +21,7 @@ __all__ = [
     "calculate_velocity",
     "calculate_throughput",
     "calculate_cumulative_flow_diagram",
-    "calculate_backlog_health",
+    "calculate_backlog_growth",
     "calculate_time_to_market",
     "metrics_all",
     "metrics_lead_time",

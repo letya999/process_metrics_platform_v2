@@ -102,15 +102,10 @@ def calculate_advanced_metrics(
             return df_subset  # raw rows
 
         slice_df = apply_slicing(
-            aging_df.rename(
-                {"issue_type": "type_name"}
-            ),  # apply_slicing might expect type_name or issue_type
+            aging_df,
             rules_df,
             aging_slice_identity,
         )
-        # Fix back column name if rename happened
-        if "type_name" in aging_df.columns:
-            pass  # it was issue_type in aging_df result
 
         if not slice_df.is_empty():
             context.log.info(

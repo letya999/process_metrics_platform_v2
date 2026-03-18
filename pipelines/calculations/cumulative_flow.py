@@ -130,7 +130,7 @@ def calculate_cumulative_flow_diagram(
 
     # Count issues per project-status-date
     daily_counts = daily_statuses.group_by(["project_id", "date", "status_id"]).agg(
-        [pl.len().alias("issue_count")]
+        [pl.len().cast(pl.Int64).alias("issue_count")]
     )
 
     # Join with full grid to ensure all dates/statuses are present

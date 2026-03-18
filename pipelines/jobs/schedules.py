@@ -88,11 +88,11 @@ cfd_recalc_job = define_asset_job(
     description="Recalculate Cumulative Flow Diagram facts",
 )
 
-# Job: Recalculate Backlog Health (Fact only)
-backlog_health_recalc_job = define_asset_job(
-    name="recalculate_backlog_health_job",
-    selection=AssetSelection.assets("calculate_backlog_health"),
-    description="Recalculate Backlog Health facts",
+# Job: Recalculate Backlog Growth (Fact only)
+backlog_growth_recalc_job = define_asset_job(
+    name="recalculate_backlog_growth_job",
+    selection=AssetSelection.assets("calculate_backlog_growth"),
+    description="Recalculate Backlog Growth facts",
 )
 
 # Job: Recalculate Time to Market (Fact only)
@@ -113,7 +113,7 @@ jobs = [
     velocity_recalc_job,
     throughput_recalc_job,
     cfd_recalc_job,
-    backlog_health_recalc_job,
+    backlog_growth_recalc_job,
     time_to_market_recalc_job,
 ]
 

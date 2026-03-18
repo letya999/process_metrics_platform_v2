@@ -1,7 +1,7 @@
 """
-Backlog Health Metrics Dagster Asset
+Backlog Growth Metrics Dagster Asset
 
-This asset calculates metrics to assess the health of the product backlog.
+This asset calculates metrics to assess the growth and health of the product backlog.
 """
 
 from typing import Any
@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 from dagster import AssetExecutionContext, asset
 
-from pipelines.calculations import backlog_health as backlog_logic
+from pipelines.calculations import backlog_growth as backlog_logic
 from pipelines.resources.database import DatabaseResource
 from pipelines.utils.polars_db import read_table, write_table
 
@@ -22,26 +22,28 @@ from pipelines.utils.polars_db import read_table, write_table
         "clean_jira_issue_types",
         "clean_jira_field_values",
         "clean_jira_field_keys",
+        "clean_jira_issue_status_changelog",
+        "clean_jira_board_column_statuses",
     ],
-    description="Calculate Backlog Health metrics (size, age, staleness)",
+    description="Calculate Backlog Growth metrics (size, age, staleness, daily growth)",
     compute_kind="python",
 )
-def calculate_backlog_health(
+def calculate_backlog_growth(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
     """
-    Calculate Backlog Health metrics.
+    Calculate Backlog Growth metrics.
 
     This asset calculates:
     - Overall backlog health (size, age, staleness)
     - Backlog distribution by type and priority
     - Age distribution (how long issues have been open)
+    - Daily created/closed/entered/exited counts
 
     Outputs:
-    - metrics.fact_backlog_health (main health metrics)
-    - metrics.fact_backlog_distribution (breakdown by type/priority)
-    - metrics.fact_backlog_age_distribution (age buckets)
+    - metrics.fact_backlog_growth (main health metrics)
+    - metrics.fact_backlog_growth_slices (breakdown by type/priority)
     """
     engine = database.get_engine()
 
@@ -89,19 +91,40 @@ def calculate_backlog_health(
         """,
     )
 
+    changelog_df = read_table(
+        engine,
+        """
+        SELECT issue_id, from_status_id, to_status_id, changed_at
+        FROM clean_jira.issue_status_changelog
+        """,
+    )
+
+    board_column_statuses_df = read_table(
+        engine,
+        """
+        SELECT b.project_id, bc.position, bcs.status_id
+        FROM clean_jira.board_column_statuses bcs
+        JOIN clean_jira.board_columns bc ON bcs.board_column_id = bc.id
+        JOIN clean_jira.boards b ON bc.board_id = b.id
+        """,
+    )
+
     context.log.info(
-        f"Loaded {len(issues_df)} issues, {len(issue_statuses_df)} statuses"
+        f"Loaded {len(issues_df)} issues, {len(issue_statuses_df)} statuses, {len(changelog_df)} changelog rows"
     )
 
     # =====================================================
-    # Calculate main backlog health metrics
+    # Calculate main backlog growth metrics
     # =====================================================
-    context.log.info("Calculating backlog health metrics...")
-    health_df = backlog_logic.calculate_backlog_health(
+    context.log.info("Calculating backlog growth metrics...")
+    health_df = backlog_logic.calculate_backlog_growth(
         issues_df=issues_df,
         issue_statuses_df=issue_statuses_df,
         field_values_df=field_values_df,
         field_keys_df=field_keys_df,
+        changelog_df=changelog_df,
+        board_column_statuses_df=board_column_statuses_df,
+        days_back=90,
         stale_threshold_days=30,
     )
 
@@ -118,7 +141,6 @@ def calculate_backlog_health(
     context.log.info(f"Calculated health metrics for {len(health_df)} projects")
 
     # Write health facts to database
-    # Note: Migration 0012 created "fact_backlog_health" table
     context.log.info("Writing to metrics.fact_backlog_growth...")
     write_table(health_df, engine, table="fact_backlog_growth", schema="metrics")
 
@@ -130,25 +152,27 @@ def calculate_backlog_health(
     from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 
     # Get generic rules for backlog growth
-    # We use 'fact_backlog_growth' as the metric name convention in rules,
-    # even if table is health or slice.
     rules_df = get_slice_rules(engine, target_metric_table="fact_backlog_growth")
 
-    # Also fetch default rules if not handled by get_slice_rules (it handles it)
-
-    # Define calculation for slices (matches base health calculation)
+    # Define calculation for slices
     def calc_health_wrapper(df_subset):
-        # We need to filter field_values to only those in the subset
+        # We need to filter field_values and changelog to only those in the subset
         subset_ids = df_subset.select("id")
         subset_field_values = field_values_df.join(
             subset_ids, left_on="issue_id", right_on="id"
         )
+        subset_changelog = changelog_df.join(
+            subset_ids, left_on="issue_id", right_on="id"
+        )
 
-        return backlog_logic.calculate_backlog_health(
+        return backlog_logic.calculate_backlog_growth(
             issues_df=df_subset,
             issue_statuses_df=issue_statuses_df,
             field_values_df=subset_field_values,
             field_keys_df=field_keys_df,
+            changelog_df=subset_changelog,
+            board_column_statuses_df=board_column_statuses_df,
+            days_back=90,
             stale_threshold_days=30,
         )
 
@@ -161,7 +185,10 @@ def calculate_backlog_health(
     ).rename({"name": "issue_type"})
 
     slice_df = apply_slicing(
-        issues_with_type, rules_df, calc_health_wrapper, base_columns=["project_id"]
+        issues_with_type,
+        rules_df,
+        calc_health_wrapper,
+        base_columns=["project_id", "fact_date"],
     )
 
     if not slice_df.is_empty():
@@ -181,11 +208,19 @@ def calculate_backlog_health(
     # =====================================================
     # Return summary statistics
     # =====================================================
+    # For summary, use statistics from the latest date
+    latest_date = health_df["fact_date"].max()
+    latest_health = health_df.filter(pl.col("fact_date") == latest_date)
+
     total_backlog = (
-        int(health_df["total_backlog_size"].sum()) if not health_df.is_empty() else 0
+        int(latest_health["total_backlog_size"].sum())
+        if not latest_health.is_empty()
+        else 0
     )
     avg_stale_pct = (
-        float(health_df["stale_percentage"].mean()) if not health_df.is_empty() else 0.0
+        float(latest_health["stale_percentage"].mean())
+        if not latest_health.is_empty()
+        else 0.0
     )
 
     context.log.info(

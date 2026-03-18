@@ -22,7 +22,6 @@
 *   `fact_time_to_market_slices` (По задачам)
 *   `fact_flow_efficiency_slices` (По задачам)
 *   `fact_work_item_aging_slices` (По задачам)
-*   ~~`fact_lead_time_bins_slices`~~ (Удалено, агрегация происходит на лету в BI или через view)
 
 **Структура таблицы правил (`metric_slice_rules`):**
 *   `id` (PK): UUID

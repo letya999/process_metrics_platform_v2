@@ -138,7 +138,7 @@ def calculate_generic_throughput(
     # Also ensure jira_created_at exists for lead time calc
     has_created = "jira_created_at" in completed_issues.columns
 
-    aggs = [pl.count().alias("issues_completed")]
+    aggs = [pl.len().cast(pl.Int64).alias("issues_completed")]
 
     if has_created:
         aggs.append(
