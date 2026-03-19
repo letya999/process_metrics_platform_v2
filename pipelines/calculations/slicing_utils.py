@@ -42,12 +42,21 @@ def get_slice_rules(
     # 1. Match the specific project_id OR have project_id as NULL (global)
     # 2. Match the specific target_definition_id OR have target_definition_id as NULL (default for all metrics)
 
-    # Cast to string for comparison and consistent concatenation
+    # Cast to string for comparison and consistent concatenation.
+    # fill_null("null") handles real SQL NULLs; str.replace handles "None" strings
+    # produced by the pandas fallback path in read_table (pd.astype(str) converts
+    # None -> "None" instead of keeping it as a real null).
     rules_df = rules_df.with_columns(
         [
             pl.col("slice_rule_id").cast(pl.Utf8),
-            pl.col("project_id").cast(pl.Utf8).fill_null("null"),
-            pl.col("target_definition_id").cast(pl.Utf8).fill_null("null"),
+            pl.col("project_id")
+            .cast(pl.Utf8)
+            .fill_null("null")
+            .str.replace("^None$", "null"),
+            pl.col("target_definition_id")
+            .cast(pl.Utf8)
+            .fill_null("null")
+            .str.replace("^None$", "null"),
         ]
     )
 
