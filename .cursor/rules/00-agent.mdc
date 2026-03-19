@@ -1,0 +1,10 @@
+---
+description: "Single cursor rule: use agent.md as canonical guide"
+alwaysApply: true
+globs:
+  - "**/*"
+---
+
+# Agent Rule
+
+Use `agent.md` as the single source of truth for project context and rules.

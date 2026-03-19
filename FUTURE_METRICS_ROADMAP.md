@@ -72,8 +72,7 @@
     *   `issue_id`, `lead_time_days`, `commitment_start_at`, `commitment_end_at`.
 *   **Срезы:** `metrics.fact_lead_time_slices`
     *   Содержит те же данные, но дублированные для каждого сработавшего правила среза (`slice_rule_name`, `slice_value`).
-*   **Гистограмма:** `metrics.fact_lead_time_bins`
-    *   Агрегированное распределение (бины) для построения гистограмм.
+
 
 ### 2.2. Velocity
 Скорость команды по спринтам.
