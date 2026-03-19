@@ -30,36 +30,29 @@ def calculate_cumulative_flow_diagram(
     days_back: int = 90,
 ) -> pl.DataFrame:
     """
-    Calculate Cumulative Flow Diagram data (daily issue counts per status).
-
-    Args:
-        issues_df: Issue details (id, project_id, status_id, jira_created_at)
-        status_changelog_df: Status change history
-        issue_statuses_df: Status definitions (id, project_id, name, category)
-        boards_df: Board definitions
-        board_columns_df: Board column configuration
-        days_back: Number of days to look back (default: 90)
+    Calculate Cumulative Flow Diagram data (daily issue counts per status/column).
 
     Returns:
-        DataFrame: [project_id, date, status_name, status_category,
-                    issue_count, column_position]
+        DataFrame: [project_id, date, status_id, status_name, status_category,
+                    issue_count, column_id, column_position]
     """
     if issues_df.is_empty():
         return pl.DataFrame(
             schema={
                 "project_id": pl.Utf8,
                 "date": pl.Date,
+                "status_id": pl.Utf8,
                 "status_name": pl.Utf8,
                 "status_category": pl.Utf8,
                 "issue_count": pl.Int64,
+                "column_id": pl.Utf8,
                 "column_position": pl.Int32,
             }
         )
 
-    # Generate date range (from days_back until today)
+    # Generate date range
     end_date = datetime.now().date()
     start_date = end_date - timedelta(days=days_back)
-
     date_range = pl.DataFrame(
         {
             "date": pl.date_range(start_date, end_date, interval="1d", eager=True).cast(
@@ -68,57 +61,47 @@ def calculate_cumulative_flow_diagram(
         }
     )
 
-    # Get distinct projects from issues
-    relevant_projects = issues_df.select("project_id").unique()
-
-    # Start with all statuses for these projects
-    all_statuses = issue_statuses_df.join(
-        relevant_projects, on="project_id", how="inner"
-    )
-
-    # Use board configuration to define/filter statuses and add positions
+    # Use board configuration to define/filter statuses and add positions/IDs
     if not board_columns_df.is_empty():
-        status_positions = (
-            board_columns_df.select(["status_id", "position"])
-            .sort("position")
-            .unique(subset=["status_id"], keep="first")
-            .rename({"position": "column_position"})
-        )
+        column_mapping = board_columns_df.select(
+            ["id", "status_id", "position"]
+        ).rename({"id": "column_id", "position": "column_position"})
 
-        # Inner join to restrict to board columns and map positions
-        project_statuses = all_statuses.join(
-            status_positions, left_on="id", right_on="status_id", how="inner"
+        project_statuses = issue_statuses_df.join(
+            column_mapping, left_on="id", right_on="status_id", how="inner"
         ).select(
             [
                 "project_id",
                 pl.col("id").alias("status_id"),
                 pl.col("name").alias("status_name"),
                 pl.col("category").alias("status_category"),
+                "column_id",
                 "column_position",
             ]
         )
     else:
-        # Default: use all project statuses
-        project_statuses = all_statuses.select(
+        project_statuses = issue_statuses_df.select(
             [
                 "project_id",
                 pl.col("id").alias("status_id"),
                 pl.col("name").alias("status_name"),
                 pl.col("category").alias("status_category"),
             ]
-        ).with_columns(pl.lit(None).cast(pl.Int32).alias("column_position"))
+        ).with_columns(
+            [
+                pl.lit(None).cast(pl.Utf8).alias("column_id"),
+                pl.lit(None).cast(pl.Int32).alias("column_position"),
+            ]
+        )
 
     project_statuses = project_statuses.unique()
-
-    # Create cartesian product: all dates × all project-status combinations
     date_status_grid = date_range.join(project_statuses, how="cross")
 
-    # For each date, determine the status of each issue on that date
     daily_statuses = _calculate_issue_status_on_dates(
         issues_df, status_changelog_df, date_range
     )
 
-    # Fix potential list type in status_id (Polars may infer list from aggregation)
+    # Cast status_id to string and handle potential list type
     if daily_statuses.schema["status_id"] == pl.List(pl.Utf8) or isinstance(
         daily_statuses.schema["status_id"], pl.List
     ):
@@ -128,12 +111,10 @@ def calculate_cumulative_flow_diagram(
     else:
         daily_statuses = daily_statuses.with_columns(pl.col("status_id").cast(pl.Utf8))
 
-    # Count issues per project-status-date
     daily_counts = daily_statuses.group_by(["project_id", "date", "status_id"]).agg(
         [pl.len().cast(pl.Int64).alias("issue_count")]
     )
 
-    # Join with full grid to ensure all dates/statuses are present
     cfd_data = (
         date_status_grid.join(
             daily_counts,
@@ -141,25 +122,15 @@ def calculate_cumulative_flow_diagram(
             how="left",
             coalesce=True,
         )
-        # Fill missing counts with 0
         .with_columns([pl.col("issue_count").fill_null(0)])
-        # Group by status name to merge duplicate status names in same project
-        .group_by(["project_id", "date", "status_name"])
+        # Group by column_id (or status_name if column_id is null)
+        .group_by(["project_id", "date", "column_id", "status_id"])
         .agg(
             [
+                pl.col("status_name").first(),
                 pl.col("status_category").first(),
                 pl.col("issue_count").sum(),
                 pl.col("column_position").min(),
-            ]
-        )
-        .select(
-            [
-                "project_id",
-                "date",
-                "status_name",
-                "status_category",
-                "issue_count",
-                "column_position",
             ]
         )
         .sort(["project_id", "date", "column_position"])

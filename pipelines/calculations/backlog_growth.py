@@ -52,7 +52,7 @@ def _calculate_issue_status_on_dates(
 
     # Create cartesian product: all issues × all dates
     issue_date_grid = issues_df.select(
-        ["id", "project_id", "status_id", "jira_created_at"]
+        ["id", "project_id", "status_id", "jira_created_at", "jira_updated_at"]
     ).join(date_range.select("date"), how="cross")
 
     # Filter out dates before issue was created
@@ -74,6 +74,7 @@ def _calculate_issue_status_on_dates(
                 "date",
                 "status_id",
                 "jira_created_at",
+                "jira_updated_at",
                 "last_status_change_at",
             ]
         )
@@ -98,6 +99,7 @@ def _calculate_issue_status_on_dates(
             [
                 pl.col("project_id").first(),
                 pl.col("jira_created_at").first(),
+                pl.col("jira_updated_at").first(),
                 # Use status from changelog if exists, otherwise use current status
                 pl.coalesce(
                     [pl.col("to_status_id").first(), pl.col("status_id").first()]
@@ -114,6 +116,7 @@ def _calculate_issue_status_on_dates(
                 "date",
                 "status_id",
                 "jira_created_at",
+                "jira_updated_at",
                 "last_status_change_at",
             ]
         )
@@ -217,6 +220,7 @@ def calculate_backlog_growth(
                             - pl.coalesce(
                                 [
                                     pl.col("last_status_change_at").cast(pl.Date),
+                                    pl.col("jira_updated_at").cast(pl.Date),
                                     pl.col("jira_created_at").cast(pl.Date),
                                 ]
                             )
@@ -231,11 +235,7 @@ def calculate_backlog_growth(
                     pl.len().cast(pl.Int64).alias("total_backlog_size"),
                     pl.col("age_days").mean().round(2).alias("avg_age_days"),
                     pl.col("is_stale").sum().cast(pl.Int64).alias("stale_issues_count"),
-                    pl.col("age_days")
-                    .max()
-                    .round(0)
-                    .cast(pl.Int64)
-                    .alias("oldest_issue_days"),
+                    pl.col("age_days").max().cast(pl.Int64).alias("oldest_issue_days"),
                 ]
             )
             .with_columns(

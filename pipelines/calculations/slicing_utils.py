@@ -1,12 +1,15 @@
-from typing import List, Optional
+from typing import Any, Optional
 
 import polars as pl
+from sqlalchemy import Engine
+
+from ..utils.polars_db import read_table
 
 
 def get_slice_rules(
-    conn_str_or_engine,
+    engine: Engine,
     project_id: Optional[str] = None,
-    target_metric_table: Optional[str] = None,
+    target_definition_id: Optional[str] = None,
 ) -> pl.DataFrame:
     """
     Fetch slice rules from the database.
@@ -16,37 +19,41 @@ def get_slice_rules(
     SELECT
         id as slice_rule_id,
         project_id,
-        target_metric_table,
-        slice_table_name,
+        target_definition_id,
         rule_name as slice_rule_name,
         source_table,
-        group_by_column,
-        filter_condition,
+        group_by_source_column as group_by_column,
         enabled
-    FROM metrics.metric_slice_rules
+    FROM metrics.slice_rules
     WHERE enabled = true
     """
 
     try:
-        rules_df = pl.read_database(query, conn_str_or_engine)
+        rules_df = read_table(engine, query)
     except Exception as e:
-        # Fallback if connection string/engine handling varies or table doesn't exist yet (tests)
         print(f"Error fetching rules: {e}")
         return pl.DataFrame()
 
     if rules_df.is_empty():
         return rules_df
 
-    # Filter logic
-    # We want rules that:
+    # Filter logic:
     # 1. Match the specific project_id OR have project_id as NULL (global)
-    # 2. Match the specific metric table OR have target_metric_table as 'default'
+    # 2. Match the specific target_definition_id OR have target_definition_id as NULL (default for all metrics)
+
+    # Cast to string for comparison if they are UUIDs
+    rules_df = rules_df.with_columns(
+        [
+            pl.col("project_id").cast(pl.Utf8),
+            pl.col("target_definition_id").cast(pl.Utf8),
+        ]
+    )
 
     filtered_rules = rules_df.filter(
-        (pl.col("project_id").is_null() | (pl.col("project_id") == project_id))
+        (pl.col("project_id").is_null() | (pl.col("project_id") == str(project_id)))
         & (
-            (pl.col("target_metric_table") == "default")
-            | (pl.col("target_metric_table") == target_metric_table)
+            pl.col("target_definition_id").is_null()
+            | (pl.col("target_definition_id") == str(target_definition_id))
         )
     )
 
@@ -56,10 +63,7 @@ def get_slice_rules(
 def apply_slicing(
     df: pl.DataFrame,
     rules_df: pl.DataFrame,
-    calculation_func,
-    base_columns: List[
-        str
-    ] = None,  # Not strictly needed if calculation_func handles returning key columns, but useful for context
+    calculation_func: Any,
 ) -> pl.DataFrame:
     """
     Apply slicing rules to a DataFrame by iterating over slice values and applying the calculation logic.
@@ -68,7 +72,6 @@ def apply_slicing(
         df: Base DataFrame.
         rules_df: Rules DataFrame.
         calculation_func: Function that takes (filtered_df) and returns a DataFrame of metrics.
-        base_columns: Optional list of columns to ensure are in the output if calculation_func doesn't preserve them (not used in this simplified version).
 
     Returns:
         concatenated DataFrame with slice_rule_id, slice_rule_name and slice_value.
@@ -86,32 +89,8 @@ def apply_slicing(
         group_col = rule["group_by_column"]
         source_table = rule.get("source_table", "")
         rule_project_id = rule.get("project_id")
-        filter_cond = rule.get("filter_condition")
 
-        # --- Filter Condition Logic ---
-        # Apply SQL-like filter if present.
-        # Note: For Polars, we assume filter_condition is a string that can be evaluated or is a simple equality.
-        # Since these are curated rules, we'll start with a basic evaluation if it looks like a Polars expression,
-        # otherwise we skip or handle very basic SQL-like strings.
         current_rule_df = df
-        if filter_cond:
-            try:
-                # Basic support for SQL-like equality: "column = 'value'" -> pl.col("column") == "value"
-                if "==" in filter_cond or "=" in filter_cond:
-                    # Very simple parser for common cases
-                    parts = filter_cond.replace("==", "=").split("=")
-                    if len(parts) == 2:
-                        col = parts[0].strip().strip('"').strip("'")
-                        val = parts[1].strip().strip('"').strip("'")
-                        if col in current_rule_df.columns:
-                            current_rule_df = current_rule_df.filter(pl.col(col) == val)
-                # If we want to support more complex Polars expressions, we could use eval() but it's risky.
-                # For now, we'll stick to simple equality or provide a way for the user to define rules.
-            except Exception as e:
-                print(f"Error applying filter condition '{filter_cond}': {e}")
-
-        if current_rule_df.is_empty():
-            continue
 
         # --- Robust Column Matching Logic ---
         df_cols_lower = {c.lower(): c for c in current_rule_df.columns}
@@ -193,7 +172,7 @@ def apply_slicing(
                     ]
                 )
 
-                # Ensure project_id is preserved if it was missing in calculation result but present in p_id
+                # Ensure project_id is preserved
                 if "project_id" not in result_df.columns and p_id is not None:
                     result_df = result_df.with_columns(pl.lit(p_id).alias("project_id"))
 

@@ -1,68 +1,73 @@
 """
-Lead Time Metrics Dagster Asset
-
-This asset calculates Lead Time metrics using Python/Polars logic
-(replacing the old SQL Materialized View approach).
+Lead Time Metrics Dagster Asset (Generic Long Metric Store)
 """
 
 from typing import Any
 
 import polars as pl
-from dagster import AssetExecutionContext, asset
+from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
 
 from pipelines.calculations import lead_time as lead_time_logic
+from pipelines.calculations.commitment_resolver import (
+    identify_commitment_points_from_rule,
+    identify_commitment_points_heuristic,
+    resolve_commitment_columns,
+)
+from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
-from pipelines.utils.polars_db import read_table, write_table
+from pipelines.utils.metric_registry import (
+    get_calculation_id,
+    get_definition_id,
+    get_project_agg_id,
+)
+from pipelines.utils.polars_db import read_table, write_fact_values
 
 
 @asset(
     group_name="metrics",
     deps=[
         "clean_jira_issues",
+        "clean_jira_issue_types",
         "clean_jira_boards",
         "clean_jira_board_columns",
         "clean_jira_issue_status_changelog",
     ],
-    description="Calculate Lead Time facts using Python/Polars logic",
+    description="Calculate Lead Time facts and write to generic fact_values",
     compute_kind="python",
 )
 def calculate_lead_time(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """
-    Calculate Lead Time metrics (In Progress → Done) for all issues.
-
-    This asset replaces the SQL Materialized View with Python/Polars logic,
-    providing debuggable, testable metrics calculation.
-
-    Outputs:
-    - metrics.fact_lead_time (base facts: per-issue lead time)
-    - metrics.fact_lead_time_slice (aggregated by issue type)
-    - metrics.fact_lead_time_bins (histogram distribution)
-    """
     engine = database.get_engine()
+
+    # 1. Resolve metadata
+    def_id = get_definition_id(engine, "lead_time")
+    calc_id = get_calculation_id(engine, "lead_time_days")
 
     context.log.info("Loading data from clean_jira schema...")
 
-    # Load required tables into Polars DataFrames
     issues_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, i.external_key AS key, it.name AS type_name, i.status_id,
-               i.jira_created_at, i.jira_resolved_at
+        SELECT i.id, i.project_id, i.external_key AS key, it.name AS type_name,
+               i.jira_created_at, i.jira_resolved_at, p.project_key
         FROM clean_jira.issues i
+        JOIN clean_jira.projects p ON i.project_id = p.id
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
         """,
     )
 
+    if issues_df.is_empty():
+        return {"status": "skipped", "reason": "No issues found"}
+
+    # Map project_agg_ids
+    project_ids = issues_df["project_id"].unique().to_list()
+    project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
+
     status_changelog_df = read_table(
         engine,
-        """
-        SELECT issue_id, from_status_id, to_status_id, changed_at
-        FROM clean_jira.issue_status_changelog
-        ORDER BY changed_at
-        """,
+        "SELECT issue_id, from_status_id, to_status_id, changed_at FROM clean_jira.issue_status_changelog",
     )
 
     boards_df = read_table(engine, "SELECT id, project_id, name FROM clean_jira.boards")
@@ -70,107 +75,160 @@ def calculate_lead_time(
     board_columns_df = read_table(
         engine,
         """
-        SELECT bc.id, bc.board_id, bc.name, bc.position, bcs.status_id
+        SELECT bc.id, bc.board_id, bc.name, bcs.status_id, bc.position
         FROM clean_jira.board_columns bc
         LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.board_column_id = bc.id
         """,
     )
 
-    context.log.info(
-        f"Loaded {len(issues_df)} issues, {len(status_changelog_df)} status changes, "
-        f"{len(boards_df)} boards"
-    )
+    # 2. Calculate BASE lead time facts
+    # Lead time is board-specific. We need to iterate over boards or projects.
+    all_lead_times = []
 
-    # =====================================================
-    # Calculate BASE lead time facts (per issue)
-    # =====================================================
-    context.log.info("Calculating lead time facts...")
-    lead_time_df = lead_time_logic.calculate_lead_time_facts(
-        issues_df=issues_df,
-        status_changelog_df=status_changelog_df,
-        boards_df=boards_df,
-        board_columns_df=board_columns_df,
-    )
+    for board in boards_df.to_dicts():
+        b_id = board["id"]
+        p_id = board["project_id"]
 
-    if lead_time_df.is_empty():
-        context.log.warning(
-            "⚠️ No lead time data calculated. Check board column configuration "
-            "(need 'In Progress' and 'Done' columns)."
+        # Resolve commitment columns for this board
+        rule = resolve_commitment_columns(engine, p_id, b_id, "lead_time_days")
+        if rule:
+            points = identify_commitment_points_from_rule(
+                rule, board_columns_df.filter(pl.col("board_id") == b_id)
+            )
+        else:
+            points = identify_commitment_points_heuristic(
+                board_columns_df.filter(pl.col("board_id") == b_id)
+            )
+
+        if not points["middle_status_ids"] or not points["end_status_ids"]:
+            continue
+
+        # Calculate for issues in this project
+        project_issues = issues_df.filter(pl.col("project_id") == p_id)
+        if project_issues.is_empty():
+            continue
+
+        lt_df = lead_time_logic.calculate_lead_time_per_issue(
+            project_issues,
+            status_changelog_df,
+            points["middle_status_ids"],
+            points["end_status_ids"],
         )
-        return {
-            "status": "warning",
-            "message": "No lead time data - check board configuration",
-            "fact_rows": 0,
-        }
 
-    context.log.info(f"Calculated lead time for {len(lead_time_df)} issues")
+        if not lt_df.is_empty():
+            # Add commitment_rule_id to result
+            lt_df = lt_df.with_columns(
+                pl.lit(points.get("commitment_rule_id")).alias("commitment_rule_id")
+            )
+            all_lead_times.append(lt_df)
 
-    # Write base facts to database
-    context.log.info("Writing to metrics.fact_lead_time...")
-    write_table(lead_time_df, engine, table="fact_lead_time", schema="metrics")
+    if not all_lead_times:
+        return {"status": "no_data"}
 
-    # =====================================================
-    # Calculate SLICED facts (Generic)
-    # =====================================================
-    context.log.info("Calculating lead time slices...")
-    from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
+    base_lt_wide = pl.concat(all_lead_times).unique(subset=["issue_id"])
 
-    rules_df = get_slice_rules(engine, target_metric_table="fact_lead_time")
-
-    def lead_time_slice_identity(df_subset):
-        # Return raw rows for the slice (NO AGGREGATION)
-        # Match schema: project_id, issue_id, issue_key, issue_type, commitment_start_at, commitment_end_at, lead_time_days
-        if df_subset.is_empty():
-            return pl.DataFrame()
-
-        return df_subset.select(
+    # 3. Transform to Long Format (fact_values)
+    def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value_col=None):
+        facts = df_wide.with_columns(
             [
-                "project_id",
-                "issue_id",
-                "issue_key",
-                "issue_type",
-                "commitment_start_at",
-                "commitment_end_at",
-                "lead_time_days",
+                pl.lit(calc_id).alias("metric_id"),
+                pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
+                # completion date -> time_id (YYYYMMDD)
+                pl.col("commitment_end_at")
+                .dt.strftime("%Y%m%d")
+                .cast(pl.Int32)
+                .alias("time_id"),
+                pl.col("lead_time_days").alias("value"),
+                pl.lit("issue").alias("entity_type"),
+                pl.col("issue_key").alias("entity_id"),
+                pl.lit(slice_rule_id).alias("slice_rule_id"),
+                pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
+                if slice_value_col
+                else pl.lit(None).alias("slice_value"),
+                pl.col("commitment_rule_id").cast(pl.Utf8).alias("commitment_rule_id"),
+                pl.col("commitment_start_at").alias("event_start_at"),
+                pl.col("commitment_end_at").alias("event_end_at"),
             ]
         )
 
-    # lead_time_df already has issue_type column (from type_name)
-    slice_df = apply_slicing(
-        lead_time_df, rules_df, lead_time_slice_identity, base_columns=["project_id"]
-    )
-
-    if not slice_df.is_empty():
-        context.log.info(
-            f"Writing {len(slice_df)} rows to metrics.fact_lead_time_slices..."
+        return facts.select(
+            [
+                "metric_id",
+                "project_agg_id",
+                "time_id",
+                "value",
+                "entity_type",
+                "entity_id",
+                "slice_rule_id",
+                "slice_value",
+                "commitment_rule_id",
+                "event_start_at",
+                "event_end_at",
+            ]
         )
-        write_table(slice_df, engine, table="fact_lead_time_slices", schema="metrics")
 
-    # =====================================================
-    # Calculate HISTOGRAM BINS (Base) - DEPRECATED / DROPPED
-    # =====================================================
-    # context.log.info("Calculating histogram bins... (Skipped - table dropped)")
-    # bins_df = lead_time_logic.calculate_histogram_bins(lead_time_df)
-    # write_table(bins_df, engine, table="fact_lead_time_bins", schema="metrics")
+    base_facts = transform_to_fact_values(base_lt_wide)
 
-    # =====================================================
-    # Return summary statistics
-    # =====================================================
-    avg_lead_time = (
-        float(lead_time_df["lead_time_days"].mean())
-        if not lead_time_df.is_empty()
-        else 0.0
-    )
+    # 4. Calculate Sliced facts
+    rules_df = get_slice_rules(engine, target_definition_id=def_id)
 
-    context.log.info(
-        f"✅ Lead Time calculation complete: "
-        f"{len(lead_time_df)} issues, avg {avg_lead_time:.2f} days"
+    # Heuristic for default rules: alias type_name
+    issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
+
+    def lead_time_slice_calc(df_subset):
+        # We need to re-run the board-specific logic but only for the subset of issues
+        # Actually, we can just filter the base_lt_wide if it contains issue_id
+        # But apply_slicing expects a function that takes a subset of the source (issues)
+        subset_ids = df_subset["id"].unique().to_list()
+        return base_lt_wide.filter(pl.col("issue_id").is_in(subset_ids))
+
+    all_facts = [base_facts]
+
+    if not rules_df.is_empty():
+        for rule in rules_df.to_dicts():
+            rule_id = rule["slice_rule_id"]
+            sliced_wide = apply_slicing(
+                issues_for_slicing,
+                rules_df.filter(pl.col("slice_rule_id") == rule_id),
+                lead_time_slice_calc,
+            )
+
+            if not sliced_wide.is_empty():
+                facts = transform_to_fact_values(
+                    sliced_wide, slice_rule_id=rule_id, slice_value_col="slice_value"
+                )
+                all_facts.append(facts)
+
+    final_df = pl.concat(all_facts)
+
+    # 5. Write to DB
+    time_id_start = final_df["time_id"].min()
+    time_id_end = final_df["time_id"].max()
+    project_agg_ids = list(project_agg_map.values())
+
+    rows_written = write_fact_values(
+        final_df,
+        engine,
+        metric_ids=[calc_id],
+        project_agg_ids=project_agg_ids,
+        time_id_start=time_id_start,
+        time_id_end=time_id_end,
     )
 
     return {
         "status": "success",
-        "fact_rows": len(lead_time_df),
-        "avg_lead_time_days": round(avg_lead_time, 2),
-        "slice_rows": len(slice_df) if not slice_df.is_empty() else 0,
-        "bins_rows": 0,  # DEPRECATED / DROPPED
+        "rows_written": rows_written,
+        "issues_processed": len(base_lt_wide),
     }
+
+
+@asset_check(asset=calculate_lead_time)
+def lead_time_data_quality_check(database: DatabaseResource) -> AssetCheckResult:
+    engine = database.get_engine()
+    calc_id = get_calculation_id(engine, "lead_time_days")
+
+    query = "SELECT COUNT(*) FROM metrics.fact_values WHERE metric_id = :calc_id"
+    df = read_table(engine, query, params={"calc_id": calc_id})
+    count = df[0, 0]
+
+    return AssetCheckResult(passed=count > 0, metadata={"row_count": count})

@@ -35,6 +35,7 @@ dependencies = [
     "pyarrow>=14.0.0,<16.0.0",  # Required for Polars <-> Pandas conversion
     # Configuration
     "pyyaml>=6.0.0,<7.0.0",  # YAML config file parsing
+    "adbc-driver-postgresql>=1.10.0",
 ]
 
 [project.optional-dependencies]

@@ -6,10 +6,12 @@ from datetime import datetime, timedelta, timezone
 
 import polars as pl
 
-from pipelines.calculations.backlog_health import (
+from pipelines.calculations.backlog_growth import (
     calculate_backlog_distribution,
     calculate_backlog_growth_trends,
-    calculate_backlog_health,
+)
+from pipelines.calculations.backlog_growth import (
+    calculate_backlog_growth as calculate_backlog_health,
 )
 
 
@@ -91,6 +93,7 @@ class TestBacklogHealth:
             field_values_df=field_values,
             field_keys_df=field_keys,
             stale_threshold_days=30,
+            days_back=0,
         )
 
         assert not result.is_empty()
@@ -136,6 +139,7 @@ class TestBacklogHealth:
             field_values_df=field_values,
             field_keys_df=field_keys,
             stale_threshold_days=30,
+            days_back=0,
         )
 
         assert result["total_backlog_size"][0] == 2

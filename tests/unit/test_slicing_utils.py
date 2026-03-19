@@ -36,34 +36,12 @@ class TestSlicingUtils:
         # rule-1, Bug (p1) -> 10 + 30 = 40
         # rule-1, Story (p1) -> 20
         # rule-1, Story (p2) -> 40
-        bug_res = result.filter(pl.col("slice_value") == "Bug")
+        bug_res = result.filter(
+            (pl.col("slice_value") == "Bug") & (pl.col("project_id") == "p1")
+        )
         assert bug_res["sum_val"][0] == 40
         assert bug_res["slice_rule_id"][0] == "rule-1"
         assert bug_res["slice_rule_name"][0] == "By Issue Type"
-
-    def test_apply_slicing_with_filter_condition(self, df):
-        rules_df = pl.DataFrame(
-            {
-                "slice_rule_id": ["rule-filtered"],
-                "slice_rule_name": ["High Priority Only"],
-                "group_by_column": ["issue_type"],
-                "filter_condition": ["priority = 'High'"],
-                "project_id": [None],
-                "enabled": [True],
-            }
-        )
-
-        def mock_calc(subset_df):
-            return subset_df.select(pl.col("value").sum().alias("sum_val"))
-
-        result = apply_slicing(df, rules_df, mock_calc)
-
-        # High priority items:
-        # Bug (p1) -> 10
-        # Story (p2) -> 40
-        assert len(result) == 2
-        assert result.filter(pl.col("slice_value") == "Bug")["sum_val"][0] == 10
-        assert result.filter(pl.col("slice_value") == "Story")["sum_val"][0] == 40
 
     def test_apply_slicing_project_specific(self, df):
         rules_df = pl.DataFrame(

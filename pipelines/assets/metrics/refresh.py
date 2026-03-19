@@ -1,7 +1,6 @@
-"""Metrics assets - refresh materialized views for BI layer.
+"""Metrics assets - summary stats from the generic fact_values store.
 
-This module implements the metrics layer (Gold) of the medallion architecture.
-Materialized views in the metrics schema are refreshed after data sync.
+Downstream of calculation assets; queries metrics.v_facts for aggregated stats.
 """
 
 from typing import Any
@@ -21,191 +20,156 @@ from pipelines.resources.database import DatabaseResource
 @asset(
     group_name="metrics",
     deps=["calculate_lead_time"],
-    description="Refresh lead time metrics",
+    description="Summarize lead time stats from fact_values",
     compute_kind="sql",
 )
 def metrics_lead_time(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Get stats from the metrics.fact_lead_time table.
-
-    This table contains lead time (creation to resolution) for all
-    resolved issues, calculated by the calculate_lead_time asset.
-    """
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        context.log.info("Getting lead time stats from fact_lead_time...")
-
-        try:
-            # Get stats directly from the fact table
-            result = conn.execute(
-                text(
-                    """
-                SELECT
-                    count(*) as total_issues,
-                    round(avg(lead_time_days)::numeric, 2) as avg_lead_time_days,
-                    round(min(lead_time_days)::numeric, 2) as min_lead_time_days,
-                    round(max(lead_time_days)::numeric, 2) as max_lead_time_days
-                FROM metrics.fact_lead_time
-            """
-                )
+        result = conn.execute(
+            text(
+                """
+            SELECT
+                count(*) as total_issues,
+                round(avg(value)::numeric, 2) as avg_lead_time_days,
+                round(min(value)::numeric, 2) as min_lead_time_days,
+                round(max(value)::numeric, 2) as max_lead_time_days
+            FROM metrics.v_facts
+            WHERE calc_code = 'lead_time_days'
+              AND slice_rule_id IS NULL
+        """
             )
-            stats = result.mappings().first()
+        )
+        stats = result.mappings().first()
 
-            return {
-                "status": "success",
-                "table": "fact_lead_time",
-                "stats": dict(stats) if stats else {},
-            }
-        except Exception as e:
-            context.log.error(f"Failed to get lead time stats: {e}")
-            raise
+    return {
+        "status": "success",
+        "calc_code": "lead_time_days",
+        "stats": dict(stats) if stats else {},
+    }
 
 
 @asset(
     group_name="metrics",
     deps=["calculate_velocity"],
-    description="Refresh velocity metrics",
+    description="Summarize velocity stats from fact_values",
     compute_kind="sql",
 )
 def metrics_velocity(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Get stats from the metrics.fact_velocity table.
-
-    This table contains velocity metrics (planned/completed issues and story points)
-    per sprint, calculated by the calculate_velocity asset.
-    """
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        context.log.info("Getting velocity stats from fact_velocity...")
-
-        try:
-            # fact_velocity is populated by calculate_velocity asset
-            result = conn.execute(
-                text(
-                    """
+        result = conn.execute(
+            text(
+                """
+            WITH sprints AS (
                 SELECT
-                    count(*) as total_sprints,
-                    round(
-                        avg(CASE WHEN planned_story_points > 0
-                            THEN completed_story_points * 100.0 / planned_story_points
-                            ELSE 0 END)::numeric, 2
-                    ) as avg_completion_rate_pct,
-                    round(avg(completed_issues)::numeric, 2) as avg_issues_per_sprint
-                FROM metrics.fact_velocity
-            """
-                )
+                    project_key,
+                    entity_id AS sprint_id,
+                    time_id,
+                    max(CASE WHEN calc_code = 'velocity_planned_sp' THEN value ELSE 0 END) AS planned_sp,
+                    max(CASE WHEN calc_code = 'velocity_completed_sp' THEN value ELSE 0 END) AS completed_sp,
+                    max(CASE WHEN calc_code = 'velocity_planned_count' THEN value ELSE 0 END) AS planned_count,
+                    max(CASE WHEN calc_code = 'velocity_completed_count' THEN value ELSE 0 END) AS completed_count
+                FROM metrics.v_facts
+                WHERE calc_code IN (
+                    'velocity_planned_sp', 'velocity_completed_sp',
+                    'velocity_planned_count', 'velocity_completed_count'
+                ) AND slice_rule_id IS NULL
+                GROUP BY project_key, entity_id, time_id
             )
-            stats = result.mappings().first()
+            SELECT
+                count(*) as total_sprints,
+                round(avg(CASE WHEN planned_sp > 0 THEN completed_sp * 100.0 / planned_sp ELSE 0 END)::numeric, 2) as avg_completion_rate_pct,
+                round(avg(completed_count)::numeric, 2) as avg_issues_per_sprint
+            FROM sprints
+        """
+            )
+        )
+        stats = result.mappings().first()
 
-            return {
-                "status": "success",
-                "table": "fact_velocity",
-                "stats": dict(stats) if stats else {},
-            }
-        except Exception as e:
-            context.log.error(f"Failed to get velocity stats: {e}")
-            raise
+    return {
+        "status": "success",
+        "calc_code": "velocity_*",
+        "stats": dict(stats) if stats else {},
+    }
 
 
 @asset(
     group_name="metrics",
-    deps=["calculate_lead_time"],
-    description="Refresh throughput metrics",
+    deps=["calculate_throughput"],
+    description="Summarize throughput stats from fact_values",
     compute_kind="sql",
 )
 def metrics_throughput(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Calculate throughput stats from metrics.fact_lead_time.
-
-    Throughput is calculated as issues completed per day.
-    """
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        context.log.info("Calculating throughput stats from fact_lead_time...")
-
-        try:
-            # Calculate throughput stats from fact_lead_time
-            # throughput = count of issues with commitment_end_at per day
-            result = conn.execute(
-                text(
-                    """
-                WITH daily_stats AS (
-                    SELECT
-                        DATE(commitment_end_at) as resolved_date,
-                        count(*) as issues_completed
-                    FROM metrics.fact_lead_time
-                    WHERE commitment_end_at IS NOT NULL
-                    GROUP BY DATE(commitment_end_at)
-                )
-                SELECT
-                    count(DISTINCT resolved_date) as days_with_data,
-                    sum(issues_completed) as total_completed,
-                    round(avg(issues_completed)::numeric, 2) as avg_daily_throughput
-                FROM daily_stats
-            """
-                )
+        result = conn.execute(
+            text(
+                """
+            SELECT
+                count(*) as total_weeks,
+                sum(value) as total_completed,
+                round(avg(value)::numeric, 2) as avg_weekly_throughput
+            FROM metrics.v_facts
+            WHERE calc_code = 'throughput_count'
+              AND slice_rule_id IS NULL
+        """
             )
-            stats = result.mappings().first()
+        )
+        stats = result.mappings().first()
 
-            return {
-                "status": "success",
-                "source": "fact_lead_time",
-                "type": "throughput_derived",
-                "stats": dict(stats) if stats else {},
-            }
-        except Exception as e:
-            context.log.error(f"Failed to calculate throughput stats: {e}")
-            raise
+    return {
+        "status": "success",
+        "calc_code": "throughput_count",
+        "stats": dict(stats) if stats else {},
+    }
 
 
 @asset(
     group_name="metrics",
     deps=["metrics_lead_time", "metrics_velocity", "metrics_throughput"],
-    description="Refresh all metrics stats",
+    description="Aggregate stats across all metrics",
     compute_kind="sql",
 )
 def metrics_all(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Get summarized stats for all metrics.
-
-    This ensures all metrics stats are available.
-    """
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        context.log.info("All metrics stats refreshed via individual assets")
-
-        # Get overall stats
         result = conn.execute(
             text(
                 """
             SELECT
-                (SELECT count(*) FROM metrics.fact_lead_time) as lead_time_records,
-                (SELECT count(*) FROM metrics.fact_velocity) as velocity_records,
-                (SELECT count(DISTINCT DATE(commitment_end_at)) FROM metrics.fact_lead_time WHERE commitment_end_at IS NOT NULL) as throughput_days
+                count(*) FILTER (WHERE calc_code = 'lead_time_days' AND slice_rule_id IS NULL) as lead_time_records,
+                count(DISTINCT entity_id) FILTER (
+                    WHERE calc_code = 'velocity_completed_sp' AND slice_rule_id IS NULL
+                ) as velocity_sprints,
+                count(*) FILTER (WHERE calc_code = 'throughput_count' AND slice_rule_id IS NULL) as throughput_weeks,
+                count(*) FILTER (WHERE calc_code = 'cfd_count') as cfd_records
+            FROM metrics.v_facts
         """
             )
         )
         stats = result.mappings().first()
 
-        return {
-            "status": "success",
-            "stats": dict(stats) if stats else {},
-        }
-
-
-# Asset checks for metrics quality
+    return {
+        "status": "success",
+        "stats": dict(stats) if stats else {},
+    }
 
 
 @asset_check(asset=metrics_lead_time)
@@ -213,15 +177,14 @@ def check_lead_time_no_nulls(
     context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
-    """Ensure lead_time_days is populated for all resolved issues."""
     engine = database.get_engine()
 
     with engine.connect() as conn:
         result = conn.execute(
             text(
                 """
-            SELECT count(*) FROM metrics.fact_lead_time
-            WHERE lead_time_days IS NULL
+            SELECT count(*) FROM metrics.v_facts
+            WHERE calc_code = 'lead_time_days' AND value IS NULL
         """
             )
         )
@@ -238,15 +201,14 @@ def check_lead_time_positive(
     context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
-    """Ensure lead_time_days is positive."""
     engine = database.get_engine()
 
     with engine.connect() as conn:
         result = conn.execute(
             text(
                 """
-            SELECT count(*) FROM metrics.fact_lead_time
-            WHERE lead_time_days < 0
+            SELECT count(*) FROM metrics.v_facts
+            WHERE calc_code = 'lead_time_days' AND value < 0
         """
             )
         )
@@ -263,18 +225,24 @@ def check_velocity_completion_rate_valid(
     context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
-    """Ensure completed_story_points does not exceed planned_story_points unreasonably."""
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        # Check if completed is more than 500% of planned (allows significant scope creep)
-        # We also ignore small sprints (planned < 10 SP) as they are prone to high variance
         result = conn.execute(
             text(
                 """
-            SELECT count(*) FROM metrics.fact_velocity
-            WHERE planned_story_points > 10
-              AND completed_story_points > planned_story_points * 5.0
+            WITH sprints AS (
+                SELECT
+                    entity_id,
+                    max(CASE WHEN calc_code = 'velocity_planned_sp' THEN value ELSE 0 END) AS planned_sp,
+                    max(CASE WHEN calc_code = 'velocity_completed_sp' THEN value ELSE 0 END) AS completed_sp
+                FROM metrics.v_facts
+                WHERE calc_code IN ('velocity_planned_sp', 'velocity_completed_sp')
+                  AND slice_rule_id IS NULL
+                GROUP BY entity_id
+            )
+            SELECT count(*) FROM sprints
+            WHERE planned_sp > 10 AND completed_sp > planned_sp * 5.0
         """
             )
         )
@@ -291,15 +259,15 @@ def check_throughput_no_future_dates(
     context: AssetCheckExecutionContext,
     database: DatabaseResource,
 ) -> AssetCheckResult:
-    """Ensure no throughput records have future dates."""
     engine = database.get_engine()
 
     with engine.connect() as conn:
         result = conn.execute(
             text(
                 """
-            SELECT count(*) FROM metrics.fact_lead_time
-            WHERE commitment_end_at > CURRENT_DATE + INTERVAL '1 day'
+            SELECT count(*) FROM metrics.v_facts
+            WHERE calc_code = 'throughput_count'
+              AND full_date > CURRENT_DATE + INTERVAL '1 day'
         """
             )
         )

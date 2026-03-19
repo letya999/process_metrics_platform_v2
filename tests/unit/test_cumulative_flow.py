@@ -110,7 +110,9 @@ class TestCumulativeFlow:
         )
 
         boards = pl.DataFrame({})
-        board_columns = pl.DataFrame({"status_id": ["S1", "S2"], "position": [1, 2]})
+        board_columns = pl.DataFrame(
+            {"id": ["C1", "C2"], "status_id": ["S1", "S2"], "position": [1, 2]}
+        )
 
         # Mock datetime.now() logic by expecting dates relative to today in the function,
         # but here we can just verify the output structure.
