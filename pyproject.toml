@@ -32,7 +32,7 @@ dependencies = [
     # Data processing
     "polars>=0.20.0,<1.0.0",
     "pandas>=2.0.0,<3.0.0",  # For Polars bridge to SQLAlchemy
-    "pyarrow>=14.0.0,<16.0.0",  # Required for Polars <-> Pandas conversion
+    "pyarrow>=17.0.0",  # Required for Polars <-> Pandas conversion
     # Configuration
     "pyyaml>=6.0.0,<7.0.0",  # YAML config file parsing
     "adbc-driver-postgresql>=1.10.0",
@@ -48,7 +48,7 @@ dev = [
     "httpx>=0.28.0,<1.0.0",
     # Linting
     "ruff>=0.8.0,<1.0.0",
-    "black>=24.0.0,<25.0.0",
+    "black>=26.3.1",
     # Pre-commit
     "pre-commit>=4.0.0,<5.0.0",
 ]
