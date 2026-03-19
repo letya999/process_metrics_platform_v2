@@ -123,13 +123,18 @@ def apply_slicing(
         # 2. If not in DF, resolve via SmartSlicer (Dynamic Join Path)
         current_df = df
         if not target_col:
-            # BUG #3: Fix SmartSlicer full_target construction
+            rule_source_table = rule.get("source_table", "")
             if "." in group_col:
-                # If group_col looks like 'table.column', use it with schema from source_table
+                # group_col already looks like 'table.column' — qualify with schema
                 schema = source_table.split(".")[0]
                 full_target = f"{schema}.{group_col}"
+            elif rule_source_table:
+                # Rule encodes the target table explicitly — use it directly instead of
+                # BFS discovery which resolves to the first FK neighbor with a matching
+                # column name (e.g. projects.name instead of issue_types.name).
+                full_target = f"{rule_source_table}.{group_col}"
             else:
-                # Use find_target_for_column to search for the column in adjacent tables
+                # Fallback: search FK-adjacent tables (no source_table in rule)
                 full_target = slicer.find_target_for_column(source_table, group_col)
 
             if not full_target:
