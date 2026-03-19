@@ -14,7 +14,7 @@ JIRA Sprint Report Definitions (based on actual Jira behavior):
    - The formula: Commitment = (Issues at start) - (Issues removed after start)
 
 2. **COMPLETED (Fact)**:
-   - ALL issues that reached "Done" status by sprint end
+   - Issues in final sprint scope that became "Done" DURING the sprint window
    - INCLUDING scope creep (issues added after start)
    - Story Points value at sprint END
 
@@ -470,14 +470,20 @@ def identify_completed_issues(
     Identify issues from scope that were "Done" by sprint end.
 
     Logic:
-    1. Check status_changelog for the status at sprint end time.
-    2. If status at end is in done_status_ids -> completed.
-    3. Fallback: if no status changelog, check current status.
+    1. Determine candidate issues that are "Done" at sprint end.
+    2. Keep only candidates that have evidence of completion INSIDE sprint window:
+       - transition to done in status changelog within (start_date, end_date], OR
+       - jira_resolved_at inside (start_date, end_date].
+    3. This aligns with Jira Sprint Report "completedIssues" semantics.
 
     Returns DataFrame with columns: [issue_id, sprint_id, is_completed]
     """
     sprint_dates = sprints_df.select(
-        ["id", pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date")]
+        [
+            "id",
+            "start_date",
+            pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date"),
+        ]
     )
 
     scope_with_dates = scope_df.join(
@@ -485,12 +491,29 @@ def identify_completed_issues(
     )
 
     if status_changelog_df.is_empty() or not done_status_ids:
-        if allow_current_status_fallback:
-            # Fallback: use current status from issues_df
-            return _identify_completed_by_current_status(
-                scope_df, issues_df, done_status_ids
+        if not allow_current_status_fallback:
+            return pl.DataFrame(schema={"issue_id": pl.Utf8, "sprint_id": pl.Utf8})
+        # No status history: use strict resolved-in-window fallback.
+        issues_status = issues_df.select(
+            ["id", "status_id", "jira_resolved_at"]
+        ).rename({"id": "issue_id"})
+        return (
+            scope_with_dates.join(issues_status, on="issue_id", how="left")
+            .filter(
+                pl.col("status_id")
+                .cast(pl.Utf8)
+                .str.to_lowercase()
+                .is_in(done_status_ids)
+                & pl.col("jira_resolved_at").is_not_null()
+                & pl.col("start_date").is_not_null()
+                & pl.col("effective_end_date").is_not_null()
+                & (pl.col("jira_resolved_at") > pl.col("start_date"))
+                & (pl.col("jira_resolved_at") <= pl.col("effective_end_date"))
             )
-        return pl.DataFrame(schema={"issue_id": pl.Utf8, "sprint_id": pl.Utf8})
+            .select(["issue_id", "sprint_id"])
+            .unique()
+            .with_columns(pl.lit(True).alias("is_completed"))
+        )
 
     # Find the status at sprint end for each issue
     status_at_end = (
@@ -578,6 +601,59 @@ def identify_completed_issues(
             completed = pl.concat([completed, fallback_completed]).unique()
     else:
         completed = completed_from_changelog
+
+    # Jira completedIssues ~= completed during sprint window.
+    # Require explicit completion evidence inside sprint interval.
+    done_transitions_in_window = (
+        scope_with_dates.join(status_changelog_df, on="issue_id", how="left")
+        .filter(
+            pl.col("changed_at").is_not_null()
+            & pl.col("start_date").is_not_null()
+            & pl.col("effective_end_date").is_not_null()
+            & (pl.col("changed_at") > pl.col("start_date"))
+            & (pl.col("changed_at") <= pl.col("effective_end_date"))
+            & pl.col("to_status_id")
+            .cast(pl.Utf8)
+            .str.to_lowercase()
+            .is_in(done_status_ids)
+        )
+        .select(["issue_id", "sprint_id"])
+        .unique()
+    )
+
+    resolved_in_window = (
+        scope_with_dates.join(
+            issues_df.select(["id", "jira_resolved_at"]).rename({"id": "issue_id"}),
+            on="issue_id",
+            how="left",
+        )
+        .filter(
+            pl.col("jira_resolved_at").is_not_null()
+            & pl.col("start_date").is_not_null()
+            & pl.col("effective_end_date").is_not_null()
+            & (pl.col("jira_resolved_at") > pl.col("start_date"))
+            & (pl.col("jira_resolved_at") <= pl.col("effective_end_date"))
+        )
+        .select(["issue_id", "sprint_id"])
+        .unique()
+    )
+
+    completion_window_evidence = pl.concat(
+        [done_transitions_in_window, resolved_in_window]
+    ).unique()
+
+    if completion_window_evidence.is_empty():
+        return pl.DataFrame(
+            schema={
+                "issue_id": pl.Utf8,
+                "sprint_id": pl.Utf8,
+                "is_completed": pl.Boolean,
+            }
+        )
+
+    completed = completed.join(
+        completion_window_evidence, on=["issue_id", "sprint_id"], how="inner"
+    )
 
     return completed.with_columns(pl.lit(True).alias("is_completed"))
 
