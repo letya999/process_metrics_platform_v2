@@ -38,14 +38,36 @@ def calculate_backlog_growth(
 ) -> dict[str, Any]:
     engine = database.get_engine()
 
+    def _maybe_calc_id(code: str) -> str | None:
+        try:
+            return get_calculation_id(engine, code)
+        except Exception:
+            return None
+
     # 1. Resolve metadata
     def_id = get_definition_id(engine, "backlog_growth")
-    calc_map = {
-        "backlog_size": get_calculation_id(engine, "backlog_size"),
-        "backlog_created": get_calculation_id(engine, "backlog_created"),
-        "backlog_resolved": get_calculation_id(engine, "backlog_resolved"),
-        "backlog_net_growth": get_calculation_id(engine, "backlog_net_growth"),
+    calc_map: dict[str, str] = {}
+
+    required = {
+        "total_backlog_size": "backlog_size",
+        "created_daily": "backlog_created",
+        "closed_daily": "backlog_resolved",
+        "net_growth_daily": "backlog_net_growth",
     }
+    for source_col, code in required.items():
+        calc_map[source_col] = get_calculation_id(engine, code)
+
+    optional = {
+        "avg_age_days": "backlog_avg_age_days",
+        "stale_issues_count": "backlog_stale_count",
+        "oldest_issue_days": "backlog_oldest_days",
+        "stale_percentage": "backlog_stale_pct",
+    }
+    for source_col, code in optional.items():
+        maybe_id = _maybe_calc_id(code)
+        if maybe_id:
+            calc_map[source_col] = maybe_id
+
     metric_ids = list(calc_map.values())
 
     context.log.info("Loading data from clean_jira schema...")
@@ -123,52 +145,41 @@ def calculate_backlog_growth(
 
     # 3. Transform to Long Format (fact_values)
     def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value_col=None):
+        value_vars = [col for col in calc_map if col in df_wide.columns]
+        if not value_vars:
+            return pl.DataFrame()
+
         melted = df_wide.melt(
             id_vars=["project_id", "fact_date"]
             + ([slice_value_col] if slice_value_col else []),
-            value_vars=[
-                "total_backlog_size",
-                "created_daily",
-                "closed_daily",
-                "net_growth_daily",
-            ],
+            value_vars=value_vars,
             variable_name="calc_source",
             value_name="value",
         )
 
-        calc_rename = {
-            "total_backlog_size": "backlog_size",
-            "created_daily": "backlog_created",
-            "closed_daily": "backlog_resolved",
-            "net_growth_daily": "backlog_net_growth",
-        }
-
         # Map IDs
-        melted = melted.with_columns(
+        mapped = melted.with_columns(
             [
-                pl.col("calc_source")
-                .replace(calc_rename)
-                .replace(calc_map)
-                .alias("metric_id"),
+                pl.col("calc_source").replace(calc_map).alias("metric_id"),
                 pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
                 # fact_date -> time_id (YYYYMMDD)
                 pl.col("fact_date")
                 .dt.strftime("%Y%m%d")
                 .cast(pl.Int32)
                 .alias("time_id"),
-                pl.lit(None).alias("entity_type"),
-                pl.lit(None).alias("entity_id"),
-                pl.lit(slice_rule_id).alias("slice_rule_id"),
+                pl.lit(None).cast(pl.Utf8).alias("entity_type"),
+                pl.lit(None).cast(pl.Utf8).alias("entity_id"),
+                pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
                 pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
                 if slice_value_col
-                else pl.lit(None).alias("slice_value"),
-                pl.lit(None).alias("commitment_rule_id"),
-                pl.lit(None).alias("event_start_at"),
-                pl.lit(None).alias("event_end_at"),
+                else pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
             ]
         )
 
-        return melted.select(
+        return mapped.select(
             [
                 "metric_id",
                 "project_agg_id",
@@ -182,7 +193,7 @@ def calculate_backlog_growth(
                 "event_start_at",
                 "event_end_at",
             ]
-        )
+        ).drop_nulls(subset=["value"])
 
     base_facts = transform_to_fact_values(health_wide)
 
@@ -237,7 +248,7 @@ def calculate_backlog_growth(
             )
 
             if not sliced_wide.is_empty():
-                # Filter rows where all 4 values are 0
+                # Filter rows where all 4 main values are 0
                 sliced_wide = sliced_wide.filter(
                     (pl.col("total_backlog_size") > 0)
                     | (pl.col("created_daily") > 0)
@@ -254,6 +265,9 @@ def calculate_backlog_growth(
     final_df = pl.concat(all_facts)
 
     # 5. Write to DB
+    if final_df.is_empty():
+        return {"status": "no_data"}
+
     time_id_start = final_df["time_id"].min()
     time_id_end = final_df["time_id"].max()
     project_agg_ids = list(project_agg_map.values())
@@ -271,6 +285,7 @@ def calculate_backlog_growth(
         "status": "success",
         "rows_written": rows_written,
         "days_processed": len(health_wide["fact_date"].unique()),
+        "metric_ids": metric_ids,
     }
 
 

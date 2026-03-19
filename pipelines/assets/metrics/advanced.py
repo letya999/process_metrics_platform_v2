@@ -51,8 +51,9 @@ def calculate_advanced_metrics(
         engine,
         """
         SELECT i.id, i.project_id, i.external_key AS key, it.name AS type_name,
-               i.status_id, i.jira_created_at
+               i.status_id, i.jira_created_at, p.external_key AS project_key
         FROM clean_jira.issues i
+        JOIN clean_jira.projects p ON i.project_id = p.id
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
         """,
     )
@@ -126,11 +127,13 @@ def calculate_advanced_metrics(
                 pl.col("age_days").alias("value"),
                 pl.lit("issue").alias("entity_type"),
                 pl.col("issue_key").alias("entity_id"),
-                pl.lit(None).alias("slice_rule_id"),
-                pl.lit(None).alias("slice_value"),
-                pl.lit(None).alias("commitment_rule_id"),
-                pl.col("commitment_start_at").alias("event_start_at"),
-                pl.lit(None).cast(pl.Datetime).alias("event_end_at"),
+                pl.lit(None).cast(pl.Utf8).alias("slice_rule_id"),
+                pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                pl.col("commitment_start_at")
+                .cast(pl.Datetime("us", "UTC"))
+                .alias("event_start_at"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
             ]
         ).select(
             [
@@ -167,11 +170,13 @@ def calculate_advanced_metrics(
                 .alias("time_id"),
                 pl.lit("issue").alias("entity_type"),
                 pl.col("issue_key").alias("entity_id"),
-                pl.lit(None).alias("slice_rule_id"),
-                pl.lit(None).alias("slice_value"),
-                pl.lit(None).alias("commitment_rule_id"),
-                pl.lit(None).cast(pl.Datetime).alias("event_start_at"),
-                pl.col("completion_date").alias("event_end_at"),
+                pl.lit(None).cast(pl.Utf8).alias("slice_rule_id"),
+                pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+                pl.col("completion_date")
+                .cast(pl.Datetime("us", "UTC"))
+                .alias("event_end_at"),
             ]
         ).select(
             [

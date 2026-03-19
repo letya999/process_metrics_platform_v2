@@ -40,7 +40,7 @@ def calculate_cumulative_flow_diagram(
     issues_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, i.type_id, i.status_id, i.jira_created_at, p.project_key
+        SELECT i.id, i.project_id, i.type_id, i.status_id, i.jira_created_at, p.external_key AS project_key
         FROM clean_jira.issues i
         JOIN clean_jira.projects p ON i.project_id = p.id
         """,
@@ -100,11 +100,11 @@ def calculate_cumulative_flow_diagram(
             pl.coalesce([pl.col("column_id"), pl.col("status_id")])
             .cast(pl.Utf8)
             .alias("entity_id"),
-            pl.lit(None).alias("slice_rule_id"),
-            pl.lit(None).alias("slice_value"),
-            pl.lit(None).alias("commitment_rule_id"),
-            pl.lit(None).alias("event_start_at"),
-            pl.lit(None).alias("event_end_at"),
+            pl.lit(None).cast(pl.Utf8).alias("slice_rule_id"),
+            pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+            pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+            pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+            pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
         ]
     )
 

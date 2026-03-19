@@ -7,7 +7,7 @@ os.environ["POSTGRES_HOST"] = "localhost"
 
 from dagster import build_asset_context
 
-from pipelines.assets.metrics.velocity import calculate_velocity
+from pipelines.assets.metrics.cumulative_flow import calculate_cumulative_flow_diagram
 from pipelines.resources.database import DatabaseResource
 
 
@@ -29,5 +29,5 @@ class LocalDatabaseResource(DatabaseResource):
 if __name__ == "__main__":
     context = build_asset_context()
     database = LocalDatabaseResource()
-    result = calculate_velocity(context, database)
+    result = calculate_cumulative_flow_diagram(context, database)
     print("Result:", result)

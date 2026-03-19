@@ -45,7 +45,7 @@ def calculate_throughput(
         engine,
         """
         SELECT i.id, i.project_id, i.external_key AS key, it.name AS type_name,
-               i.jira_created_at, i.jira_resolved_at, p.project_key
+               i.jira_created_at, i.jira_resolved_at, p.external_key AS project_key
         FROM clean_jira.issues i
         JOIN clean_jira.projects p ON i.project_id = p.id
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
@@ -87,7 +87,10 @@ def calculate_throughput(
         return {"status": "no_data"}
 
     # 3. Transform to Long Format (fact_values)
-    def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value_col=None):
+    def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value=None):
+        if df_wide.is_empty():
+            return pl.DataFrame()
+
         facts = df_wide.with_columns(
             [
                 pl.lit(calc_id).alias("metric_id"),
@@ -100,13 +103,13 @@ def calculate_throughput(
                 pl.col("issues_completed").alias("value"),
                 pl.lit("week").alias("entity_type"),
                 pl.col("week_start_date").dt.strftime("%Y-%m-%d").alias("entity_id"),
-                pl.lit(slice_rule_id).alias("slice_rule_id"),
-                pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
-                if slice_value_col
-                else pl.lit(None).alias("slice_value"),
-                pl.lit(None).alias("commitment_rule_id"),
-                pl.lit(None).alias("event_start_at"),
-                pl.lit(None).alias("event_end_at"),
+                pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
+                pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
+                if slice_value is not None
+                else pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
             ]
         )
 
@@ -124,14 +127,13 @@ def calculate_throughput(
                 "event_start_at",
                 "event_end_at",
             ]
-        )
+        ).drop_nulls(subset=["value"])
 
     base_facts = transform_to_fact_values(throughput_wide)
 
     # 4. Calculate Sliced facts
     rules_df = get_slice_rules(engine, target_definition_id=def_id)
 
-    # Heuristic for default rules: alias type_name
     issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
 
     def throughput_slice_calc(df_subset):
@@ -154,19 +156,37 @@ def calculate_throughput(
                 throughput_slice_calc,
             )
 
-            if not sliced_wide.is_empty():
-                sliced_wide = sliced_wide.filter(pl.col("issues_completed") > 0)
-                if not sliced_wide.is_empty():
+            if sliced_wide.is_empty():
+                continue
+
+            if "slice_value" in sliced_wide.columns:
+                groups = sliced_wide.partition_by(["slice_value"])
+                for group_df in groups:
+                    slice_val = group_df["slice_value"][0]
+                    filtered_group = group_df.filter(pl.col("issues_completed") > 0)
+                    if not filtered_group.is_empty():
+                        facts = transform_to_fact_values(
+                            filtered_group,
+                            slice_rule_id=rule_id,
+                            slice_value=str(slice_val),
+                        )
+                        all_facts.append(facts)
+            else:
+                filtered_group = sliced_wide.filter(pl.col("issues_completed") > 0)
+                if not filtered_group.is_empty():
                     facts = transform_to_fact_values(
-                        sliced_wide,
+                        filtered_group,
                         slice_rule_id=rule_id,
-                        slice_value_col="slice_value",
+                        slice_value=None,
                     )
                     all_facts.append(facts)
 
     final_df = pl.concat(all_facts)
 
     # 5. Write to DB
+    if final_df.is_empty():
+        return {"status": "no_data"}
+
     time_id_start = final_df["time_id"].min()
     time_id_end = final_df["time_id"].max()
     project_agg_ids = list(project_agg_map.values())
@@ -184,6 +204,7 @@ def calculate_throughput(
         "status": "success",
         "rows_written": rows_written,
         "weeks_processed": len(throughput_wide["week_start_date"].unique()),
+        "metric_ids": [calc_id],
     }
 
 

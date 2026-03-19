@@ -8,6 +8,7 @@ import polars as pl
 
 from pipelines.calculations.cumulative_flow import (
     _calculate_issue_status_on_dates,
+    calculate_cfd_aggregates,
     calculate_cumulative_flow_diagram,
 )
 
@@ -168,3 +169,81 @@ class TestCumulativeFlow:
         )
 
         assert not result.is_empty()
+
+    def test_calculate_issue_status_on_dates_empty_inputs(self):
+        result = _calculate_issue_status_on_dates(
+            pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
+        )
+        assert result.is_empty()
+        assert "issue_id" in result.columns
+
+    def test_calculate_issue_status_on_dates_without_changelog(self):
+        issues = pl.DataFrame(
+            {
+                "id": ["ISS-1"],
+                "project_id": ["PROJ-1"],
+                "status_id": ["S1"],
+                "jira_created_at": [datetime(2024, 1, 1)],
+            }
+        )
+        dates = pl.DataFrame({"date": [datetime(2024, 1, 1).date()]})
+        result = _calculate_issue_status_on_dates(issues, pl.DataFrame(), dates)
+        assert result.height == 1
+        assert result["status_id"][0] == "S1"
+
+    def test_calculate_cfd_handles_list_status_id(self, monkeypatch):
+        issues = pl.DataFrame(
+            {
+                "id": ["ISS-1"],
+                "project_id": ["PROJ-1"],
+                "status_id": ["S1"],
+                "jira_created_at": [datetime(2024, 1, 1)],
+            }
+        )
+        statuses = pl.DataFrame(
+            {
+                "id": ["S1"],
+                "project_id": ["PROJ-1"],
+                "name": ["Status 1"],
+                "category": ["todo"],
+            }
+        )
+
+        monkeypatch.setattr(
+            "pipelines.calculations.cumulative_flow._calculate_issue_status_on_dates",
+            lambda *_args, **_kwargs: pl.DataFrame(
+                {
+                    "issue_id": ["ISS-1"],
+                    "project_id": ["PROJ-1"],
+                    "date": [datetime(2024, 1, 1).date()],
+                    "status_id": [["S1"]],
+                }
+            ),
+        )
+
+        result = calculate_cumulative_flow_diagram(
+            issues,
+            pl.DataFrame(),
+            statuses,
+            pl.DataFrame(),
+            pl.DataFrame(),
+            days_back=1,
+        )
+        assert not result.is_empty()
+
+    def test_calculate_cfd_aggregates_empty_and_trend(self):
+        empty = calculate_cfd_aggregates(pl.DataFrame())
+        assert empty.is_empty()
+
+        cfd_df = pl.DataFrame(
+            {
+                "project_id": ["P1"] * 8,
+                "status_name": ["In Progress"] * 8,
+                "date": [datetime(2024, 1, i + 1).date() for i in range(8)],
+                "issue_count": [1, 1, 1, 1, 1, 2, 2, 3],
+            }
+        )
+
+        result = calculate_cfd_aggregates(cfd_df)
+        assert result.height == 1
+        assert result["trend"][0] in {"increasing", "decreasing", "stable"}

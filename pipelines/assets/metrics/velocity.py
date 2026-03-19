@@ -53,11 +53,11 @@ def calculate_velocity(
 
     context.log.info("Loading data from clean_jira schema...")
 
-    # Load data (keeping queries same as before but optimizing where possible)
+    # Load data
     sprints_df = read_table(
         engine,
         """
-        SELECT DISTINCT s.id, s.project_id, s.name, s.start_date, s.end_date, s.complete_date, p.project_key
+        SELECT DISTINCT s.id, s.project_id, s.name, s.start_date, s.end_date, s.complete_date, p.external_key AS project_key
         FROM clean_jira.sprints s
         JOIN clean_jira.projects p ON s.project_id = p.id
         INNER JOIN clean_jira.sprint_issues si ON si.sprint_id = s.id
@@ -71,7 +71,7 @@ def calculate_velocity(
     if sprints_df.is_empty():
         return {"status": "skipped", "reason": "No sprints found"}
 
-    # Map project_agg_ids
+    # Map project_agg_ids dynamically
     project_ids = sprints_df["project_id"].unique().to_list()
     project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
 
@@ -104,10 +104,6 @@ def calculate_velocity(
     field_keys_df = read_table(
         engine, "SELECT id, external_key, name FROM clean_jira.field_keys"
     )
-
-    # Resolve unit fields per project
-    # We override field_keys_df in the logic if specific fields are configured in metrics.units
-    # For now, we'll let extract_story_points do its heuristic but we COULD pass it the field_id.
 
     field_values_df = read_table(
         engine,
@@ -164,22 +160,26 @@ def calculate_velocity(
         return {"status": "no_data"}
 
     # 3. Transform to Long Format (fact_values)
-    def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value_col=None):
+    def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value=None):
+        if df_wide.is_empty():
+            return pl.DataFrame()
+
+        value_vars = [
+            "planned_story_points",
+            "completed_story_points",
+            "planned_issues",
+            "completed_issues",
+        ]
+
         melted = df_wide.melt(
-            id_vars=["project_id", "iteration_id", "end_date"]
-            + ([slice_value_col] if slice_value_col else []),
-            value_vars=[
-                "planned_story_points",
-                "completed_story_points",
-                "planned_issues",
-                "completed_issues",
-            ],
+            id_vars=["project_id", "iteration_id", "end_date"],
+            value_vars=value_vars,
             variable_name="calc_code",
             value_name="value",
         )
 
-        # Map IDs
-        melted = melted.with_columns(
+        # Map IDs and add static columns
+        mapped = melted.with_columns(
             [
                 pl.col("calc_code").replace(calc_map).alias("metric_id"),
                 pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
@@ -191,16 +191,22 @@ def calculate_velocity(
                 pl.lit("sprint").alias("entity_type"),
                 pl.col("iteration_id").cast(pl.Utf8).alias("entity_id"),
                 pl.lit(slice_rule_id).alias("slice_rule_id"),
-                pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
-                if slice_value_col
-                else pl.lit(None).alias("slice_value"),
                 pl.lit(None).alias("commitment_rule_id"),
-                pl.lit(None).alias("event_start_at"),
-                pl.lit(None).alias("event_end_at"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
             ]
         )
 
-        return melted.select(
+        if slice_value:
+            mapped = mapped.with_columns(
+                pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
+            )
+        else:
+            mapped = mapped.with_columns(
+                pl.lit(None).cast(pl.Utf8).alias("slice_value")
+            )
+
+        return mapped.select(
             [
                 "metric_id",
                 "project_agg_id",
@@ -214,14 +220,13 @@ def calculate_velocity(
                 "event_start_at",
                 "event_end_at",
             ]
-        )
+        ).drop_nulls(subset=["value"])
 
     base_facts = transform_to_fact_values(velocity_wide)
 
     # 4. Calculate Sliced facts
     rules_df = get_slice_rules(engine, target_definition_id=def_id)
 
-    # Heuristic for default rules: alias type_name
     issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
 
     def velocity_slice_calc(df_subset):
@@ -239,30 +244,44 @@ def calculate_velocity(
             issue_statuses_df=issue_statuses_df,
         )
 
-    # apply_slicing returns a concatenated DF of slices
-    # We need to process each slice individually to get the rule info
     all_facts = [base_facts]
 
     if not rules_df.is_empty():
         for rule in rules_df.to_dicts():
             rule_id = rule["slice_rule_id"]
-
-            # Apply slicing for ONE rule at a time to keep it manageable
-            one_rule_df = rules_df.filter(pl.col("slice_rule_id") == rule_id)
             sliced_wide = apply_slicing(
-                issues_for_slicing, one_rule_df, velocity_slice_calc
+                issues_for_slicing,
+                rules_df.filter(pl.col("slice_rule_id") == rule_id),
+                velocity_slice_calc,
             )
+            if sliced_wide.is_empty():
+                continue
 
-            if not sliced_wide.is_empty():
-                # Filter zeros
-                sliced_wide = sliced_wide.filter(
+            # If apply_slicing implementation already provides slice_value, preserve it.
+            if "slice_value" in sliced_wide.columns:
+                groups = sliced_wide.partition_by(["slice_value"])
+                for group_df in groups:
+                    slice_val = group_df["slice_value"][0]
+                    filtered_group = group_df.filter(
+                        (pl.col("planned_issues") > 0)
+                        | (pl.col("completed_issues") > 0)
+                    )
+                    if not filtered_group.is_empty():
+                        facts = transform_to_fact_values(
+                            filtered_group,
+                            slice_rule_id=rule_id,
+                            slice_value=slice_val,
+                        )
+                        all_facts.append(facts)
+            else:
+                filtered_group = sliced_wide.filter(
                     (pl.col("planned_issues") > 0) | (pl.col("completed_issues") > 0)
                 )
-                if not sliced_wide.is_empty():
+                if not filtered_group.is_empty():
                     facts = transform_to_fact_values(
-                        sliced_wide,
+                        filtered_group,
                         slice_rule_id=rule_id,
-                        slice_value_col="slice_value",
+                        slice_value=None,
                     )
                     all_facts.append(facts)
 

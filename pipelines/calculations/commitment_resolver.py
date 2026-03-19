@@ -1,14 +1,13 @@
 """
-Resolver for commitment points (start/end columns) in flow metrics.
-Supports both rule-based resolution from the database and heuristic fallback.
+Commitment Resolver: Dynamic lookup of start and end columns for flow metrics.
+Replaces hardcoded string heuristics with database-driven rules.
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import polars as pl
-from sqlalchemy import Engine
-
-from ..utils.polars_db import read_table
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
 
 
 def resolve_commitment_columns(
@@ -16,144 +15,172 @@ def resolve_commitment_columns(
     project_id: str,
     board_id: str,
     calc_code: str,
-) -> Optional[Dict]:
+) -> Optional[Dict[str, Any]]:
     """
     Query commitment_rules for project/board/calc_code.
-    Return column IDs and names.
-    Priority: project+board > project_only > global.
+    Return {'start_column_id': uuid, 'end_column_id': uuid,
+            'start_column_name': str, 'end_column_name': str,
+            'commitment_rule_id': uuid}
     """
-    query = """
-        SELECT
-            id as commitment_rule_id,
-            start_column_id,
-            end_column_id,
-            start_column_name_snapshot as start_column_name,
-            end_column_name_snapshot as end_column_name
-        FROM metrics.commitment_rules
-        WHERE (target_calculation_id = (SELECT id FROM metrics.calculations WHERE calc_code = :calc_code))
-          AND (project_id = :project_id OR project_id IS NULL)
-          AND (board_id = :board_id OR board_id IS NULL)
-        ORDER BY
-            (project_id IS NOT NULL)::int DESC,
-            (board_id IS NOT NULL)::int DESC
-        LIMIT 1
-    """
-    df = read_table(
-        engine,
-        query,
-        params={"calc_code": calc_code, "project_id": project_id, "board_id": board_id},
-    )
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT cr.id, cr.start_column_id, cr.end_column_id,
+                       bc_start.name as start_name, bc_end.name as end_name
+                FROM metrics.commitment_rules cr
+                JOIN clean_jira.board_columns bc_start ON cr.start_column_id = bc_start.id
+                JOIN clean_jira.board_columns bc_end ON cr.end_column_id = bc_end.id
+                JOIN metrics.calculations calc ON cr.target_calculation_id = calc.id
+                WHERE calc.calc_code = :calc_code
+                  AND (cr.project_id = :project_id OR cr.project_id IS NULL)
+                  AND (cr.board_id = :board_id OR cr.board_id IS NULL)
+                ORDER BY cr.project_id NULLS LAST, cr.board_id NULLS LAST
+                LIMIT 1
+            """
+            ),
+            {"calc_code": calc_code, "project_id": project_id, "board_id": board_id},
+        ).fetchone()
 
-    if df.is_empty():
+    if not result:
         return None
 
-    return df.to_dicts()[0]
+    return {
+        "commitment_rule_id": str(result[0]),
+        "start_column_id": str(result[1]),
+        "end_column_id": str(result[2]),
+        "start_column_name": result[3],
+        "end_column_name": result[4],
+    }
 
 
 def identify_commitment_points_from_rule(
-    rule: Dict,
+    rule: Dict[str, Any],
     board_columns_df: pl.DataFrame,
-) -> Dict:
+) -> Dict[str, Any]:
     """
-    Given a resolved commitment rule, return status_ids and positions.
+    Given a resolved commitment rule and board_columns_df, return status_ids and positions.
     """
     start_col_id = rule["start_column_id"]
     end_col_id = rule["end_column_id"]
 
-    # Get all status_ids for the start and end columns
-    # In Jira boards, one column can map to multiple statuses
-    start_columns = board_columns_df.filter(pl.col("id") == start_col_id)
-    end_columns = board_columns_df.filter(pl.col("id") == end_col_id)
-
-    if start_columns.is_empty() or end_columns.is_empty():
-        return identify_commitment_points_heuristic(board_columns_df)
-
-    start_position = start_columns["position"].min()
-    end_position = end_columns["position"].min()
-
-    start_status_ids = start_columns["status_id"].unique().drop_nulls().to_list()
-    end_status_ids = end_columns["status_id"].unique().drop_nulls().to_list()
-
-    # All statuses in columns from start (inclusive) to end (exclusive)
-    middle_columns = board_columns_df.filter(
-        (pl.col("position") >= start_position) & (pl.col("position") < end_position)
+    start_statuses = (
+        board_columns_df.filter(pl.col("id").cast(str) == start_col_id)
+        .select("status_id")
+        .to_series()
+        .to_list()
     )
-    middle_status_ids = middle_columns["status_id"].unique().drop_nulls().to_list()
+    end_statuses = (
+        board_columns_df.filter(pl.col("id").cast(str) == end_col_id)
+        .select("status_id")
+        .to_series()
+        .to_list()
+    )
+
+    start_pos_result = board_columns_df.filter(
+        pl.col("id").cast(str) == start_col_id
+    ).select("position")
+    start_pos = start_pos_result.row(0)[0] if not start_pos_result.is_empty() else 0
+
+    end_pos_result = board_columns_df.filter(
+        pl.col("id").cast(str) == end_col_id
+    ).select("position")
+    end_pos = end_pos_result.row(0)[0] if not end_pos_result.is_empty() else 999
+
+    middle_status_ids = (
+        board_columns_df.filter(
+            (pl.col("position") >= start_pos) & (pl.col("position") < end_pos)
+        )
+        .select("status_id")
+        .drop_nulls()
+        .to_series()
+        .to_list()
+    )
 
     return {
-        "start_status_ids": start_status_ids,
-        "end_status_ids": end_status_ids,
+        "start_status_ids": start_statuses,
+        "end_status_ids": end_statuses,
         "middle_status_ids": middle_status_ids,
-        "start_position": start_position,
-        "end_position": end_position,
+        "start_position": start_pos,
+        "end_position": end_pos,
         "commitment_rule_id": rule["commitment_rule_id"],
     }
 
 
 def identify_commitment_points_heuristic(
     board_columns_df: pl.DataFrame,
-) -> Dict:
+) -> Dict[str, Any]:
     """
-    Fallback: use string matching ('in progress', 'done').
+    Fallback heuristic when no rules exist.
+    Matches standard 'In Progress' and 'Done' column patterns.
     """
     if board_columns_df.is_empty():
         return {
             "start_status_ids": [],
             "end_status_ids": [],
             "middle_status_ids": [],
-            "start_position": None,
-            "end_position": None,
+            "start_position": 0,
+            "end_position": 999,
             "commitment_rule_id": None,
         }
 
-    # Find "In Progress" columns
-    start_columns = board_columns_df.filter(
-        pl.col("name").str.to_lowercase().str.contains("in progress")
-        | pl.col("name").str.to_lowercase().str.contains("в работе")
+    # Find "In Progress" type column
+    start_cols = board_columns_df.filter(
+        pl.col("name")
+        .str.to_lowercase()
+        .str.contains("in progress|в работе|progress|active")
     )
+    if start_cols.is_empty():
+        start_pos = 0
+        start_statuses = []
+    else:
+        # Take the first matched column's position
+        start_pos = start_cols.select("position").min().item()
+        start_statuses = (
+            board_columns_df.filter(pl.col("position") == start_pos)
+            .select("status_id")
+            .drop_nulls()
+            .to_series()
+            .to_list()
+        )
 
-    # Find "Done" columns
-    end_columns = board_columns_df.filter(
-        pl.col("name").str.to_lowercase().str.contains("done")
-        | pl.col("name").str.to_lowercase().str.contains("готово")
+    # Find "Done" type column
+    end_cols = board_columns_df.filter(
+        pl.col("name")
+        .str.to_lowercase()
+        .str.contains("done|готово|closed|resolved|completed")
     )
+    if end_cols.is_empty():
+        end_pos = 999
+        end_statuses = []
+    else:
+        # Take the first matched column's position
+        end_pos = end_cols.select("position").min().item()
+        end_statuses = (
+            board_columns_df.filter(pl.col("position") == end_pos)
+            .select("status_id")
+            .drop_nulls()
+            .to_series()
+            .to_list()
+        )
 
-    if start_columns.is_empty() or end_columns.is_empty():
-        return {
-            "start_status_ids": [],
-            "end_status_ids": [],
-            "middle_status_ids": [],
-            "start_position": None,
-            "end_position": None,
-            "commitment_rule_id": None,
-        }
-
-    start_position = start_columns["position"].min()
-    end_position = end_columns["position"].min()
-
-    if start_position >= end_position:
-        return {
-            "start_status_ids": [],
-            "end_status_ids": [],
-            "middle_status_ids": [],
-            "start_position": None,
-            "end_position": None,
-            "commitment_rule_id": None,
-        }
-
-    start_status_ids = start_columns["status_id"].unique().drop_nulls().to_list()
-    end_status_ids = end_columns["status_id"].unique().drop_nulls().to_list()
-
-    middle_columns = board_columns_df.filter(
-        (pl.col("position") >= start_position) & (pl.col("position") < end_position)
-    )
-    middle_status_ids = middle_columns["status_id"].unique().drop_nulls().to_list()
+    middle_status_ids = []
+    if start_statuses and end_statuses and start_pos < end_pos:
+        middle_status_ids = (
+            board_columns_df.filter(
+                (pl.col("position") >= start_pos) & (pl.col("position") < end_pos)
+            )
+            .select("status_id")
+            .drop_nulls()
+            .to_series()
+            .to_list()
+        )
 
     return {
-        "start_status_ids": start_status_ids,
-        "end_status_ids": end_status_ids,
+        "start_status_ids": start_statuses,
+        "end_status_ids": end_statuses,
         "middle_status_ids": middle_status_ids,
-        "start_position": start_position,
-        "end_position": end_position,
+        "start_position": start_pos,
+        "end_position": end_pos,
         "commitment_rule_id": None,
     }

@@ -1,163 +1,119 @@
 """
-Registry for resolving metric metadata from the database.
-Provides caching and lookup functions for metric definitions, calculations, and projects.
+Metric Registry: Centralized utility for resolving metadata IDs from the database.
+Uses a simple dictionary cache within the process to minimize database queries.
 """
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
-from sqlalchemy import Engine, text
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
 
-from .polars_db import read_table
-
-# In-memory cache
-_cache: Dict[str, Dict] = {
-    "calc_ids": {},
-    "def_ids": {},
-    "project_agg_ids": {},
-}
+# In-memory cache for the duration of the asset execution
+_CACHE: Dict[str, Any] = {}
 
 
 def get_calculation_id(engine: Engine, calc_code: str) -> str:
     """Return UUID of calculations row by calc_code. Raise if not found."""
-    if calc_code in _cache["calc_ids"]:
-        return _cache["calc_ids"][calc_code]
+    cache_key = f"calc_id_{calc_code}"
+    if cache_key in _CACHE:
+        return _CACHE[cache_key]
 
-    query = "SELECT id FROM metrics.calculations WHERE calc_code = :calc_code"
-    df = read_table(engine, query, params={"calc_code": calc_code})
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT id FROM metrics.calculations WHERE calc_code = :calc_code"),
+            {"calc_code": calc_code},
+        ).scalar()
 
-    if df.is_empty():
+    if not result:
         raise ValueError(
-            f"Calculation code '{calc_code}' not found in metrics.calculations"
+            f"Calculation code '{calc_code}' not found in metrics.calculations."
         )
 
-    calc_id = str(df[0, "id"])
-    _cache["calc_ids"][calc_code] = calc_id
-    return calc_id
+    _CACHE[cache_key] = str(result)
+    return _CACHE[cache_key]
 
 
 def get_definition_id(engine: Engine, metric_code: str) -> str:
-    """Return UUID of definitions row by metric_code. Raise if not found."""
-    if metric_code in _cache["def_ids"]:
-        return _cache["def_ids"][metric_code]
+    """Return UUID of definitions row by metric_code."""
+    cache_key = f"def_id_{metric_code}"
+    if cache_key in _CACHE:
+        return _CACHE[cache_key]
 
-    query = "SELECT id FROM metrics.definitions WHERE metric_code = :metric_code"
-    df = read_table(engine, query, params={"metric_code": metric_code})
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT id FROM metrics.definitions WHERE metric_code = :metric_code"),
+            {"metric_code": metric_code},
+        ).scalar()
 
-    if df.is_empty():
+    if not result:
         raise ValueError(
-            f"Metric definition code '{metric_code}' not found in metrics.definitions"
+            f"Metric code '{metric_code}' not found in metrics.definitions."
         )
 
-    def_id = str(df[0, "id"])
-    _cache["def_ids"][metric_code] = def_id
-    return def_id
+    _CACHE[cache_key] = str(result)
+    return _CACHE[cache_key]
 
 
 def get_project_agg_id(engine: Engine, project_id: str) -> str:
-    """Return dim_projects.id for given clean_jira project_id. Raise if not found."""
-    if project_id in _cache["project_agg_ids"]:
-        return _cache["project_agg_ids"][project_id]
+    """Return dim_projects.id for given clean_jira project_id."""
+    cache_key = f"proj_agg_id_{project_id}"
+    if cache_key in _CACHE:
+        return _CACHE[cache_key]
 
-    query = "SELECT id FROM metrics.dim_projects WHERE project_id = :project_id"
-    df = read_table(engine, query, params={"project_id": project_id})
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT id FROM metrics.dim_projects WHERE project_id = :project_id"),
+            {"project_id": project_id},
+        ).scalar()
 
-    if df.is_empty():
-        # Try to resolve project key to create it
-        key_query = "SELECT project_key FROM clean_jira.projects WHERE id = :project_id"
-        key_df = read_table(engine, key_query, params={"project_id": project_id})
-        if key_df.is_empty():
-            raise ValueError(
-                f"Project ID '{project_id}' not found in clean_jira.projects"
-            )
-
-        project_key = key_df[0, "project_key"]
-        return get_or_create_dim_project(engine, project_id, project_key)
-
-    agg_id = str(df[0, "id"])
-    _cache["project_agg_ids"][project_id] = agg_id
-    return agg_id
-
-
-def get_or_create_dim_project(engine: Engine, project_id: str, project_key: str) -> str:
-    """Upsert dim_projects row, return id."""
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
-                INSERT INTO metrics.dim_projects (project_id, project_key)
-                VALUES (:project_id, :project_key)
-                ON CONFLICT (project_id) DO UPDATE SET project_key = EXCLUDED.project_key
-            """
-            ),
-            {"project_id": project_id, "project_key": project_key},
+    if not result:
+        # Since sync is run once, if it's missing, it's an error. We could upsert here if we wanted.
+        raise ValueError(
+            f"Project ID '{project_id}' not found in metrics.dim_projects. Run sync_dim_projects."
         )
 
-    query = "SELECT id FROM metrics.dim_projects WHERE project_id = :project_id"
-    df = read_table(engine, query, params={"project_id": project_id})
-    agg_id = str(df[0, "id"])
-    _cache["project_agg_ids"][project_id] = agg_id
-    return agg_id
-
-
-def resolve_commitment_rule(
-    engine: Engine, project_id: str, board_id: str, calc_code: str
-) -> Optional[str]:
-    """
-    Return commitment_rules.id for given project/board/calc_code.
-    Priority: project+board > project only > global (project_id=NULL).
-    Returns None if no rule found.
-    """
-    calc_id = get_calculation_id(engine, calc_code)
-
-    query = """
-        SELECT id, project_id, board_id
-        FROM metrics.commitment_rules
-        WHERE target_calculation_id = :calc_id
-          AND (project_id = :project_id OR project_id IS NULL)
-          AND (board_id = :board_id OR board_id IS NULL)
-        ORDER BY
-            (project_id IS NOT NULL)::int DESC,
-            (board_id IS NOT NULL)::int DESC
-        LIMIT 1
-    """
-    df = read_table(
-        engine,
-        query,
-        params={"calc_id": calc_id, "project_id": project_id, "board_id": board_id},
-    )
-
-    if df.is_empty():
-        return None
-
-    return str(df[0, "id"])
+    _CACHE[cache_key] = str(result)
+    return _CACHE[cache_key]
 
 
 def resolve_unit_field(
     engine: Engine, project_id: str, unit_code: str
-) -> Optional[dict]:
+) -> Optional[Dict[str, Any]]:
     """
     Return {'source_field_id': uuid, 'source_entity': str} for given project/unit_code.
     Falls back to global (project_id=NULL) rule.
-    Returns None if no config found.
+    Returns None if no config found or if specific source field isn't set.
     """
-    query = """
-        SELECT source_field_id, source_entity
-        FROM metrics.units
-        WHERE unit_code = :unit_code
-          AND (project_id = :project_id OR project_id IS NULL)
-        ORDER BY (project_id IS NOT NULL)::int DESC
-        LIMIT 1
-    """
-    df = read_table(
-        engine, query, params={"unit_code": unit_code, "project_id": project_id}
-    )
+    cache_key = f"unit_{id(engine)}_{project_id}_{unit_code}"
+    if cache_key in _CACHE:
+        return _CACHE[cache_key]
 
-    if df.is_empty():
+    with engine.connect() as conn:
+        # Priority: specific project, then global NULL
+        result = conn.execute(
+            text(
+                """
+                SELECT source_field_id, source_entity, project_id
+                FROM metrics.units
+                WHERE unit_code = :unit_code
+                  AND (project_id = :project_id OR project_id IS NULL)
+                ORDER BY project_id NULLS LAST
+                LIMIT 1
+            """
+            ),
+            {"unit_code": unit_code, "project_id": project_id},
+        ).fetchone()
+
+    if not result or not result[0]:
+        _CACHE[cache_key] = None
         return None
 
-    return {
-        "source_field_id": str(df[0, "source_field_id"])
-        if df[0, "source_field_id"]
-        else None,
-        "source_entity": df[0, "source_entity"],
-    }
+    val = {"source_field_id": str(result[0]), "source_entity": result[1]}
+    _CACHE[cache_key] = val
+    return val
+
+
+def clear_cache():
+    """Clear the internal cache (useful for tests)."""
+    global _CACHE
+    _CACHE.clear()

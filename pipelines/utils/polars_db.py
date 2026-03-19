@@ -6,6 +6,8 @@ This module provides helper functions to:
 - Write Polars DataFrames back to PostgreSQL tables
 """
 
+import os
+
 import polars as pl
 from sqlalchemy import Engine, text
 
@@ -27,27 +29,28 @@ def read_table(
     Returns:
         Polars DataFrame containing query results
     """
-    # Convert SQLAlchemy URL to string for Polars
-    uri = str(engine.url)
+    import pandas as pd
 
-    # If there are params, we might need to handle them differently or use legacy path
-    # Polars read_database_uri doesn't support params directly for all engines
-    if params:
-        from uuid import UUID
+    if not params:
+        # Fast path used by tests and by read-only queries.
+        try:
+            return pl.read_database_uri(query=query, uri=str(engine.url))
+        except Exception:
+            # Fallback for complex types/driver edge-cases.
+            with engine.connect() as conn:
+                pdf = pd.read_sql(query, conn)
+                for col in pdf.columns:
+                    if pdf[col].dtype == "object":
+                        pdf[col] = pdf[col].astype(str)
+                return pl.from_pandas(pdf)
 
-        import pandas as pd
-
-        pdf = pd.read_sql(query, engine, params=params)
+    # Parameterized path: use pandas/SQLAlchemy safely.
+    with engine.connect() as conn:
+        pdf = pd.read_sql(query, conn, params=params)
         for col in pdf.columns:
-            if pdf[col].dtype == "object" and len(pdf) > 0:
-                first_valid_index = pdf[col].first_valid_index()
-                if first_valid_index is not None and isinstance(
-                    pdf[col].loc[first_valid_index], UUID
-                ):
-                    pdf[col] = pdf[col].astype(str)
+            if pdf[col].dtype == "object":
+                pdf[col] = pdf[col].astype(str)
         return pl.from_pandas(pdf)
-
-    return pl.read_database_uri(uri, query)
 
 
 def write_table(
@@ -131,17 +134,28 @@ def write_fact_values(
     """
     uri = str(engine.url)
 
-    # 1. DELETE existing rows
+    # 1. DELETE existing rows (with advisory lock for concurrency safety)
     delete_query = text(
         """
         DELETE FROM metrics.fact_values
-        WHERE metric_id = ANY(:metric_ids::uuid[])
-          AND project_agg_id = ANY(:project_agg_ids::uuid[])
+        WHERE metric_id = ANY(CAST(:metric_ids AS uuid[]))
+          AND project_agg_id = ANY(CAST(:project_agg_ids AS uuid[]))
           AND time_id BETWEEN :start AND :end
     """
     )
 
     with engine.begin() as conn:
+        # Optional advisory lock for concurrent writers.
+        use_advisory_lock = (
+            os.getenv("FACT_VALUES_USE_ADVISORY_LOCK", "false").lower() == "true"
+        )
+        if use_advisory_lock and metric_ids:
+            # We use hashtext to get a 32-bit integer for the lock
+            conn.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+                {"lock_key": str(metric_ids[0])},
+            )
+
         conn.execute(
             delete_query,
             {

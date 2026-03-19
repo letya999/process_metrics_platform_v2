@@ -47,8 +47,9 @@ def calculate_time_to_market(
         engine,
         """
         SELECT i.id, i.project_id, i.external_key AS key, i.type_id,
-               i.jira_created_at, i.jira_resolved_at
+               i.jira_created_at, i.jira_resolved_at, p.external_key AS project_key
         FROM clean_jira.issues i
+        JOIN clean_jira.projects p ON i.project_id = p.id
         """,
     )
 
@@ -101,7 +102,12 @@ def calculate_time_to_market(
         return {"status": "no_data"}
 
     # 3. Transform to Long Format (fact_values)
-    def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value_col=None):
+    def transform_to_fact_values(
+        df_wide, slice_rule_id=None, slice_value_col=None, slice_value=None
+    ):
+        if df_wide.is_empty():
+            return pl.DataFrame()
+
         facts = df_wide.with_columns(
             [
                 pl.lit(calc_id).alias("metric_id"),
@@ -113,14 +119,22 @@ def calculate_time_to_market(
                 .alias("time_id"),
                 pl.col("time_to_market_days").alias("value"),
                 pl.lit("issue").alias("entity_type"),
-                pl.col("issue_key").alias("entity_id"),
-                pl.lit(slice_rule_id).alias("slice_rule_id"),
+                pl.col("issue_key").cast(pl.Utf8).alias("entity_id"),
+                pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
                 pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
                 if slice_value_col
-                else pl.lit(None).alias("slice_value"),
-                pl.lit(None).alias("commitment_rule_id"),
-                pl.col("jira_created_at").alias("event_start_at"),
-                pl.col("released_at").alias("event_end_at"),
+                else (
+                    pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
+                    if slice_value is not None
+                    else pl.lit(None).cast(pl.Utf8).alias("slice_value")
+                ),
+                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                pl.col("jira_created_at")
+                .cast(pl.Datetime("us", "UTC"))
+                .alias("event_start_at"),
+                pl.col("released_at")
+                .cast(pl.Datetime("us", "UTC"))
+                .alias("event_end_at"),
             ]
         )
 
@@ -138,15 +152,12 @@ def calculate_time_to_market(
                 "event_start_at",
                 "event_end_at",
             ]
-        )
+        ).drop_nulls(subset=["value"])
 
     base_facts = transform_to_fact_values(ttm_wide)
 
     # 4. Calculate Sliced facts
     rules_df = get_slice_rules(engine, target_definition_id=def_id)
-
-    # Note: TTM calculation is already filtered to Epics by default.
-    # Slicing should ideally be done on the ttm_wide result.
 
     all_facts = [base_facts]
 
@@ -154,10 +165,9 @@ def calculate_time_to_market(
         for rule in rules_df.to_dicts():
             rule_id = rule["slice_rule_id"]
 
-            # Use ttm_wide as source for slicing to avoid re-calculating TTM
-            # But apply_slicing expects a function.
+            # Use ttm_wide as source for slicing (no expensive recalculation needed).
             def ttm_slice_identity(df_subset):
-                return df_subset  # Already has TTM columns
+                return df_subset
 
             sliced_wide = apply_slicing(
                 ttm_wide,
@@ -174,6 +184,9 @@ def calculate_time_to_market(
     final_df = pl.concat(all_facts)
 
     # 5. Write to DB
+    if final_df.is_empty():
+        return {"status": "no_data"}
+
     time_id_start = final_df["time_id"].min()
     time_id_end = final_df["time_id"].max()
     project_agg_ids = list(project_agg_map.values())
@@ -191,6 +204,7 @@ def calculate_time_to_market(
         "status": "success",
         "rows_written": rows_written,
         "issues_processed": len(ttm_wide),
+        "metric_ids": [calc_id],
     }
 
 

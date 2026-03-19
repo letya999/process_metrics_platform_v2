@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 import polars as pl
 
 from pipelines.calculations.backlog_growth import (
+    _calculate_issue_status_on_dates,
+    calculate_age_distribution,
     calculate_backlog_distribution,
     calculate_backlog_growth_trends,
 )
@@ -217,3 +219,106 @@ class TestBacklogHealth:
         assert w2["created_count"][0] == 1
         assert w2["completed_count"][0] == 1
         assert w2["net_growth"][0] == 0
+
+    def test_calculate_issue_status_on_dates_empty(self):
+        result = _calculate_issue_status_on_dates(
+            pl.DataFrame(), pl.DataFrame(), pl.DataFrame()
+        )
+        assert result.is_empty()
+        assert "issue_id" in result.columns
+
+    def test_calculate_issue_status_on_dates_without_changelog(self):
+        issues = pl.DataFrame(
+            {
+                "id": ["I1"],
+                "project_id": ["P1"],
+                "status_id": ["S1"],
+                "jira_created_at": [datetime(2024, 1, 1)],
+                "jira_updated_at": [datetime(2024, 1, 2)],
+            }
+        )
+        date_range = pl.DataFrame({"date": [datetime(2024, 1, 1).date()]})
+
+        result = _calculate_issue_status_on_dates(issues, pl.DataFrame(), date_range)
+
+        assert result.height == 1
+        assert result["status_id"][0] == "S1"
+        assert result["last_status_change_at"][0] is None
+
+    def test_calculate_backlog_growth_with_backlog_enter_exit_counts(self):
+        fact_date = datetime(2024, 1, 2, tzinfo=timezone.utc)
+        issues = pl.DataFrame(
+            {
+                "id": ["I1"],
+                "project_id": ["P1"],
+                "status_id": ["S_DONE"],
+                "type_id": ["T1"],
+                "jira_created_at": [datetime(2024, 1, 1, tzinfo=timezone.utc)],
+                "jira_updated_at": [datetime(2024, 1, 2, tzinfo=timezone.utc)],
+                "jira_resolved_at": [datetime(2024, 1, 2, tzinfo=timezone.utc)],
+            }
+        )
+        issue_statuses = pl.DataFrame(
+            {
+                "id": ["S_BACKLOG", "S_DONE"],
+                "project_id": ["P1", "P1"],
+                "name": ["Backlog", "Done"],
+                "category": ["to_do", "done"],
+            }
+        )
+        changelog = pl.DataFrame(
+            {
+                "issue_id": ["I1", "I1"],
+                "from_status_id": [None, "S_BACKLOG"],
+                "to_status_id": ["S_BACKLOG", "S_DONE"],
+                "changed_at": [
+                    datetime(2024, 1, 1, tzinfo=timezone.utc),
+                    datetime(2024, 1, 2, tzinfo=timezone.utc),
+                ],
+            }
+        )
+        board_statuses = pl.DataFrame(
+            {"project_id": ["P1"], "position": [0], "status_id": ["S_BACKLOG"]}
+        )
+
+        result = calculate_backlog_health(
+            issues_df=issues,
+            issue_statuses_df=issue_statuses,
+            field_values_df=pl.DataFrame(
+                {"issue_id": [], "field_key_id": [], "json_value": []}
+            ),
+            field_keys_df=pl.DataFrame({"id": [], "name": []}),
+            changelog_df=changelog,
+            board_column_statuses_df=board_statuses,
+            fact_date=fact_date,
+            days_back=1,
+            stale_threshold_days=30,
+        )
+
+        assert not result.is_empty()
+        assert "entered_backlog_count" in result.columns
+        assert "exited_backlog_count" in result.columns
+        assert result["entered_backlog_count"].sum() >= 1
+        assert result["exited_backlog_count"].sum() >= 1
+
+    def test_calculate_age_distribution_buckets(self):
+        now = datetime.now(timezone.utc)
+        issues = pl.DataFrame(
+            {
+                "id": ["I1", "I2", "I3", "I4"],
+                "project_id": ["P1", "P1", "P1", "P1"],
+                "status_id": ["S1", "S1", "S1", "S1"],
+                "jira_created_at": [
+                    now - timedelta(days=3),
+                    now - timedelta(days=15),
+                    now - timedelta(days=60),
+                    now - timedelta(days=120),
+                ],
+            }
+        )
+        statuses = pl.DataFrame({"id": ["S1"], "category": ["to_do"]})
+
+        result = calculate_age_distribution(issues, statuses)
+
+        assert result.height == 4
+        assert result["issue_count"].sum() == 4

@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 import polars as pl
 
 from pipelines.calculations.time_to_market import (
+    _get_done_status_ids,
+    _get_release_dates,
+    calculate_release_cadence,
     calculate_time_to_market,
     calculate_ttm_aggregates,
 )
@@ -162,3 +165,58 @@ class TestTimeToMarket:
         )
 
         assert result.is_empty()
+
+    def test_get_release_dates_uses_priority_chain(self):
+        issues = pl.DataFrame(
+            {
+                "id": ["E1", "E2", "E3"],
+                "jira_resolved_at": [
+                    datetime(2024, 1, 20, tzinfo=timezone.utc),
+                    datetime(2024, 1, 22, tzinfo=timezone.utc),
+                    datetime(2024, 1, 25, tzinfo=timezone.utc),
+                ],
+            }
+        )
+        releases = pl.DataFrame(
+            {"id": ["V1"], "release_date": [datetime(2024, 1, 15, tzinfo=timezone.utc)]}
+        )
+        fix_versions = pl.DataFrame({"issue_id": ["E1"], "version_id": ["V1"]})
+        changelog = pl.DataFrame(
+            {
+                "issue_id": ["E2"],
+                "to_status_id": ["done-status"],
+                "changed_at": [datetime(2024, 1, 18, tzinfo=timezone.utc)],
+            }
+        )
+        board_columns = pl.DataFrame({"status_id": ["done-status"], "name": ["Done"]})
+
+        result = _get_release_dates(
+            issues, releases, fix_versions, changelog, board_columns
+        )
+        by_issue = {r["issue_id"]: r["released_at"] for r in result.to_dicts()}
+
+        assert by_issue["E1"] == datetime(2024, 1, 15, tzinfo=timezone.utc)
+        assert by_issue["E2"] == datetime(2024, 1, 18, tzinfo=timezone.utc)
+        assert by_issue["E3"] == datetime(2024, 1, 25, tzinfo=timezone.utc)
+
+    def test_get_done_status_ids_empty_and_detect_done(self):
+        assert _get_done_status_ids(pl.DataFrame()) == []
+        cols = pl.DataFrame({"status_id": ["s1", "s2"], "name": ["To Do", "Done"]})
+        assert _get_done_status_ids(cols) == ["s2"]
+
+    def test_calculate_release_cadence(self):
+        releases = pl.DataFrame(
+            {
+                "project_id": ["P1", "P1", "P1"],
+                "release_date": [
+                    datetime(2024, 1, 1),
+                    datetime(2024, 1, 11),
+                    datetime(2024, 1, 21),
+                ],
+            }
+        )
+
+        result = calculate_release_cadence(releases, days_back=5000)
+        assert result.height == 1
+        assert result["project_id"][0] == "P1"
+        assert result["avg_days_between_releases"][0] == 10.0
