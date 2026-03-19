@@ -711,14 +711,16 @@ def calculate_velocity_facts(
         issues_df, field_values_df, field_keys_df
     )
 
-    # 2. Identify Commitment (Plan)
-    commitment_df = identify_sprint_commitment(
-        sprint_changelog_df, sprints_df, issues_df, sprint_issues_df
+    # 2. Identify Final Scope (issue set that ended in sprint)
+    final_scope_df = identify_sprint_final_scope(
+        sprint_issues_df, sprint_changelog_df, issues_df
     )
 
-    # 2b. Calculate Historical SP for Commitment (at Start Date)
+    # 2b. Plan scope:
+    # Use final sprint scope, but value SP at sprint start.
+    # This matches the project's agreed reference semantics in sprints_velocity.md.
     commitment_with_sp = determine_story_points_at_date(
-        commitment_df,
+        final_scope_df,
         sprints_df,
         current_story_points_df,
         field_value_changelog_df,
@@ -726,12 +728,7 @@ def calculate_velocity_facts(
         date_col="start_date",
     )
 
-    # 3. Identify Final Scope
-    final_scope_df = identify_sprint_final_scope(
-        sprint_issues_df, sprint_changelog_df, issues_df
-    )
-
-    # 4. Identify Completed
+    # 3. Identify Completed
     completed_df = identify_completed_issues(
         final_scope_df,
         issues_df,
@@ -848,10 +845,7 @@ def calculate_velocity_slice_by_issue_type(
     # Get issue types
     issue_types_df = issues_df.select(["id", "type_name"]).rename({"id": "issue_id"})
 
-    # Commitment and Final Scope
-    commitment_df = identify_sprint_commitment(
-        sprint_changelog_df, sprints_df, issues_df, sprint_issues_df
-    )
+    # Plan scope based on final sprint scope (SP valued at sprint start)
     final_scope_df = identify_sprint_final_scope(
         sprint_issues_df, sprint_changelog_df, issues_df
     )
@@ -863,7 +857,7 @@ def calculate_velocity_slice_by_issue_type(
 
     # Historical SP
     commitment_with_sp = determine_story_points_at_date(
-        commitment_df,
+        final_scope_df,
         sprints_df,
         current_story_points_df,
         field_value_changelog_df,

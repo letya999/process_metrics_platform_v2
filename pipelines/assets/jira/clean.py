@@ -1158,7 +1158,7 @@ def clean_jira_sprint_issues(
                 JOIN raw_jira.issues__changelog__histories h
                     ON item._dlt_parent_id = h._dlt_id
                 JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
-                WHERE item.field = 'Sprint'
+                WHERE item.field = 'Sprint' OR item.field_id = 'customfield_10020'
             ),
             -- Split comma-separated sprint IDs for 'added' actions
             added_events AS (
@@ -1205,6 +1205,11 @@ def clean_jira_sprint_issues(
                 JOIN raw_jira.issues__fields__customfield_10020 s
                   ON s._dlt_parent_id = i._dlt_id
                 WHERE s.id IS NOT NULL
+                  -- If Sprint changelog exists, it is the source of truth.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM changelog_events ce
+                      WHERE ce.issue_external_id = i.id::text
+                  )
             ),
             -- Union all events
             all_events AS (
@@ -1307,7 +1312,7 @@ def clean_jira_sprint_issues_changelog(
                 JOIN raw_jira.issues__changelog__histories h
                     ON item._dlt_parent_id = h._dlt_id
                 JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
-                WHERE item.field = 'Sprint'
+                WHERE item.field = 'Sprint' OR item.field_id = 'customfield_10020'
             ),
             to_sprints AS (
                 SELECT DISTINCT
