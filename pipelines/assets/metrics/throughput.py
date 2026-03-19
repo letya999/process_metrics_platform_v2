@@ -154,6 +154,7 @@ def calculate_throughput(
                 issues_for_slicing,
                 rules_df.filter(pl.col("slice_rule_id") == rule_id),
                 throughput_slice_calc,
+                engine=engine,
             )
 
             if sliced_wide.is_empty():

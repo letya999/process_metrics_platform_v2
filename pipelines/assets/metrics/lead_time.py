@@ -259,6 +259,7 @@ def calculate_lead_time(
                 issues_for_slicing,
                 rules_df.filter(pl.col("slice_rule_id") == rule_id),
                 lead_time_slice_calc,
+                engine=engine,
             )
 
             if not sliced_wide.is_empty():

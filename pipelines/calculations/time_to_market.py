@@ -17,7 +17,7 @@ Business Rules:
 4. Calculate percentiles (P50, P90) for benchmarking
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import polars as pl
 
@@ -105,6 +105,13 @@ def calculate_time_to_market(
             ]
         )
         .join(released_at, on="issue_id", how="inner")
+        .with_columns(
+            [
+                # Defensive datetime casting to avoid subtraction errors
+                pl.col("released_at").cast(pl.Datetime("us", "UTC")),
+                pl.col("jira_created_at").cast(pl.Datetime("us", "UTC")),
+            ]
+        )
         .with_columns(
             [
                 # Calculate TTM in days
@@ -338,7 +345,7 @@ def calculate_release_cadence(
         )
 
     # Filter to recent releases
-    cutoff_date = datetime.now() - pl.duration(days=days_back)
+    cutoff_date = datetime.now() - timedelta(days=days_back)
 
     recent_releases = releases_df.filter(
         pl.col("release_date").is_not_null() & (pl.col("release_date") >= cutoff_date)

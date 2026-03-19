@@ -29,6 +29,8 @@ def read_table(
     Returns:
         Polars DataFrame containing query results
     """
+    from datetime import date, datetime
+
     import pandas as pd
 
     if not params:
@@ -38,17 +40,27 @@ def read_table(
         except Exception:
             # Fallback for complex types/driver edge-cases.
             with engine.connect() as conn:
-                pdf = pd.read_sql(query, conn)
+                pdf = pd.read_sql(text(query), conn)
                 for col in pdf.columns:
                     if pdf[col].dtype == "object":
+                        # Skip string conversion for datetime objects to avoid destruction
+                        sample = pdf[col].dropna().head(1)
+                        if not sample.empty and isinstance(
+                            sample.iloc[0], (datetime, date)
+                        ):
+                            continue
                         pdf[col] = pdf[col].astype(str)
                 return pl.from_pandas(pdf)
 
     # Parameterized path: use pandas/SQLAlchemy safely.
     with engine.connect() as conn:
-        pdf = pd.read_sql(query, conn, params=params)
+        pdf = pd.read_sql(text(query), conn, params=params)
         for col in pdf.columns:
             if pdf[col].dtype == "object":
+                # Skip string conversion for datetime objects to avoid destruction
+                sample = pdf[col].dropna().head(1)
+                if not sample.empty and isinstance(sample.iloc[0], (datetime, date)):
+                    continue
                 pdf[col] = pdf[col].astype(str)
         return pl.from_pandas(pdf)
 

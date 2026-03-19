@@ -245,6 +245,7 @@ def calculate_backlog_growth(
                 issues_with_type,
                 rules_df.filter(pl.col("slice_rule_id") == rule_id),
                 health_slice_calc,
+                engine=engine,
             )
 
             if not sliced_wide.is_empty():

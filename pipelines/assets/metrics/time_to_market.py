@@ -173,6 +173,7 @@ def calculate_time_to_market(
                 ttm_wide,
                 rules_df.filter(pl.col("slice_rule_id") == rule_id),
                 ttm_slice_identity,
+                engine=engine,
             )
 
             if not sliced_wide.is_empty():

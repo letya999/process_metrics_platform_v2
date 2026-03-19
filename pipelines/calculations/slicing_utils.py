@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Optional
 
 import polars as pl
@@ -5,6 +6,8 @@ from sqlalchemy import Engine
 
 from ..utils.polars_db import read_table
 from ..utils.smart_slicer import SmartSlicer
+
+logger = logging.getLogger(__name__)
 
 
 def get_slice_rules(
@@ -32,7 +35,7 @@ def get_slice_rules(
     try:
         rules_df = read_table(engine, query)
     except Exception as e:
-        print(f"Error fetching rules: {e}")
+        logger.warning(f"Error fetching rules: {e}")
         return pl.DataFrame()
 
     if rules_df.is_empty():
@@ -138,8 +141,8 @@ def apply_slicing(
                 full_target = slicer.find_target_for_column(source_table, group_col)
 
             if not full_target:
-                print(
-                    f"Warning: Cannot resolve target for column '{group_col}' from {source_table}"
+                logger.warning(
+                    f"Cannot resolve target for column '{group_col}' from {source_table}"
                 )
                 continue
 
