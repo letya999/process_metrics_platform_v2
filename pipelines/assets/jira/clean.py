@@ -1289,6 +1289,9 @@ def clean_jira_sprint_issues_changelog(
 
     with engine.connect() as conn:
         context.log.info("Extracting sprint-issue changelog...")
+        # Rebuild changelog deterministically from raw data.
+        # This avoids stale/incorrect historical rows lingering across logic fixes.
+        conn.execute(text("TRUNCATE TABLE clean_jira.sprint_issues_changelog"))
 
         result = conn.execute(
             text(
@@ -1306,35 +1309,63 @@ def clean_jira_sprint_issues_changelog(
                 JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
                 WHERE item.field = 'Sprint'
             ),
+            to_sprints AS (
+                SELECT DISTINCT
+                    ce.issue_external_id,
+                    ce.changed_at,
+                    ce.author_id,
+                    trim(sprint_id) as sprint_external_id
+                FROM changelog_events ce
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(ce.to_value, ''), '\\s*,\\s*'
+                ) as sprint_id
+                WHERE ce.to_value IS NOT NULL
+                  AND ce.to_value != ''
+                  AND trim(sprint_id) != ''
+            ),
+            from_sprints AS (
+                SELECT DISTINCT
+                    ce.issue_external_id,
+                    ce.changed_at,
+                    ce.author_id,
+                    trim(sprint_id) as sprint_external_id
+                FROM changelog_events ce
+                CROSS JOIN LATERAL regexp_split_to_table(
+                    COALESCE(ce.from_value, ''), '\\s*,\\s*'
+                ) as sprint_id
+                WHERE ce.from_value IS NOT NULL
+                  AND ce.from_value != ''
+                  AND trim(sprint_id) != ''
+            ),
+            -- Jira Sprint field stores a full set in from/to. We need set delta:
+            -- added = to - from, removed = from - to.
             added_events AS (
                 SELECT
-                    issue_external_id,
-                    changed_at,
-                    trim(sprint_id) as sprint_external_id,
+                    t.issue_external_id,
+                    t.changed_at,
+                    t.sprint_external_id,
                     'added' as action,
-                    author_id
-                FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(
-                    COALESCE(to_value, ''), '\\s*,\\s*'
-                ) as sprint_id
-                WHERE to_value IS NOT NULL
-                  AND to_value != ''
-                  AND trim(sprint_id) != ''
+                    t.author_id
+                FROM to_sprints t
+                LEFT JOIN from_sprints f
+                  ON f.issue_external_id = t.issue_external_id
+                 AND f.changed_at = t.changed_at
+                 AND f.sprint_external_id = t.sprint_external_id
+                WHERE f.sprint_external_id IS NULL
             ),
             removed_events AS (
                 SELECT
-                    issue_external_id,
-                    changed_at,
-                    trim(sprint_id) as sprint_external_id,
+                    f.issue_external_id,
+                    f.changed_at,
+                    f.sprint_external_id,
                     'removed' as action,
-                    author_id
-                FROM changelog_events
-                CROSS JOIN LATERAL regexp_split_to_table(
-                    COALESCE(from_value, ''), '\\s*,\\s*'
-                ) as sprint_id
-                WHERE from_value IS NOT NULL
-                  AND from_value != ''
-                  AND trim(sprint_id) != ''
+                    f.author_id
+                FROM from_sprints f
+                LEFT JOIN to_sprints t
+                  ON t.issue_external_id = f.issue_external_id
+                 AND t.changed_at = f.changed_at
+                 AND t.sprint_external_id = f.sprint_external_id
+                WHERE t.sprint_external_id IS NULL
             ),
             -- Snapshot events: issues created directly in a sprint (no changelog entry)
             -- These are issues where Sprint was set at creation time, not via changelog

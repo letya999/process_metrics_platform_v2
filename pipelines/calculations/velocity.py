@@ -34,40 +34,66 @@ def get_done_status_ids(
     issue_statuses_df: pl.DataFrame = None,
 ) -> List[str]:
     """
-    Identify status IDs that represent "Done".
-    Priority:
-    1. Status Category = 'done' (from issue_statuses).
-    2. Column Name contains 'done' (fallback).
+    Identify status IDs that represent "Done" using board mapping.
+
+    Jira Velocity is board-specific and treats items as done if their status is
+    mapped to the right-most board column.
+    Fallback to status category only when board mapping is unavailable.
     """
     if issue_statuses_df is None:
         issue_statuses_df = pl.DataFrame()
-    done_ids = []
 
-    # 1. Status Category
-    if not issue_statuses_df.is_empty() and "category" in issue_statuses_df.columns:
-        cat_done = issue_statuses_df.filter(
-            pl.col("category").str.to_lowercase() == "done"
+    # 1. Primary: statuses mapped to right-most column per board
+    if (
+        not board_columns_df.is_empty()
+        and "board_id" in board_columns_df.columns
+        and "position" in board_columns_df.columns
+        and "status_id" in board_columns_df.columns
+    ):
+        rightmost = board_columns_df.group_by("board_id").agg(
+            pl.col("position").max().alias("max_position")
         )
-        if "id" in cat_done.columns:
-            ids = cat_done["id"].cast(pl.Utf8).str.to_lowercase().unique().to_list()
-            done_ids.extend(ids)
-
-    # 2. Board Columns (Fallback or Additive)
-    if not board_columns_df.is_empty():
-        done_columns = board_columns_df.filter(
-            pl.col("name").str.to_lowercase().str.contains("done")
+        done_columns = (
+            board_columns_df.join(rightmost, on="board_id", how="inner")
+            .filter(pl.col("position") == pl.col("max_position"))
+            .filter(pl.col("status_id").is_not_null())
         )
-        if "status_id" in done_columns.columns:
-            ids = (
+        if not done_columns.is_empty():
+            return (
                 done_columns["status_id"]
                 .cast(pl.Utf8)
                 .str.to_lowercase()
                 .unique()
                 .to_list()
             )
-            done_ids.extend(ids)
 
-    return list(set(done_ids))
+    # 1b. Compatibility fallback: explicit "Done" columns when no positions available
+    if (
+        not board_columns_df.is_empty()
+        and "name" in board_columns_df.columns
+        and "status_id" in board_columns_df.columns
+    ):
+        done_by_name = board_columns_df.filter(
+            pl.col("name").cast(pl.Utf8).str.to_lowercase().str.contains("done")
+        ).filter(pl.col("status_id").is_not_null())
+        if not done_by_name.is_empty():
+            return (
+                done_by_name["status_id"]
+                .cast(pl.Utf8)
+                .str.to_lowercase()
+                .unique()
+                .to_list()
+            )
+
+    # 2. Fallback: status category = done
+    if not issue_statuses_df.is_empty() and "category" in issue_statuses_df.columns:
+        cat_done = issue_statuses_df.filter(
+            pl.col("category").cast(pl.Utf8).str.to_lowercase() == "done"
+        )
+        if "id" in cat_done.columns:
+            return cat_done["id"].cast(pl.Utf8).str.to_lowercase().unique().to_list()
+
+    return []
 
 
 GRACE_PERIOD_MINUTES = 0
@@ -438,6 +464,7 @@ def identify_completed_issues(
     status_changelog_df: pl.DataFrame,
     done_status_ids: List[str],
     sprints_df: pl.DataFrame,
+    allow_current_status_fallback: bool = True,
 ) -> pl.DataFrame:
     """
     Identify issues from scope that were "Done" by sprint end.
@@ -458,10 +485,12 @@ def identify_completed_issues(
     )
 
     if status_changelog_df.is_empty() or not done_status_ids:
-        # Fallback: use current status from issues_df
-        return _identify_completed_by_current_status(
-            scope_df, issues_df, done_status_ids
-        )
+        if allow_current_status_fallback:
+            # Fallback: use current status from issues_df
+            return _identify_completed_by_current_status(
+                scope_df, issues_df, done_status_ids
+            )
+        return pl.DataFrame(schema={"issue_id": pl.Utf8, "sprint_id": pl.Utf8})
 
     # Find the status at sprint end for each issue
     status_at_end = (
@@ -542,7 +571,7 @@ def identify_completed_issues(
             completed = completed_from_changelog
 
         # 4. Final fallback: use current status for remaining issues
-        if not no_changelog.is_empty():
+        if allow_current_status_fallback and not no_changelog.is_empty():
             fallback_completed = _identify_completed_by_current_status(
                 no_changelog, issues_df, done_status_ids
             )
@@ -584,6 +613,8 @@ def calculate_velocity_facts(
     board_columns_df: pl.DataFrame,
     field_value_changelog_df: pl.DataFrame,
     issue_statuses_df: pl.DataFrame = None,
+    done_status_ids: List[str] | None = None,
+    allow_current_status_fallback: bool = True,
 ) -> pl.DataFrame:
     """
     Main orchestration function: Calculate Velocity facts.
@@ -592,9 +623,12 @@ def calculate_velocity_facts(
     """
     if issue_statuses_df is None:
         issue_statuses_df = pl.DataFrame()
-    done_status_ids = get_done_status_ids(
-        boards_df, board_columns_df, issue_statuses_df
-    )
+    if done_status_ids is None:
+        done_status_ids = get_done_status_ids(
+            boards_df, board_columns_df, issue_statuses_df
+        )
+    else:
+        done_status_ids = [str(status_id).lower() for status_id in done_status_ids]
 
     # 1. Extract CURRENT Story Points for all issues
     current_story_points_df = extract_story_points(
@@ -623,7 +657,12 @@ def calculate_velocity_facts(
 
     # 4. Identify Completed
     completed_df = identify_completed_issues(
-        final_scope_df, issues_df, status_changelog_df, done_status_ids, sprints_df
+        final_scope_df,
+        issues_df,
+        status_changelog_df,
+        done_status_ids,
+        sprints_df,
+        allow_current_status_fallback=allow_current_status_fallback,
     )
 
     # 5. Calculate Historical SP for Completed (at End/Complete Date)

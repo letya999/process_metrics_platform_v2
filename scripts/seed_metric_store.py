@@ -185,9 +185,11 @@ def seed_slice_rules(conn):
         text(
             """
         INSERT INTO metrics.slice_rules (rule_name, source_table, group_by_source_column, enabled) VALUES
-        ('By Issue Type', 'clean_jira.issues', 'issue_type', true),
-        ('By Priority', 'clean_jira.issues', 'priority', true)
-        ON CONFLICT DO NOTHING;
+        ('By Issue Type', 'clean_jira.issue_types', 'name', true),
+        ('By Sprint', 'clean_jira.sprints', 'name', true)
+        ON CONFLICT (rule_name) DO UPDATE SET
+            source_table = EXCLUDED.source_table,
+            group_by_source_column = EXCLUDED.group_by_source_column;
         """
         )
     )

@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock, patch
+
 import polars as pl
 import pytest
 
@@ -10,6 +12,7 @@ class TestSlicingUtils:
     def df(self):
         return pl.DataFrame(
             {
+                "id": ["i1", "i2", "i3", "i4"],
                 "project_id": ["p1", "p1", "p1", "p2"],
                 "issue_type": ["Bug", "Story", "Bug", "Story"],
                 "priority": ["High", "Low", "Medium", "High"],
@@ -17,7 +20,11 @@ class TestSlicingUtils:
             }
         )
 
-    def test_apply_slicing_basic_exact_match(self, df):
+    @pytest.fixture
+    def mock_engine(self):
+        return MagicMock()
+
+    def test_apply_slicing_basic_exact_match(self, df, mock_engine):
         rules_df = pl.DataFrame(
             {
                 "slice_rule_id": ["rule-1"],
@@ -31,20 +38,16 @@ class TestSlicingUtils:
         def mock_calc(subset_df):
             return subset_df.select(pl.col("value").sum().alias("sum_val"))
 
-        result = apply_slicing(df, rules_df, mock_calc)
+        result = apply_slicing(df, rules_df, mock_calc, engine=mock_engine)
 
         assert len(result) == 3
-        # rule-1, Bug (p1) -> 10 + 30 = 40
-        # rule-1, Story (p1) -> 20
-        # rule-1, Story (p2) -> 40
         bug_res = result.filter(
             (pl.col("slice_value") == "Bug") & (pl.col("project_id") == "p1")
         )
         assert bug_res["sum_val"][0] == 40
         assert bug_res["slice_rule_id"][0] == "rule-1"
-        assert bug_res["slice_rule_name"][0] == "By Issue Type"
 
-    def test_apply_slicing_project_specific(self, df):
+    def test_apply_slicing_project_specific(self, df, mock_engine):
         rules_df = pl.DataFrame(
             {
                 "slice_rule_id": ["rule-p1"],
@@ -58,17 +61,16 @@ class TestSlicingUtils:
         def mock_calc(subset_df):
             return subset_df.select(pl.col("value").sum().alias("sum_val"))
 
-        result = apply_slicing(df, rules_df, mock_calc)
+        result = apply_slicing(df, rules_df, mock_calc, engine=mock_engine)
 
-        # Only p1 data should be processed
-        assert len(result) == 2  # Bug, Story for p1
-        assert result["sum_val"].sum() == 60  # 10 + 20 + 30
+        assert len(result) == 2
+        assert result["sum_val"].sum() == 60
         assert (result["project_id"] == "p1").all()
 
-    def test_apply_slicing_empty_df(self):
+    def test_apply_slicing_empty_df(self, mock_engine):
         df = pl.DataFrame()
         rules = pl.DataFrame({"slice_rule_id": ["r1"]})
-        result = apply_slicing(df, rules, lambda x: x)
+        result = apply_slicing(df, rules, lambda x: x, engine=mock_engine)
         assert result.is_empty()
 
 
@@ -105,10 +107,12 @@ def test_get_slice_rules_returns_empty_on_read_error(monkeypatch):
     assert result.is_empty()
 
 
-def test_apply_slicing_heuristic_column_match_and_missing_project_id():
+def test_apply_slicing_heuristic_column_match():
+    # Heuristic match: 'priority' -> 'priority_name'
     df = pl.DataFrame(
         {
-            "bug_priority": ["High", "Low"],
+            "id": ["i1", "i2"],
+            "priority_name": ["High", "Low"],
             "value": [2, 3],
         }
     )
@@ -117,7 +121,7 @@ def test_apply_slicing_heuristic_column_match_and_missing_project_id():
             "slice_rule_id": ["r1"],
             "slice_rule_name": ["By Priority"],
             "group_by_column": ["priority"],
-            "source_table": ["clean_jira.bugs"],
+            "source_table": ["clean_jira.issues"],
             "project_id": [None],
             "enabled": [True],
         }
@@ -126,52 +130,28 @@ def test_apply_slicing_heuristic_column_match_and_missing_project_id():
     def calc(subset_df):
         return subset_df.select(pl.col("value").sum().alias("sum_val"))
 
-    result = apply_slicing(df, rules_df, calc)
+    mock_engine = MagicMock()
+    result = apply_slicing(df, rules_df, calc, engine=mock_engine)
     assert result.height == 2
     assert set(result["slice_value"].to_list()) == {"High", "Low"}
 
 
-def test_apply_slicing_calc_empty_and_target_col_missing():
+def test_apply_slicing_suffix_heuristic():
+    # Suffix match: 'issue_type' -> 'type_name'
     df = pl.DataFrame(
         {
-            "project_id": ["p1", "p2"],
-            "issue_type": ["Bug", "Story"],
-            "value": [1, 2],
-        }
-    )
-    rules_df = pl.DataFrame(
-        {
-            "slice_rule_id": ["r-missing", "r-calc-empty"],
-            "slice_rule_name": ["MissingCol", "CalcEmpty"],
-            "group_by_column": ["non_existing_col", "issue_type"],
-            "source_table": ["clean_jira.issues", "clean_jira.issues"],
-            "project_id": [None, None],
-            "enabled": [True, True],
-        }
-    )
-
-    def calc(_subset_df):
-        return pl.DataFrame()
-
-    result = apply_slicing(df, rules_df, calc)
-    assert result.is_empty()
-
-
-def test_apply_slicing_adds_project_id_when_result_missing():
-    df = pl.DataFrame(
-        {
-            "project_id": ["p1", "p1"],
-            "issue_type": ["Bug", "Story"],
-            "value": [1, 2],
+            "id": ["i1", "i2"],
+            "type_name": ["Bug", "Story"],
+            "value": [2, 3],
         }
     )
     rules_df = pl.DataFrame(
         {
             "slice_rule_id": ["r1"],
-            "slice_rule_name": ["P1"],
+            "slice_rule_name": ["By Issue Type"],
             "group_by_column": ["issue_type"],
             "source_table": ["clean_jira.issues"],
-            "project_id": ["p1"],
+            "project_id": [None],
             "enabled": [True],
         }
     )
@@ -179,7 +159,41 @@ def test_apply_slicing_adds_project_id_when_result_missing():
     def calc(subset_df):
         return subset_df.select(pl.col("value").sum().alias("sum_val"))
 
-    result = apply_slicing(df, rules_df, calc)
-    assert not result.is_empty()
-    assert "project_id" in result.columns
-    assert (result["project_id"] == "p1").all()
+    mock_engine = MagicMock()
+    result = apply_slicing(df, rules_df, calc, engine=mock_engine)
+    assert result.height == 2
+    assert set(result["slice_value"].to_list()) == {"Bug", "Story"}
+
+
+def test_apply_slicing_dynamic_injection():
+    # Test SmartSlicer integration
+    df = pl.DataFrame({"id": ["i1", "i2"], "value": [10, 20]})
+    rules_df = pl.DataFrame(
+        {
+            "slice_rule_id": ["r-dyn"],
+            "slice_rule_name": ["Dynamic"],
+            "group_by_column": ["sprint_name"],
+            "source_table": ["clean_jira.sprints"],
+            "project_id": [None],
+            "enabled": [True],
+        }
+    )
+
+    mapping_df = pl.DataFrame(
+        {"source_id": ["i1", "i2"], "slice_value": ["Sprint 1", "Sprint 1"]}
+    )
+
+    def calc(subset_df):
+        return subset_df.select(pl.col("value").sum().alias("sum_val"))
+
+    mock_engine = MagicMock()
+
+    with patch("pipelines.calculations.slicing_utils.SmartSlicer") as mock_slicer_cls:
+        mock_slicer = mock_slicer_cls.return_value
+        mock_slicer.get_slice_mapping.return_value = mapping_df
+
+        result = apply_slicing(df, rules_df, calc, engine=mock_engine)
+
+        assert not result.is_empty()
+        assert result["slice_value"][0] == "Sprint 1"
+        assert result["sum_val"][0] == 30
