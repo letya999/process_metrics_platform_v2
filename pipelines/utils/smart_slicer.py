@@ -114,7 +114,7 @@ class SmartSlicer:
             # 2. Pathfinding
             if source_table == target_table:
                 # Direct column in the same table
-                query = f"SELECT id AS source_id, {col_name} AS slice_value FROM {source_table}"  # noqa: S608
+                query = f"SELECT CAST(id AS TEXT) AS source_id, {col_name} AS slice_value FROM {source_table}"  # noqa: S608
             else:
                 path = self._find_path(source_table, target_table)
                 if not path:
@@ -123,9 +123,9 @@ class SmartSlicer:
                     )
                     return None
 
-                # 3. SQL Construction
+                # 3. SQL Construction — CAST UUID to TEXT so Polars gets strings, not Object
                 sql_parts = [
-                    f"SELECT t0.id AS source_id, t{len(path)}.{col_name} AS slice_value"
+                    f"SELECT CAST(t0.id AS TEXT) AS source_id, t{len(path)}.{col_name} AS slice_value"
                 ]
                 sql_parts.append(f"FROM {source_table} t0")
 
