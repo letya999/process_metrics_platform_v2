@@ -353,16 +353,35 @@ def calculate_velocity(
     issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
 
     def velocity_slice_calc(df_subset):
+        # Scope sprint-related data to only the project(s) in this subset.
+        # Without this, every slice call processes ALL projects' sprints and
+        # discards empty rows afterwards — O(N_projects * N_types) fan-out.
+        subset_pids = (
+            df_subset.select("project_id").drop_nulls().unique().to_series().to_list()
+        )
+        sub_sprints = sprints_df.filter(pl.col("project_id").is_in(subset_pids))
+        if sub_sprints.is_empty():
+            return pl.DataFrame()
+        sub_sprint_ids = sub_sprints.select("id").to_series().to_list()
+        sub_boards = boards_df.filter(pl.col("project_id").is_in(subset_pids))
+        sub_board_ids = sub_boards.select("id").to_series().to_list()
+
         return velocity_logic.calculate_velocity_facts(
-            sprints_df=sprints_df,
-            sprint_issues_df=sprint_issues_df,
-            sprint_changelog_df=sprint_changelog_df,
+            sprints_df=sub_sprints,
+            sprint_issues_df=sprint_issues_df.filter(
+                pl.col("sprint_id").is_in(sub_sprint_ids)
+            ),
+            sprint_changelog_df=sprint_changelog_df.filter(
+                pl.col("sprint_id").is_in(sub_sprint_ids)
+            ),
             issues_df=df_subset,
             field_values_df=field_values_df,
             field_keys_df=field_keys_df,
             status_changelog_df=status_changelog_df,
-            boards_df=boards_df,
-            board_columns_df=board_columns_df,
+            boards_df=sub_boards,
+            board_columns_df=board_columns_df.filter(
+                pl.col("board_id").is_in(sub_board_ids)
+            ),
             field_value_changelog_df=field_value_changelog_df,
             issue_statuses_df=issue_statuses_df,
             done_status_ids=done_status_ids or None,

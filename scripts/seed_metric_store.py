@@ -181,15 +181,12 @@ def sync_dim_projects(conn):
 
 def seed_slice_rules(conn):
     print("Seeding default slice_rules...")
+    conn.execute(text("DELETE FROM metrics.slice_rules"))
     conn.execute(
         text(
             """
         INSERT INTO metrics.slice_rules (rule_name, source_table, group_by_source_column, enabled) VALUES
-        ('By Issue Type', 'clean_jira.issue_types', 'name', true),
-        ('By Sprint', 'clean_jira.sprints', 'name', true)
-        ON CONFLICT (rule_name) DO UPDATE SET
-            source_table = EXCLUDED.source_table,
-            group_by_source_column = EXCLUDED.group_by_source_column;
+        ('By Issue Type', 'clean_jira.issue_types', 'name', true);
         """
         )
     )

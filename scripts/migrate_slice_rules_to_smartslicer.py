@@ -22,27 +22,36 @@ def migrate():
     print("Migrating slice rules to SmartSlicer convention...")
 
     with engine.begin() as conn:
-        # Clear old rules that might be causing issues
+        # Clear old rules
         conn.execute(
             text(
                 "DELETE FROM metrics.slice_rules WHERE rule_name IN ('By Issue Type', 'By Priority', 'By Sprint')"
             )
         )
 
-        # Insert correct rules
+        # Insert current rules
         conn.execute(
             text(
                 """
             INSERT INTO metrics.slice_rules (rule_name, source_table, group_by_source_column, enabled) VALUES
-            ('By Issue Type', 'clean_jira.issue_types', 'name', true),
-            ('By Sprint', 'clean_jira.sprints', 'name', true)
-            ON CONFLICT (rule_name) DO UPDATE SET
-                source_table = EXCLUDED.source_table,
-                group_by_source_column = EXCLUDED.group_by_source_column;
+            ('By Issue Type', 'clean_jira.issue_types', 'name', true);
             """
             )
         )
-    print("Migration completed.")
+
+        # Verification
+        print("\nVerifying metrics.slice_rules table state:")
+        res = conn.execute(
+            text(
+                "SELECT rule_name, source_table, group_by_source_column, enabled FROM metrics.slice_rules"
+            )
+        )
+        for row in res.fetchall():
+            print(
+                f"Rule: {row[0]} | Source: {row[1]} | Col: {row[2]} | Enabled: {row[3]}"
+            )
+
+    print("\nMigration completed.")
 
 
 if __name__ == "__main__":

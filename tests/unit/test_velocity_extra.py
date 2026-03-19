@@ -64,14 +64,24 @@ def test_determine_story_points_at_date_prefers_historic_value_after_target_date
 
 def test_identify_completed_issues_uses_from_status_of_first_future_change():
     scope = pl.DataFrame({"issue_id": ["i1"], "sprint_id": ["s1"]})
-    issues = pl.DataFrame({"id": ["i1"], "status_id": ["todo"]})
+    # jira_resolved_at inside window provides completion evidence required by
+    # the window-gate check; the future-change path confirms status was "done".
+    issues = pl.DataFrame(
+        {
+            "id": ["i1"],
+            "status_id": ["todo"],
+            "jira_resolved_at": [datetime(2026, 1, 8)],
+        }
+    )
     sprints = pl.DataFrame(
         {
             "id": ["s1"],
+            "start_date": [datetime(2026, 1, 1)],
             "end_date": [datetime(2026, 1, 10)],
             "complete_date": [None],
         }
     )
+    # Only change is AFTER sprint end — exercises the first-future-change path
     status_changelog = pl.DataFrame(
         {
             "issue_id": ["i1"],
