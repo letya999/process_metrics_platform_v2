@@ -19,95 +19,9 @@ Business Rules:
 4. All issues with either resolved_at or Done transition are included
 """
 
-from typing import Dict, List
+from typing import List
 
 import polars as pl
-
-
-def identify_commitment_points(
-    boards_df: pl.DataFrame, board_columns_df: pl.DataFrame
-) -> Dict[str, any]:
-    """
-    Identify "In Progress" (start) and "Done" (end) columns from board configuration.
-
-    Args:
-        boards_df: DataFrame of boards
-        board_columns_df: DataFrame of board columns with status mappings (must include position)
-
-    Returns:
-        Dict with:
-        - start_status_ids: List of status IDs in "In Progress" column
-        - end_status_ids: List of status IDs in "Done" column
-        - middle_status_ids: List of ALL status IDs between start and end columns
-        - start_position: Position of start column
-        - end_position: Position of end column
-
-    Example:
-        >>> points = identify_commitment_points(boards, columns)
-        >>> print(f"Found {len(points['start_status_ids'])} start statuses")
-    """
-    if board_columns_df.is_empty():
-        return {
-            "start_status_ids": [],
-            "end_status_ids": [],
-            "middle_status_ids": [],
-            "start_position": None,
-            "end_position": None,
-        }
-
-    # Find "In Progress" columns (start commitment point)
-    start_columns = board_columns_df.filter(
-        pl.col("name").str.to_lowercase().str.contains("in progress")
-        | pl.col("name").str.to_lowercase().str.contains("в работе")  # Russian
-    )
-
-    # Find "Done" columns (end commitment point)
-    end_columns = board_columns_df.filter(
-        pl.col("name").str.to_lowercase().str.contains("done")
-        | pl.col("name").str.to_lowercase().str.contains("готово")  # Russian
-    )
-
-    if start_columns.is_empty() or end_columns.is_empty():
-        return {
-            "start_status_ids": [],
-            "end_status_ids": [],
-            "middle_status_ids": [],
-            "start_position": None,
-            "end_position": None,
-        }
-
-    # Get positions
-    start_position = start_columns["position"].min()
-    end_position = end_columns["position"].min()
-
-    # Validate that start comes before end
-    if start_position >= end_position:
-        return {
-            "start_status_ids": [],
-            "end_status_ids": [],
-            "middle_status_ids": [],
-            "start_position": None,
-            "end_position": None,
-        }
-
-    # Get all status IDs for start and end columns
-    start_status_ids = start_columns["status_id"].unique().drop_nulls().to_list()
-    end_status_ids = end_columns["status_id"].unique().drop_nulls().to_list()
-
-    # Get ALL status IDs in columns between start (inclusive) and end (exclusive)
-    # This matches old SQL logic: cs.order_num >= p.start_order AND cs.order_num < p.end_order
-    middle_columns = board_columns_df.filter(
-        (pl.col("position") >= start_position) & (pl.col("position") < end_position)
-    )
-    middle_status_ids = middle_columns["status_id"].unique().drop_nulls().to_list()
-
-    return {
-        "start_status_ids": start_status_ids,
-        "end_status_ids": end_status_ids,
-        "middle_status_ids": middle_status_ids,
-        "start_position": start_position,
-        "end_position": end_position,
-    }
 
 
 def calculate_lead_time_per_issue(
@@ -121,7 +35,7 @@ def calculate_lead_time_per_issue(
 
     Business Rules (matching old SQL implementation):
     1. commitment_end:
-       - Find LAST time issue LEFT "Done" column (last_left_end)
+       - Find LAST time each issue LEFT "Done" column (last_left_end)
        - Find FIRST time issue entered "Done" column AFTER last_left_end
        - Fallback: Use issue.jira_resolved_at if no transition found
     2. commitment_start:
@@ -267,10 +181,11 @@ def calculate_lead_time_per_issue(
         )
         .with_columns(
             [
-                # Calculate lead time in days
+                # Calculate lead time in days (with defensive casting)
                 (
                     (
-                        pl.col("commitment_end_at") - pl.col("commitment_start_at")
+                        pl.col("commitment_end_at").cast(pl.Datetime("us", "UTC"))
+                        - pl.col("commitment_start_at").cast(pl.Datetime("us", "UTC"))
                     ).dt.total_seconds()
                     / 86400.0
                 ).alias("lead_time_days")
@@ -301,11 +216,6 @@ def calculate_histogram_bins(lead_time_df: pl.DataFrame) -> pl.DataFrame:
 
     Returns:
         DataFrame: [project_id, bin_number, tickets_count]
-
-    Example:
-        >>> bins_df = calculate_histogram_bins(lead_time_df)
-        >>> print(bins_df.sort("bin_number"))
-        # bin 1: 50 tickets, bin 2: 30 tickets, etc.
     """
     if lead_time_df.is_empty():
         return pl.DataFrame(
@@ -370,12 +280,6 @@ def calculate_lead_time_slice(lead_time_df: pl.DataFrame) -> pl.DataFrame:
     """
     Calculate aggregated Lead Time metrics sliced by issue type.
 
-    Computes:
-    - Average lead time
-    - Median (P50)
-    - P90 (90th percentile)
-    - Total issue count
-
     Args:
         lead_time_df: Lead time facts
 
@@ -424,61 +328,3 @@ def calculate_lead_time_slice(lead_time_df: pl.DataFrame) -> pl.DataFrame:
     )
 
     return slice_df
-
-
-def calculate_lead_time_facts(
-    issues_df: pl.DataFrame,
-    status_changelog_df: pl.DataFrame,
-    boards_df: pl.DataFrame,
-    board_columns_df: pl.DataFrame,
-) -> pl.DataFrame:
-    """
-    Main orchestration function: Calculate Lead Time facts.
-
-    This function implements the complete Lead Time calculation logic,
-    replacing the complex SQL Materialized View with debuggable Python code.
-
-    Args:
-        issues_df: Issue details (must include: id, project_id, key, type_name,
-                   jira_created_at, jira_resolved_at)
-        status_changelog_df: Status change history (must include: issue_id,
-                            from_status_id, to_status_id, changed_at)
-        boards_df: Board definitions
-        board_columns_df: Board column configuration (must include: id, board_id,
-                         name, position, status_id)
-
-    Returns:
-        DataFrame ready to insert into metrics.fact_lead_time
-
-    Example:
-        >>> lead_time_df = calculate_lead_time_facts(
-        ...     issues, status_changelog, boards, board_columns
-        ... )
-        >>> print(lead_time_df.describe())
-    """
-    # Step 1: Identify commitment points (start and end statuses)
-    points = identify_commitment_points(boards_df, board_columns_df)
-
-    if not points["middle_status_ids"] or not points["end_status_ids"]:
-        # No valid board configuration - return empty DataFrame
-        return pl.DataFrame(
-            schema={
-                "issue_id": pl.Utf8,
-                "project_id": pl.Utf8,
-                "issue_key": pl.Utf8,
-                "issue_type": pl.Utf8,
-                "commitment_start_at": pl.Datetime,
-                "commitment_end_at": pl.Datetime,
-                "lead_time_days": pl.Float64,
-            }
-        )
-
-    # Step 2: Calculate lead time per issue
-    lead_time = calculate_lead_time_per_issue(
-        issues_df,
-        status_changelog_df,
-        points["middle_status_ids"],
-        points["end_status_ids"],
-    )
-
-    return lead_time

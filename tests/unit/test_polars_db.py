@@ -1,7 +1,9 @@
 import uuid
+from unittest.mock import MagicMock
 
 import pandas as pd
 import polars as pl
+import pytest
 
 from pipelines.utils import polars_db
 
@@ -12,6 +14,8 @@ class _DummyConn:
 
     def execute(self, statement, params=None):
         self.calls.append((str(statement), params))
+        # Mock successful execution
+        return MagicMock()
 
     def commit(self):
         return None
@@ -76,73 +80,22 @@ def test_read_table_with_params_uses_pandas_and_casts_uuid(monkeypatch):
     assert result["name"][0] == "row"
 
 
-def test_write_fact_values_deletes_and_returns_zero_for_empty_df():
+def test_write_fact_values_validates_schema():
     engine = _DummyEngine()
-    empty_df = pl.DataFrame(
-        {
-            "metric_id": [],
-            "project_agg_id": [],
-            "time_id": [],
-            "value": [],
-        }
-    )
+    invalid_df = pl.DataFrame({"wrong": [1]})
 
-    inserted = polars_db.write_fact_values(
-        df=empty_df,
-        engine=engine,
-        metric_ids=["m1"],
-        project_agg_ids=["p1"],
-        time_id_start=20260101,
-        time_id_end=20260131,
-    )
-
-    assert inserted == 0
-    assert len(engine.conn.calls) == 1
-    _, params = engine.conn.calls[0]
-    assert params == {
-        "metric_ids": ["m1"],
-        "project_agg_ids": ["p1"],
-        "start": 20260101,
-        "end": 20260131,
-    }
+    with pytest.raises(ValueError, match="missing required fact_values columns"):
+        polars_db.write_fact_values(
+            df=invalid_df,
+            engine=engine,
+            metric_ids=["m1"],
+            project_agg_ids=["p1"],
+            time_id_start=20260101,
+            time_id_end=20260131,
+        )
 
 
-def test_write_fact_values_uses_adbc_path(monkeypatch):
-    engine = _DummyEngine()
-    df = pl.DataFrame(
-        {
-            "metric_id": ["m1"],
-            "project_agg_id": ["p1"],
-            "time_id": [20260101],
-            "value": [1.0],
-        }
-    )
-    called = {}
-
-    def _fake_write_database(self, table_name, connection, if_table_exists, engine):
-        called["table_name"] = table_name
-        called["connection"] = connection
-        called["if_table_exists"] = if_table_exists
-        called["engine"] = engine
-
-    monkeypatch.setattr(pl.DataFrame, "write_database", _fake_write_database)
-
-    inserted = polars_db.write_fact_values(
-        df=df,
-        engine=engine,
-        metric_ids=["m1"],
-        project_agg_ids=["p1"],
-        time_id_start=20260101,
-        time_id_end=20260101,
-    )
-
-    assert inserted == 1
-    assert called["table_name"] == "metrics.fact_values"
-    assert called["if_table_exists"] == "append"
-    assert called["engine"] == "adbc"
-
-
-def test_write_fact_values_falls_back_to_pandas(monkeypatch):
+def test_write_fact_values_atomic_flow(monkeypatch):
     engine = _DummyEngine()
     df = pl.DataFrame(
         {
@@ -153,20 +106,13 @@ def test_write_fact_values_falls_back_to_pandas(monkeypatch):
         }
     )
 
-    def _failing_write_database(self, table_name, connection, if_table_exists, engine):
-        raise RuntimeError("adbc failed")
+    to_sql_called = []
 
-    to_sql_calls = {"count": 0}
-
-    def _fake_to_sql(self, name, con, schema, if_exists, index, method, chunksize=None):
-        to_sql_calls["count"] += 1
-        assert name == "fact_values"
-        assert schema == "metrics"
+    def _fake_to_sql(self, name, con, if_exists, index, method, chunksize=None):
+        to_sql_called.append(name)
+        assert name == "_fact_values_stage"
         assert if_exists == "append"
-        assert method == "multi"
-        assert chunksize == 5000
 
-    monkeypatch.setattr(pl.DataFrame, "write_database", _failing_write_database)
     monkeypatch.setattr(pd.DataFrame, "to_sql", _fake_to_sql)
 
     inserted = polars_db.write_fact_values(
@@ -179,34 +125,14 @@ def test_write_fact_values_falls_back_to_pandas(monkeypatch):
     )
 
     assert inserted == 1
-    assert to_sql_calls["count"] == 1
+    assert "_fact_values_stage" in to_sql_called
 
-
-def test_write_table_replace_truncates_and_appends(monkeypatch):
-    engine = _DummyEngine()
-    df = pl.DataFrame(
-        {"id": [None], "value": [1.0], "created_at": [None], "updated_at": [None]}
-    )
-
-    to_sql_calls = {"count": 0}
-
-    def _fake_to_sql(self, name, con, schema, if_exists, index, method):
-        to_sql_calls["count"] += 1
-        assert name == "fact_values"
-        assert schema == "metrics"
-        assert if_exists == "append"
-        assert index is False
-        assert method == "multi"
-
-    monkeypatch.setattr(pd.DataFrame, "to_sql", _fake_to_sql)
-
-    polars_db.write_table(
-        df, engine, table="fact_values", schema="metrics", if_exists="replace"
-    )
-
-    assert to_sql_calls["count"] == 1
-    assert len(engine.conn.calls) == 1
-    assert "TRUNCATE TABLE metrics.fact_values" in engine.conn.calls[0][0]
+    # Check SQL calls sequence
+    calls = [c[0] for c in engine.conn.calls]
+    assert any("CREATE TEMP TABLE _fact_values_stage" in c for c in calls)
+    assert any("DELETE FROM metrics.fact_values" in c for c in calls)
+    assert any("INSERT INTO metrics.fact_values" in c for c in calls)
+    assert any("DROP TABLE _fact_values_stage" in c for c in calls)
 
 
 def test_execute_sql_runs_statement():

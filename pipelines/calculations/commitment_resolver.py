@@ -3,11 +3,114 @@ Commitment Resolver: Dynamic lookup of start and end columns for flow metrics.
 Replaces hardcoded string heuristics with database-driven rules.
 """
 
-from typing import Any, Dict, Optional
+import logging
+from typing import Any, Dict, List, Optional
 
 import polars as pl
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+
+from pipelines.utils.polars_db import read_table
+
+logger = logging.getLogger(__name__)
+
+
+def load_commitment_rules_for_calc(
+    engine: Engine, calc_code: str
+) -> List[Dict[str, Any]]:
+    """Load commitment rules for a calculation in one query."""
+    try:
+        rules_df = read_table(
+            engine,
+            """
+            SELECT
+                cr.id AS commitment_rule_id,
+                cr.project_id,
+                cr.board_id,
+                cr.start_column_id,
+                cr.end_column_id,
+                cr.start_column_name_snapshot AS start_column_name,
+                cr.end_column_name_snapshot AS end_column_name
+            FROM metrics.commitment_rules cr
+            JOIN metrics.calculations c ON c.id = cr.target_calculation_id
+            WHERE c.calc_code = :calc_code
+            """,
+            params={"calc_code": calc_code},
+        )
+        return rules_df.to_dicts() if not rules_df.is_empty() else []
+    except Exception as exc:
+        logger.warning(
+            "Failed to load commitment rules for calc_code=%s; using empty rules fallback. Error: %s",
+            calc_code,
+            exc,
+        )
+        return []
+
+
+def resolve_rule_from_cache(
+    rules: List[Dict[str, Any]], project_id: str, board_id: str
+) -> Optional[Dict[str, Any]]:
+    """Pick best rule with priority: project+board > project > board > global."""
+    candidates = []
+    for rule in rules:
+        rule_project = str(rule["project_id"]) if rule.get("project_id") else None
+        rule_board = str(rule["board_id"]) if rule.get("board_id") else None
+
+        if rule_project not in (None, str(project_id)):
+            continue
+        if rule_board not in (None, str(board_id)):
+            continue
+
+        score = (int(rule_project is not None), int(rule_board is not None))
+        candidates.append((score, rule))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def get_done_column_ids(board_columns_df: pl.DataFrame) -> List[str]:
+    """
+    Unified "done status" resolution.
+    1. Try rightmost column by position (GROUP BY board_id, take max position).
+    2. Fallback: name contains "done|готово|closed|resolved|completed".
+    3. Return list of status_ids.
+    """
+    if board_columns_df.is_empty():
+        return []
+
+    # Strategy 1: Rightmost column
+    try:
+        max_pos_df = board_columns_df.group_by("board_id").agg(
+            pl.col("position").max().alias("max_pos")
+        )
+        rightmost_cols = board_columns_df.join(max_pos_df, on="board_id").filter(
+            pl.col("position") == pl.col("max_pos")
+        )
+        if not rightmost_cols.is_empty():
+            status_ids = (
+                rightmost_cols.select("status_id").drop_nulls().to_series().to_list()
+            )
+            if status_ids:
+                return [str(sid) for sid in status_ids]
+    except Exception as exc:
+        logger.debug(
+            "Failed rightmost done-column detection; using heuristic fallback: %s", exc
+        )
+
+    # Strategy 2: Heuristic
+    done_cols = board_columns_df.filter(
+        pl.col("name")
+        .str.to_lowercase()
+        .str.contains("done|готово|closed|resolved|completed")
+    )
+    if not done_cols.is_empty():
+        status_ids = done_cols.select("status_id").drop_nulls().to_series().to_list()
+        return [str(sid) for sid in status_ids]
+
+    return []
 
 
 def resolve_commitment_columns(

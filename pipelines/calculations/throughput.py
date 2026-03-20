@@ -17,6 +17,8 @@ Business Rules:
 
 import polars as pl
 
+from pipelines.calculations.commitment_resolver import get_done_column_ids
+
 
 def calculate_weekly_throughput(
     issues_df: pl.DataFrame,
@@ -95,7 +97,7 @@ def calculate_generic_throughput(
         return pl.DataFrame()
 
     # Identify "Done" statuses from board configuration
-    done_status_ids = _get_done_status_ids(board_columns_df)
+    done_status_ids = get_done_column_ids(board_columns_df)
 
     if not done_status_ids:
         # No "Done" column configured - use jira_resolved_at as fallback
@@ -181,27 +183,3 @@ def calculate_generic_throughput(
         )
 
     return weekly_throughput
-
-
-def _get_done_status_ids(board_columns_df: pl.DataFrame) -> list[str]:
-    """
-    Extract status IDs that represent "Done" from board configuration.
-
-    Args:
-        board_columns_df: Board columns with status mappings
-
-    Returns:
-        List of status IDs representing "Done" state
-    """
-    if board_columns_df.is_empty():
-        return []
-
-    done_columns = board_columns_df.filter(
-        pl.col("name").str.to_lowercase().str.contains("done")
-        | pl.col("name").str.to_lowercase().str.contains("готово")  # Russian
-    )
-
-    if "status_id" in done_columns.columns:
-        return done_columns["status_id"].unique().drop_nulls().to_list()
-
-    return []

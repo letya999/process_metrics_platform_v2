@@ -48,7 +48,7 @@ def metrics_lead_time(
 
     return {
         "status": "success",
-        "table": "fact_lead_time",
+        "table": "fact_values",
         "calc_code": "lead_time_days",
         "stats": dict(stats) if stats else {},
     }
@@ -98,7 +98,7 @@ def metrics_velocity(
 
     return {
         "status": "success",
-        "table": "fact_velocity",
+        "table": "fact_values",
         "calc_code": "velocity_*",
         "stats": dict(stats) if stats else {},
     }
@@ -134,7 +134,7 @@ def metrics_throughput(
 
     return {
         "status": "success",
-        "source": "fact_lead_time",
+        "source": "fact_values",
         "calc_code": "throughput_count",
         "stats": dict(stats) if stats else {},
     }

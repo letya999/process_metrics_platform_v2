@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 
 import polars as pl
 
-from pipelines.calculations.lead_time import identify_commitment_points
+from pipelines.calculations.commitment_resolver import (
+    identify_commitment_points_heuristic,
+)
 
 
 def calculate_work_item_aging_facts(
@@ -63,15 +65,34 @@ def calculate_work_item_aging_facts(
         return pl.DataFrame()
 
     # 3. Identify commitment points (In Progress)
-    points = identify_commitment_points(boards_df, board_columns_df)
+    points = identify_commitment_points_heuristic(board_columns_df)
     middle_status_ids = points["middle_status_ids"]
+    end_status_ids = points["end_status_ids"]
 
     # 4. Find commitment start for each active issue
     if not status_changelog_df.is_empty() and middle_status_ids:
-        # FIRST entry to any column between "In Progress" and "Done"
+        # a. Find LAST time issue LEFT the "Done" column (to handle Done -> In Progress)
+        last_left_done = (
+            status_changelog_df.filter(
+                pl.col("from_status_id").is_in(end_status_ids)
+                & ~pl.col("to_status_id").is_in(end_status_ids)
+            )
+            .group_by("issue_id")
+            .agg(pl.col("changed_at").max().alias("last_left_done_at"))
+        )
+
+        # b. Find FIRST entry to In Progress (middle) AFTER that exit
         start_transitions = status_changelog_df.filter(
             pl.col("to_status_id").is_in(middle_status_ids)
         )
+
+        if not last_left_done.is_empty():
+            start_transitions = start_transitions.join(
+                last_left_done, on="issue_id", how="left"
+            ).filter(
+                pl.col("last_left_done_at").is_null()
+                | (pl.col("changed_at") > pl.col("last_left_done_at"))
+            )
 
         start_events = start_transitions.group_by("issue_id").agg(
             pl.col("changed_at").min().alias("start_at_from_changelog")
