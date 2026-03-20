@@ -836,7 +836,7 @@ def clean_jira_field_values(
         for i in range(0, len(target_columns), batch_size):
             chunk = target_columns[i : i + batch_size]
             context.log.info(
-                f"Processing batch {i//batch_size + 1}: columns {i} to {i + len(chunk)}"
+                f"Processing batch {i // batch_size + 1}: columns {i} to {i + len(chunk)}"
             )
 
             # Build dynamic select

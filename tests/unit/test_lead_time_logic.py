@@ -11,11 +11,13 @@ from datetime import datetime
 
 import polars as pl
 
+from pipelines.calculations.commitment_resolver import (
+    identify_commitment_points_heuristic as identify_commitment_points,
+)
 from pipelines.calculations.lead_time import (
     calculate_histogram_bins,
     calculate_lead_time_per_issue,
     calculate_lead_time_slice,
-    identify_commitment_points,
 )
 
 
@@ -24,8 +26,6 @@ class TestCommitmentPoints:
 
     def test_identify_start_and_end_columns(self):
         """In Progress and Done columns are identified correctly."""
-        boards = pl.DataFrame({"id": ["BOARD-1"], "project_id": ["PROJ-1"]})
-
         board_columns = pl.DataFrame(
             {
                 "id": ["COL-1", "COL-2", "COL-3"],
@@ -36,7 +36,7 @@ class TestCommitmentPoints:
             }
         )
 
-        points = identify_commitment_points(boards, board_columns)
+        points = identify_commitment_points(board_columns)
 
         assert len(points["start_status_ids"]) == 1
         assert points["start_status_ids"][0] == "STATUS-2"
@@ -47,7 +47,6 @@ class TestCommitmentPoints:
 
     def test_empty_board_columns_returns_empty(self):
         """No board columns = no commitment points."""
-        boards = pl.DataFrame({"id": [], "project_id": []})
         board_columns = pl.DataFrame(
             {"id": [], "board_id": [], "name": [], "position": [], "status_id": []},
             schema={
@@ -59,15 +58,13 @@ class TestCommitmentPoints:
             },
         )
 
-        points = identify_commitment_points(boards, board_columns)
+        points = identify_commitment_points(board_columns)
 
         assert not points["start_status_ids"]
         assert not points["end_status_ids"]
 
     def test_russian_column_names_are_recognized(self):
         """Russian column names (В работе, Готово) are recognized."""
-        boards = pl.DataFrame({"id": ["BOARD-1"], "project_id": ["PROJ-1"]})
-
         board_columns = pl.DataFrame(
             {
                 "id": ["COL-1", "COL-2"],
@@ -78,7 +75,7 @@ class TestCommitmentPoints:
             }
         )
 
-        points = identify_commitment_points(boards, board_columns)
+        points = identify_commitment_points(board_columns)
 
         assert len(points["start_status_ids"]) == 1
         assert len(points["end_status_ids"]) == 1

@@ -302,7 +302,7 @@ def test_calculate_velocity_skipped_no_data_slices_and_check(monkeypatch):
         if "FROM clean_jira.issue_statuses" in query:
             return pl.DataFrame({"id": ["s1"], "name": ["Done"], "category": ["done"]})
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[2]], schema=["count"])
+            return pl.DataFrame({"row_count": [2], "negative_count": [0]})
         raise AssertionError(query)
 
     monkeypatch.setattr(velocity, "read_table", _read_table)
@@ -1215,7 +1215,7 @@ def test_calculate_backlog_growth_with_slices_and_check(monkeypatch):
                 {"project_id": ["p1"], "position": [1], "status_id": ["s1"]}
             )
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[2]], schema=["count"])
+            return pl.DataFrame({"row_count": [2], "negative_count": [0]})
         raise AssertionError(query)
 
     monkeypatch.setattr(backlog_growth, "read_table", _read_table)

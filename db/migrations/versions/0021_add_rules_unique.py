@@ -5,6 +5,7 @@ Revises: 0020_seed_metadata
 Create Date: 2026-03-19 13:00:00.000000
 
 """
+
 import sqlalchemy as sa
 from alembic import op
 

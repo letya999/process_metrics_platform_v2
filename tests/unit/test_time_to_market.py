@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 
 import polars as pl
 
+from pipelines.calculations.commitment_resolver import (
+    get_done_column_ids as _get_done_status_ids,
+)
 from pipelines.calculations.time_to_market import (
-    _get_done_status_ids,
     _get_release_dates,
     calculate_release_cadence,
     calculate_time_to_market,

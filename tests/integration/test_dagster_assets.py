@@ -131,7 +131,7 @@ class TestMetricsAssets:
         )
 
         assert result["status"] == "success"
-        assert result["table"] == "fact_lead_time"
+        assert result["table"] == "fact_values"
 
     def test_metrics_velocity_executes(self, mock_database_resource):
         """Test that metrics_velocity asset can execute."""
@@ -158,7 +158,7 @@ class TestMetricsAssets:
         )
 
         assert result["status"] == "success"
-        assert result["table"] == "fact_velocity"
+        assert result["table"] == "fact_values"
 
     def test_metrics_throughput_executes(self, mock_database_resource):
         """Test that metrics_throughput asset can execute."""
@@ -185,7 +185,7 @@ class TestMetricsAssets:
         )
 
         assert result["status"] == "success"
-        assert result["source"] == "fact_lead_time"
+        assert result["source"] == "fact_values"
 
 
 class TestDagsterDefinitions:

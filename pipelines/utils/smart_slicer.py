@@ -132,7 +132,7 @@ class SmartSlicer:
                 for i, (_, local_col, ref_col) in enumerate(path):
                     next_table = path[i][0]
                     sql_parts.append(
-                        f"JOIN {next_table} t{i+1} ON t{i}.{local_col} = t{i+1}.{ref_col}"
+                        f"JOIN {next_table} t{i + 1} ON t{i}.{local_col} = t{i + 1}.{ref_col}"
                     )
 
                 query = " ".join(sql_parts)  # noqa: S608

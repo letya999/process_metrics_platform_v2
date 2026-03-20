@@ -63,7 +63,8 @@ GROUP BY project_key, full_date;
 CREATE OR REPLACE VIEW metrics.mv_sliced_metrics AS
 SELECT
     project_key, metric_code, calc_code, slice_rule_name, slice_value,
-    full_date as date, value, unit_code
+    full_date as date, value, unit_code,
+    calc_settings_type, calc_settings_json, context_json
 FROM metrics.v_facts
 WHERE slice_rule_name IS NOT NULL;
 

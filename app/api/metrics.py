@@ -376,9 +376,14 @@ async def get_throughput_metrics(
             )
             for row in rows
         ]
-        return ThroughputResponse(items=items, total_count=len(items))
+        total_completed = sum(item.issues_completed for item in items)
+        return ThroughputResponse(
+            items=items,
+            total_count=len(items),
+            total_issues_completed=total_completed,
+        )
     except Exception:
-        return ThroughputResponse(items=[], total_count=0)
+        return ThroughputResponse(items=[], total_count=0, total_issues_completed=0)
 
 
 @router.post("/metrics/refresh", status_code=status.HTTP_202_ACCEPTED)
