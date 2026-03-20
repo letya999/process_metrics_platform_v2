@@ -170,9 +170,10 @@ def identify_sprint_commitment(
     Logic:
     1. Find issues that were in the sprint at (start_date + GRACE_PERIOD_MINUTES).
     2. "In sprint" means: they were added before/at the cutoff AND not removed before/at the cutoff.
-    3. Filter: Jira excludes issues that are LATER removed from the sprint from Commitment.
-       So we also check that their FINAL action in the sprint is 'added'.
-    4. Fallback: Issues in sprint_issues_df with no changelog are assumed commitment.
+    3. Issues removed BEFORE the cutoff (sprint start) are NOT in commitment, even if later re-added
+       as scope creep. This correctly handles mid-sprint carry-overs moved before sprint start.
+    4. Fallback: Issues in sprint_issues_df with no changelog are assumed commitment if
+       their jira_created_at is before the sprint start_date (created issues cannot be scope creep).
 
     Returns DataFrame with columns: [issue_id, sprint_id]
     """
@@ -241,11 +242,29 @@ def identify_sprint_commitment(
     commitment_cl = status_at_cutoff
 
     # 4. Fallback for issues without changelog
+    # Only include issues created BEFORE the sprint started (jira_created_at < start_date).
+    # Issues created after sprint start cannot have been in commitment — they are scope creep.
     if sprint_issues_df is not None:
         has_cl = sprint_changelog_df.select(["issue_id", "sprint_id"]).unique()
-        fallback_commitment = sprint_issues_df.join(
+        fallback_candidates = sprint_issues_df.join(
             has_cl, on=["issue_id", "sprint_id"], how="anti"
         ).select(["issue_id", "sprint_id"])
+
+        # Join with sprint start dates and issue creation dates to apply the heuristic
+        sprint_starts = sprints_df.select(["id", "start_date"]).rename(
+            {"id": "sprint_id"}
+        )
+        issue_created = non_sub_ids.select(["issue_id", "jira_created_at"])
+
+        fallback_commitment = (
+            fallback_candidates.join(sprint_starts, on="sprint_id", how="left")
+            .join(issue_created, on="issue_id", how="left")
+            .filter(
+                pl.col("jira_created_at").is_null()  # no creation date → include
+                | (pl.col("jira_created_at") < pl.col("start_date"))
+            )
+            .select(["issue_id", "sprint_id"])
+        )
 
         commitment = pl.concat([commitment_cl, fallback_commitment]).unique()
     else:
@@ -254,10 +273,13 @@ def identify_sprint_commitment(
     # 5. Handle "Ghost" Issues (Removed but never Added)
     # If an issue created BEFORE sprint start is removed AFTER sprint start,
     # and has NO added event, it was implicitly in the sprint at start.
+    # Only consider removals that happen AFTER sprint start to avoid capturing
+    # pre-start backlog churn (add+remove both before sprint started).
     if not sprint_changelog_df.is_empty():
-        # Get all removals
+        # Get removals that happened AFTER sprint start only
         removals = (
             cl_with_dates.filter(pl.col("action") == "removed")
+            .filter(pl.col("changed_at") >= pl.col("start_date"))
             .select(["issue_id", "sprint_id", "start_date"])
             .unique()
         )
@@ -716,11 +738,17 @@ def calculate_velocity_facts(
         sprint_issues_df, sprint_changelog_df, issues_df
     )
 
-    # 2b. Plan scope:
-    # Use final sprint scope, but value SP at sprint start.
-    # This matches the project's agreed reference semantics in sprints_velocity.md.
+    # 2b. Plan scope: issues committed at sprint start, valued at sprint start SP.
+    # Uses identify_sprint_commitment: snapshot at start_date, including later-removed issues
+    # (matching Jira Sprint Report commitment semantics).
+    commitment_df = identify_sprint_commitment(
+        sprint_changelog_df,
+        sprints_df,
+        issues_df,
+        sprint_issues_df,
+    )
     commitment_with_sp = determine_story_points_at_date(
-        final_scope_df,
+        commitment_df,
         sprints_df,
         current_story_points_df,
         field_value_changelog_df,

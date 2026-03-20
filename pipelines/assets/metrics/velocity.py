@@ -197,13 +197,20 @@ def calculate_velocity(
         JOIN clean_jira.issues i ON i.id = si.issue_id
         JOIN clean_jira.issue_types it ON it.id = i.type_id
         WHERE it.name NOT ILIKE '%%sub%%'
-          AND si.is_active = true
         """,
     )
 
+    # Exclude changelog events recorded AFTER a sprint was closed (complete_date).
+    # Retroactive membership additions (e.g. issues added months after sprint closed)
+    # corrupt commitment and final-scope calculations.
     sprint_changelog_df = read_table(
         engine,
-        "SELECT issue_id, sprint_id, action, changed_at FROM clean_jira.sprint_issues_changelog",
+        """
+        SELECT sic.issue_id, sic.sprint_id, sic.action, sic.changed_at
+        FROM clean_jira.sprint_issues_changelog sic
+        JOIN clean_jira.sprints s ON s.id = sic.sprint_id
+        WHERE s.complete_date IS NULL OR sic.changed_at <= s.complete_date
+        """,
     )
 
     issues_df = read_table(
