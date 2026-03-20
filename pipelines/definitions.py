@@ -15,10 +15,17 @@ from pipelines.assets.jira import (
     check_sprint_issues_integrity,
 )
 from pipelines.assets.metrics import (
+    advanced_metrics_data_quality_check,
+    backlog_growth_data_quality_check,
+    cfd_data_quality_check,
     check_lead_time_no_nulls,
     check_lead_time_positive,
     check_throughput_no_future_dates,
     check_velocity_completion_rate_valid,
+    lead_time_data_quality_check,
+    throughput_data_quality_check,
+    ttm_data_quality_check,
+    velocity_data_quality_check,
 )
 from pipelines.jobs.schedules import jobs, schedules
 from pipelines.resources.database import database_resource
@@ -51,6 +58,13 @@ asset_checks = [
     check_lead_time_positive,
     check_velocity_completion_rate_valid,
     check_throughput_no_future_dates,
+    velocity_data_quality_check,
+    lead_time_data_quality_check,
+    throughput_data_quality_check,
+    cfd_data_quality_check,
+    backlog_growth_data_quality_check,
+    ttm_data_quality_check,
+    advanced_metrics_data_quality_check,
 ]
 
 # Create Definitions

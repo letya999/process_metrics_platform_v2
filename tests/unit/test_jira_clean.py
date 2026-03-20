@@ -120,6 +120,20 @@ class TestChangelogEventLogic:
         assert final_states[("1", "100")] == "removed"
         assert final_states[("1", "200")] == "added"
 
+    def test_sprint_delta_from_to_sets(self):
+        """Sprint add/remove events must be derived from set delta."""
+        from_value = "10,20"
+        to_value = "20,30"
+
+        from_set = {x.strip() for x in from_value.split(",") if x.strip()}
+        to_set = {x.strip() for x in to_value.split(",") if x.strip()}
+
+        added = to_set - from_set
+        removed = from_set - to_set
+
+        assert added == {"30"}
+        assert removed == {"10"}
+
 
 class TestFieldKeyExtraction:
     """Tests for field key extraction patterns."""

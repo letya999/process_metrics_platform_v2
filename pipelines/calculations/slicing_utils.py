@@ -1,12 +1,19 @@
-from typing import List, Optional
+import logging
+from typing import Any, Optional
 
 import polars as pl
+from sqlalchemy import Engine
+
+from ..utils.polars_db import read_table
+from ..utils.smart_slicer import SmartSlicer
+
+logger = logging.getLogger(__name__)
 
 
 def get_slice_rules(
-    conn_str_or_engine,
+    engine: Engine,
     project_id: Optional[str] = None,
-    target_metric_table: Optional[str] = None,
+    target_definition_id: Optional[str] = None,
 ) -> pl.DataFrame:
     """
     Fetch slice rules from the database.
@@ -14,43 +21,56 @@ def get_slice_rules(
     """
     query = """
     SELECT
-        id,
+        id as slice_rule_id,
         project_id,
-        target_metric_table,
-        slice_table_name,
-        rule_name,
+        target_definition_id,
+        rule_name as slice_rule_name,
         source_table,
-        group_by_column,
-        filter_condition,
+        group_by_source_column as group_by_column,
         enabled
-    FROM metrics.metric_slice_rules
+    FROM metrics.slice_rules
     WHERE enabled = true
     """
 
-    # In a real scenario, we might want to fetch all and filter in memory if the table is small,
-    # or filter in SQL. Here we'll fetch all active rules and filter in Python for flexibility
-    # as we need to handle the "default" logic which involves checking for NULLs and specific strings.
-
     try:
-        rules_df = pl.read_database(query, conn_str_or_engine)
+        rules_df = read_table(engine, query)
     except Exception as e:
-        # Fallback if connection string/engine handling varies or table doesn't exist yet (tests)
-        print(f"Error fetching rules: {e}")
+        logger.warning(f"Error fetching rules: {e}")
         return pl.DataFrame()
 
     if rules_df.is_empty():
         return rules_df
 
-    # Filter logic
-    # We want rules that:
+    # Filter logic:
     # 1. Match the specific project_id OR have project_id as NULL (global)
-    # 2. Match the specific metric table OR have target_metric_table as 'default'
+    # 2. Match the specific target_definition_id OR have target_definition_id as NULL (default for all metrics)
+
+    # Cast to string for comparison and consistent concatenation.
+    # fill_null("null") handles real SQL NULLs; str.replace handles "None" strings
+    # produced by the pandas fallback path in read_table (pd.astype(str) converts
+    # None -> "None" instead of keeping it as a real null).
+    rules_df = rules_df.with_columns(
+        [
+            pl.col("slice_rule_id").cast(pl.Utf8),
+            pl.col("project_id")
+            .cast(pl.Utf8)
+            .fill_null("null")
+            .str.replace("^None$", "null"),
+            pl.col("target_definition_id")
+            .cast(pl.Utf8)
+            .fill_null("null")
+            .str.replace("^None$", "null"),
+        ]
+    )
+
+    p_id_str = str(project_id) if project_id else "null"
+    d_id_str = str(target_definition_id) if target_definition_id else "null"
 
     filtered_rules = rules_df.filter(
-        (pl.col("project_id").is_null() | (pl.col("project_id") == project_id))
+        ((pl.col("project_id") == "null") | (pl.col("project_id") == p_id_str))
         & (
-            (pl.col("target_metric_table") == "default")
-            | (pl.col("target_metric_table") == target_metric_table)
+            (pl.col("target_definition_id") == "null")
+            | (pl.col("target_definition_id") == d_id_str)
         )
     )
 
@@ -60,89 +80,109 @@ def get_slice_rules(
 def apply_slicing(
     df: pl.DataFrame,
     rules_df: pl.DataFrame,
-    calculation_func,
-    base_columns: List[
-        str
-    ] = None,  # Not strictly needed if calculation_func handles returning key columns, but useful for context
+    calculation_func: Any,
+    engine: Engine,
+    source_table: str = "clean_jira.issues",
 ) -> pl.DataFrame:
     """
-    Apply slicing rules to a DataFrame by iterating over slice values and applying the calculation logic.
-
-    Args:
-        df: Base DataFrame.
-        rules_df: Rules DataFrame.
-        calculation_func: Function that takes (filtered_df) and returns a DataFrame of metrics.
-        base_columns: Optional list of columns to ensure are in the output if calculation_func doesn't preserve them (not used in this simplified version).
-
-    Returns:
-        concatenated DataFrame with slice_rule_name and slice_value.
+    Apply slicing rules to a DataFrame.
+    If the slice column is missing in the DF, it uses SmartSlicer to dynamically
+    resolve the join path and inject the dimension.
     """
     if df.is_empty() or rules_df.is_empty():
         return pl.DataFrame()
 
+    slicer = SmartSlicer(engine)
     sliced_frames = []
-
     rules = rules_df.to_dicts()
 
     for rule in rules:
-        rule_name = rule["rule_name"]
+        rule_id = rule["slice_rule_id"]
+        rule_name = rule["slice_rule_name"]
         group_col = rule["group_by_column"]
-        source_table = rule.get("source_table", "")
         rule_project_id = rule.get("project_id")
 
-        # --- Robust Column Matching Logic ---
+        # 1. Determine if we need to inject the dimension
         df_cols_lower = {c.lower(): c for c in df.columns}
         target_col = None
 
-        # 1. Direct match
-        if group_col in df.columns:
-            target_col = group_col
+        # Check if it's already in the DataFrame
+        if group_col.lower() in df_cols_lower:
+            target_col = df_cols_lower[group_col.lower()]
+        elif f"{group_col.lower()}_name" in df_cols_lower:
+            target_col = df_cols_lower[f"{group_col.lower()}_name"]
         else:
-            # 2. Heuristic match
-            table_name = (source_table or "").split(".")[-1].lower()
-            if table_name:
-                singular = table_name.rstrip("s")
-                candidates = [f"{singular}_{group_col.lower()}", singular]
-                if singular.startswith("issue_"):
-                    short_singular = singular.replace("issue_", "")
-                    candidates.append(f"{short_singular}_{group_col.lower()}")
-                    candidates.append(short_singular)
+            # BUG #4: Try suffix: 'issue_type' -> 'type' -> 'type_name'
+            parts = group_col.lower().split("_")
+            for i in range(1, len(parts)):
+                suffix = "_".join(parts[i:])
+                if suffix in df_cols_lower:
+                    target_col = df_cols_lower[suffix]
+                    break
+                if f"{suffix}_name" in df_cols_lower:
+                    target_col = df_cols_lower[f"{suffix}_name"]
+                    break
 
-                for cand in candidates:
-                    if cand in df_cols_lower:
-                        target_col = df_cols_lower[cand]
-                        break
-
+        # 2. If not in DF, resolve via SmartSlicer (Dynamic Join Path)
+        current_df = df
         if not target_col:
-            continue
+            rule_source_table = rule.get("source_table", "")
+            if "." in group_col:
+                # group_col already looks like 'table.column' — qualify with schema
+                schema = source_table.split(".")[0]
+                full_target = f"{schema}.{group_col}"
+            elif rule_source_table:
+                # Rule encodes the target table explicitly — use it directly instead of
+                # BFS discovery which resolves to the first FK neighbor with a matching
+                # column name (e.g. projects.name instead of issue_types.name).
+                full_target = f"{rule_source_table}.{group_col}"
+            else:
+                # Fallback: search FK-adjacent tables (no source_table in rule)
+                full_target = slicer.find_target_for_column(source_table, group_col)
 
-        # --- Project-Aware Slicing ---
-        # If the rule is specific to a project, filter data to that project
-        if rule_project_id is not None and "project_id" in df.columns:
-            rule_df = df.filter(pl.col("project_id") == rule_project_id)
-            if rule_df.is_empty():
+            if not full_target:
+                logger.warning(
+                    f"Cannot resolve target for column '{group_col}' from {source_table}"
+                )
                 continue
 
-            projects_to_process = [rule_project_id]
-        else:
-            # Global rule: process all projects in df individually to respect project-specific values
-            rule_df = df
-            if "project_id" in df.columns:
-                projects_to_process = (
-                    df.select("project_id").unique().drop_nulls().to_series().to_list()
+            mapping_df = slicer.get_slice_mapping(source_table, full_target)
+
+            if mapping_df is not None and not mapping_df.is_empty():
+                # Robust Join: cast both to string to avoid UUID type mismatch
+                mapping_df = mapping_df.with_columns(pl.col("source_id").cast(pl.Utf8))
+                current_df = df.with_columns(pl.col("id").cast(pl.Utf8)).join(
+                    mapping_df,
+                    left_on="id",
+                    right_on="source_id",
+                    how="left",
+                    coalesce=True,
                 )
+                target_col = "slice_value"
             else:
-                projects_to_process = [None]
+                continue
 
-        for p_id in projects_to_process:
-            p_df = rule_df
-            if p_id is not None and "project_id" in rule_df.columns:
-                p_df = rule_df.filter(pl.col("project_id") == p_id)
+        # 3. Process projects and slices
+        projects = [None]
+        if "project_id" in current_df.columns:
+            if rule_project_id and rule_project_id != "null":
+                projects = [rule_project_id]
+            else:
+                projects = (
+                    current_df.select("project_id")
+                    .unique()
+                    .drop_nulls()
+                    .to_series()
+                    .to_list()
+                )
 
+        for p_id in projects:
+            p_df = (
+                current_df.filter(pl.col("project_id") == p_id) if p_id else current_df
+            )
             if p_df.is_empty():
                 continue
 
-            # Get unique values for THIS project
             unique_values = (
                 p_df.select(pl.col(target_col))
                 .unique()
@@ -160,15 +200,16 @@ def apply_slicing(
                 if metrics_df.is_empty():
                     continue
 
+                # Add slicing context
                 result_df = metrics_df.with_columns(
                     [
+                        pl.lit(rule_id).alias("slice_rule_id"),
                         pl.lit(rule_name).alias("slice_rule_name"),
                         pl.lit(str(val)).alias("slice_value"),
                     ]
                 )
 
-                # Ensure project_id is preserved if it was missing in calculation result but present in p_id
-                if "project_id" not in result_df.columns and p_id is not None:
+                if "project_id" not in result_df.columns and p_id:
                     result_df = result_df.with_columns(pl.lit(p_id).alias("project_id"))
 
                 sliced_frames.append(result_df)

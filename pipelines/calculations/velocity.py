@@ -14,7 +14,7 @@ JIRA Sprint Report Definitions (based on actual Jira behavior):
    - The formula: Commitment = (Issues at start) - (Issues removed after start)
 
 2. **COMPLETED (Fact)**:
-   - ALL issues that reached "Done" status by sprint end
+   - Issues in final sprint scope that became "Done" DURING the sprint window
    - INCLUDING scope creep (issues added after start)
    - Story Points value at sprint END
 
@@ -34,40 +34,66 @@ def get_done_status_ids(
     issue_statuses_df: pl.DataFrame = None,
 ) -> List[str]:
     """
-    Identify status IDs that represent "Done".
-    Priority:
-    1. Status Category = 'done' (from issue_statuses).
-    2. Column Name contains 'done' (fallback).
+    Identify status IDs that represent "Done" using board mapping.
+
+    Jira Velocity is board-specific and treats items as done if their status is
+    mapped to the right-most board column.
+    Fallback to status category only when board mapping is unavailable.
     """
     if issue_statuses_df is None:
         issue_statuses_df = pl.DataFrame()
-    done_ids = []
 
-    # 1. Status Category
-    if not issue_statuses_df.is_empty() and "category" in issue_statuses_df.columns:
-        cat_done = issue_statuses_df.filter(
-            pl.col("category").str.to_lowercase() == "done"
+    # 1. Primary: statuses mapped to right-most column per board
+    if (
+        not board_columns_df.is_empty()
+        and "board_id" in board_columns_df.columns
+        and "position" in board_columns_df.columns
+        and "status_id" in board_columns_df.columns
+    ):
+        rightmost = board_columns_df.group_by("board_id").agg(
+            pl.col("position").max().alias("max_position")
         )
-        if "id" in cat_done.columns:
-            ids = cat_done["id"].cast(pl.Utf8).str.to_lowercase().unique().to_list()
-            done_ids.extend(ids)
-
-    # 2. Board Columns (Fallback or Additive)
-    if not board_columns_df.is_empty():
-        done_columns = board_columns_df.filter(
-            pl.col("name").str.to_lowercase().str.contains("done")
+        done_columns = (
+            board_columns_df.join(rightmost, on="board_id", how="inner")
+            .filter(pl.col("position") == pl.col("max_position"))
+            .filter(pl.col("status_id").is_not_null())
         )
-        if "status_id" in done_columns.columns:
-            ids = (
+        if not done_columns.is_empty():
+            return (
                 done_columns["status_id"]
                 .cast(pl.Utf8)
                 .str.to_lowercase()
                 .unique()
                 .to_list()
             )
-            done_ids.extend(ids)
 
-    return list(set(done_ids))
+    # 1b. Compatibility fallback: explicit "Done" columns when no positions available
+    if (
+        not board_columns_df.is_empty()
+        and "name" in board_columns_df.columns
+        and "status_id" in board_columns_df.columns
+    ):
+        done_by_name = board_columns_df.filter(
+            pl.col("name").cast(pl.Utf8).str.to_lowercase().str.contains("done")
+        ).filter(pl.col("status_id").is_not_null())
+        if not done_by_name.is_empty():
+            return (
+                done_by_name["status_id"]
+                .cast(pl.Utf8)
+                .str.to_lowercase()
+                .unique()
+                .to_list()
+            )
+
+    # 2. Fallback: status category = done
+    if not issue_statuses_df.is_empty() and "category" in issue_statuses_df.columns:
+        cat_done = issue_statuses_df.filter(
+            pl.col("category").cast(pl.Utf8).str.to_lowercase() == "done"
+        )
+        if "id" in cat_done.columns:
+            return cat_done["id"].cast(pl.Utf8).str.to_lowercase().unique().to_list()
+
+    return []
 
 
 GRACE_PERIOD_MINUTES = 0
@@ -144,9 +170,10 @@ def identify_sprint_commitment(
     Logic:
     1. Find issues that were in the sprint at (start_date + GRACE_PERIOD_MINUTES).
     2. "In sprint" means: they were added before/at the cutoff AND not removed before/at the cutoff.
-    3. Filter: Jira excludes issues that are LATER removed from the sprint from Commitment.
-       So we also check that their FINAL action in the sprint is 'added'.
-    4. Fallback: Issues in sprint_issues_df with no changelog are assumed commitment.
+    3. Issues removed BEFORE the cutoff (sprint start) are NOT in commitment, even if later re-added
+       as scope creep. This correctly handles mid-sprint carry-overs moved before sprint start.
+    4. Fallback: Issues in sprint_issues_df with no changelog are assumed commitment if
+       their jira_created_at is before the sprint start_date (created issues cannot be scope creep).
 
     Returns DataFrame with columns: [issue_id, sprint_id]
     """
@@ -215,11 +242,29 @@ def identify_sprint_commitment(
     commitment_cl = status_at_cutoff
 
     # 4. Fallback for issues without changelog
+    # Only include issues created BEFORE the sprint started (jira_created_at < start_date).
+    # Issues created after sprint start cannot have been in commitment — they are scope creep.
     if sprint_issues_df is not None:
         has_cl = sprint_changelog_df.select(["issue_id", "sprint_id"]).unique()
-        fallback_commitment = sprint_issues_df.join(
+        fallback_candidates = sprint_issues_df.join(
             has_cl, on=["issue_id", "sprint_id"], how="anti"
         ).select(["issue_id", "sprint_id"])
+
+        # Join with sprint start dates and issue creation dates to apply the heuristic
+        sprint_starts = sprints_df.select(["id", "start_date"]).rename(
+            {"id": "sprint_id"}
+        )
+        issue_created = non_sub_ids.select(["issue_id", "jira_created_at"])
+
+        fallback_commitment = (
+            fallback_candidates.join(sprint_starts, on="sprint_id", how="left")
+            .join(issue_created, on="issue_id", how="left")
+            .filter(
+                pl.col("jira_created_at").is_null()  # no creation date → include
+                | (pl.col("jira_created_at") < pl.col("start_date"))
+            )
+            .select(["issue_id", "sprint_id"])
+        )
 
         commitment = pl.concat([commitment_cl, fallback_commitment]).unique()
     else:
@@ -228,10 +273,13 @@ def identify_sprint_commitment(
     # 5. Handle "Ghost" Issues (Removed but never Added)
     # If an issue created BEFORE sprint start is removed AFTER sprint start,
     # and has NO added event, it was implicitly in the sprint at start.
+    # Only consider removals that happen AFTER sprint start to avoid capturing
+    # pre-start backlog churn (add+remove both before sprint started).
     if not sprint_changelog_df.is_empty():
-        # Get all removals
+        # Get removals that happened AFTER sprint start only
         removals = (
             cl_with_dates.filter(pl.col("action") == "removed")
+            .filter(pl.col("changed_at") >= pl.col("start_date"))
             .select(["issue_id", "sprint_id", "start_date"])
             .unique()
         )
@@ -438,19 +486,26 @@ def identify_completed_issues(
     status_changelog_df: pl.DataFrame,
     done_status_ids: List[str],
     sprints_df: pl.DataFrame,
+    allow_current_status_fallback: bool = True,
 ) -> pl.DataFrame:
     """
     Identify issues from scope that were "Done" by sprint end.
 
     Logic:
-    1. Check status_changelog for the status at sprint end time.
-    2. If status at end is in done_status_ids -> completed.
-    3. Fallback: if no status changelog, check current status.
+    1. Determine candidate issues that are "Done" at sprint end.
+    2. Keep only candidates that have evidence of completion INSIDE sprint window:
+       - transition to done in status changelog within (start_date, end_date], OR
+       - jira_resolved_at inside (start_date, end_date].
+    3. This aligns with Jira Sprint Report "completedIssues" semantics.
 
     Returns DataFrame with columns: [issue_id, sprint_id, is_completed]
     """
     sprint_dates = sprints_df.select(
-        ["id", pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date")]
+        [
+            "id",
+            "start_date",
+            pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date"),
+        ]
     )
 
     scope_with_dates = scope_df.join(
@@ -458,9 +513,28 @@ def identify_completed_issues(
     )
 
     if status_changelog_df.is_empty() or not done_status_ids:
-        # Fallback: use current status from issues_df
-        return _identify_completed_by_current_status(
-            scope_df, issues_df, done_status_ids
+        if not allow_current_status_fallback:
+            return pl.DataFrame(schema={"issue_id": pl.Utf8, "sprint_id": pl.Utf8})
+        # No status history: use strict resolved-in-window fallback.
+        issues_status = issues_df.select(
+            ["id", "status_id", "jira_resolved_at"]
+        ).rename({"id": "issue_id"})
+        return (
+            scope_with_dates.join(issues_status, on="issue_id", how="left")
+            .filter(
+                pl.col("status_id")
+                .cast(pl.Utf8)
+                .str.to_lowercase()
+                .is_in(done_status_ids)
+                & pl.col("jira_resolved_at").is_not_null()
+                & pl.col("start_date").is_not_null()
+                & pl.col("effective_end_date").is_not_null()
+                & (pl.col("jira_resolved_at") > pl.col("start_date"))
+                & (pl.col("jira_resolved_at") <= pl.col("effective_end_date"))
+            )
+            .select(["issue_id", "sprint_id"])
+            .unique()
+            .with_columns(pl.lit(True).alias("is_completed"))
         )
 
     # Find the status at sprint end for each issue
@@ -542,13 +616,66 @@ def identify_completed_issues(
             completed = completed_from_changelog
 
         # 4. Final fallback: use current status for remaining issues
-        if not no_changelog.is_empty():
+        if allow_current_status_fallback and not no_changelog.is_empty():
             fallback_completed = _identify_completed_by_current_status(
                 no_changelog, issues_df, done_status_ids
             )
             completed = pl.concat([completed, fallback_completed]).unique()
     else:
         completed = completed_from_changelog
+
+    # Jira completedIssues ~= completed during sprint window.
+    # Require explicit completion evidence inside sprint interval.
+    done_transitions_in_window = (
+        scope_with_dates.join(status_changelog_df, on="issue_id", how="left")
+        .filter(
+            pl.col("changed_at").is_not_null()
+            & pl.col("start_date").is_not_null()
+            & pl.col("effective_end_date").is_not_null()
+            & (pl.col("changed_at") > pl.col("start_date"))
+            & (pl.col("changed_at") <= pl.col("effective_end_date"))
+            & pl.col("to_status_id")
+            .cast(pl.Utf8)
+            .str.to_lowercase()
+            .is_in(done_status_ids)
+        )
+        .select(["issue_id", "sprint_id"])
+        .unique()
+    )
+
+    resolved_in_window = (
+        scope_with_dates.join(
+            issues_df.select(["id", "jira_resolved_at"]).rename({"id": "issue_id"}),
+            on="issue_id",
+            how="left",
+        )
+        .filter(
+            pl.col("jira_resolved_at").is_not_null()
+            & pl.col("start_date").is_not_null()
+            & pl.col("effective_end_date").is_not_null()
+            & (pl.col("jira_resolved_at") > pl.col("start_date"))
+            & (pl.col("jira_resolved_at") <= pl.col("effective_end_date"))
+        )
+        .select(["issue_id", "sprint_id"])
+        .unique()
+    )
+
+    completion_window_evidence = pl.concat(
+        [done_transitions_in_window, resolved_in_window]
+    ).unique()
+
+    if completion_window_evidence.is_empty():
+        return pl.DataFrame(
+            schema={
+                "issue_id": pl.Utf8,
+                "sprint_id": pl.Utf8,
+                "is_completed": pl.Boolean,
+            }
+        )
+
+    completed = completed.join(
+        completion_window_evidence, on=["issue_id", "sprint_id"], how="inner"
+    )
 
     return completed.with_columns(pl.lit(True).alias("is_completed"))
 
@@ -584,6 +711,8 @@ def calculate_velocity_facts(
     board_columns_df: pl.DataFrame,
     field_value_changelog_df: pl.DataFrame,
     issue_statuses_df: pl.DataFrame = None,
+    done_status_ids: List[str] | None = None,
+    allow_current_status_fallback: bool = True,
 ) -> pl.DataFrame:
     """
     Main orchestration function: Calculate Velocity facts.
@@ -592,21 +721,32 @@ def calculate_velocity_facts(
     """
     if issue_statuses_df is None:
         issue_statuses_df = pl.DataFrame()
-    done_status_ids = get_done_status_ids(
-        boards_df, board_columns_df, issue_statuses_df
-    )
+    if done_status_ids is None:
+        done_status_ids = get_done_status_ids(
+            boards_df, board_columns_df, issue_statuses_df
+        )
+    else:
+        done_status_ids = [str(status_id).lower() for status_id in done_status_ids]
 
     # 1. Extract CURRENT Story Points for all issues
     current_story_points_df = extract_story_points(
         issues_df, field_values_df, field_keys_df
     )
 
-    # 2. Identify Commitment (Plan)
-    commitment_df = identify_sprint_commitment(
-        sprint_changelog_df, sprints_df, issues_df, sprint_issues_df
+    # 2. Identify Final Scope (issue set that ended in sprint)
+    final_scope_df = identify_sprint_final_scope(
+        sprint_issues_df, sprint_changelog_df, issues_df
     )
 
-    # 2b. Calculate Historical SP for Commitment (at Start Date)
+    # 2b. Plan scope: issues committed at sprint start, valued at sprint start SP.
+    # Uses identify_sprint_commitment: snapshot at start_date, including later-removed issues
+    # (matching Jira Sprint Report commitment semantics).
+    commitment_df = identify_sprint_commitment(
+        sprint_changelog_df,
+        sprints_df,
+        issues_df,
+        sprint_issues_df,
+    )
     commitment_with_sp = determine_story_points_at_date(
         commitment_df,
         sprints_df,
@@ -616,14 +756,14 @@ def calculate_velocity_facts(
         date_col="start_date",
     )
 
-    # 3. Identify Final Scope
-    final_scope_df = identify_sprint_final_scope(
-        sprint_issues_df, sprint_changelog_df, issues_df
-    )
-
-    # 4. Identify Completed
+    # 3. Identify Completed
     completed_df = identify_completed_issues(
-        final_scope_df, issues_df, status_changelog_df, done_status_ids, sprints_df
+        final_scope_df,
+        issues_df,
+        status_changelog_df,
+        done_status_ids,
+        sprints_df,
+        allow_current_status_fallback=allow_current_status_fallback,
     )
 
     # 5. Calculate Historical SP for Completed (at End/Complete Date)
@@ -733,10 +873,7 @@ def calculate_velocity_slice_by_issue_type(
     # Get issue types
     issue_types_df = issues_df.select(["id", "type_name"]).rename({"id": "issue_id"})
 
-    # Commitment and Final Scope
-    commitment_df = identify_sprint_commitment(
-        sprint_changelog_df, sprints_df, issues_df, sprint_issues_df
-    )
+    # Plan scope based on final sprint scope (SP valued at sprint start)
     final_scope_df = identify_sprint_final_scope(
         sprint_issues_df, sprint_changelog_df, issues_df
     )
@@ -748,7 +885,7 @@ def calculate_velocity_slice_by_issue_type(
 
     # Historical SP
     commitment_with_sp = determine_story_points_at_date(
-        commitment_df,
+        final_scope_df,
         sprints_df,
         current_story_points_df,
         field_value_changelog_df,

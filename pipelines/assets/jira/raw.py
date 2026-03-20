@@ -5,6 +5,7 @@ Data is loaded as-is from Jira API into the raw_jira schema using dlt.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 import dlt
@@ -31,6 +32,42 @@ def jira_source(
         dlt resources for issues, sprints, and changelogs
     """
 
+    def _safe_updated_jql_value(
+        raw_value: str | None, lookback_days: int
+    ) -> str | None:
+        """Build conservative JQL timestamp for incremental fetch.
+
+        We re-read a configurable lookback window to recover from incremental
+        state drift and out-of-order updates.
+        """
+        if not raw_value or raw_value == "1970-01-01T00:00:00.000+0000":
+            return None
+
+        parsed: datetime | None = None
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%d %H:%M:%S%z",
+            "%Y-%m-%d %H:%M:%S",
+        ):
+            try:
+                parsed = datetime.strptime(raw_value, fmt)
+                break
+            except ValueError:
+                continue
+
+        if parsed is None:
+            return None
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        lookback_point = parsed.astimezone(timezone.utc) - timedelta(
+            days=max(0, lookback_days)
+        )
+        # Jira JQL accepts "YYYY-MM-DD HH:MM" in UTC.
+        return lookback_point.strftime("%Y-%m-%d %H:%M")
+
     # Define incremental configuration to avoid B008 (function call in default arg)
     issues_incremental = dlt.sources.incremental(
         "fields.updated", initial_value="1970-01-01T00:00:00.000+0000"
@@ -41,22 +78,24 @@ def jira_source(
         """Fetch issues from Jira API with changelog."""
         jql = ""
         jql_parts = []
+        issues_lookback_days = int(os.getenv("JIRA_ISSUES_LOOKBACK_DAYS", "45"))
         if projects:
             project_list = ",".join(projects)
             jql_parts.append(f"project in ({project_list})")
 
         # Add incremental filter to JQL for efficiency
         # Note: dlt handles the actual filtering, but adding it to JQL saves bandwidth
-        if (
-            updated_at.last_value
-            and updated_at.last_value != "1970-01-01T00:00:00.000+0000"
-        ):
-            # Jira expects specific time format, but usually accepts ISO
-            # We trust dlt state string format or wrap in quotes
-            jql_parts.append(f'updated >= "{updated_at.last_value}"')
+        from_updated = _safe_updated_jql_value(
+            updated_at.last_value, issues_lookback_days
+        )
+        if from_updated:
+            jql_parts.append(f'updated >= "{from_updated}"')
 
         if jql_parts:
             jql = " AND ".join(jql_parts)
+            jql = f"{jql} ORDER BY updated ASC, key ASC"
+        else:
+            jql = "ORDER BY updated ASC, key ASC"
 
         max_results = 100
         next_page_token = None

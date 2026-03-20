@@ -1,17 +1,16 @@
 """
-Cumulative Flow Diagram (CFD) Dagster Asset
-
-This asset calculates daily issue counts per status for CFD visualization.
+Cumulative Flow Diagram (CFD) Dagster Asset (Generic Long Metric Store)
 """
 
 from typing import Any
 
 import polars as pl
-from dagster import AssetExecutionContext, asset
+from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
 
 from pipelines.calculations import cumulative_flow as cfd_logic
 from pipelines.resources.database import DatabaseResource
-from pipelines.utils.polars_db import read_table, write_table
+from pipelines.utils.metric_registry import get_calculation_id, get_project_agg_id
+from pipelines.utils.polars_db import read_table, write_fact_values
 
 
 @asset(
@@ -24,60 +23,44 @@ from pipelines.utils.polars_db import read_table, write_table
         "clean_jira_board_columns",
         "clean_jira_issue_status_changelog",
     ],
-    description="Calculate Cumulative Flow Diagram data (daily issue counts per status)",
+    description="Calculate CFD facts and write to generic fact_values",
     compute_kind="python",
 )
 def calculate_cumulative_flow_diagram(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """
-    Calculate Cumulative Flow Diagram (CFD) data.
-
-    This asset calculates:
-    - Daily snapshot of how many issues are in each status
-    - Flow trends and aggregates
-
-    Outputs:
-    - metrics.fact_cfd (daily status counts)
-    - metrics.fact_cfd_aggregates (summary statistics and trends)
-    """
     engine = database.get_engine()
+
+    # 1. Resolve metadata
+    calc_id = get_calculation_id(engine, "cfd_count")
 
     context.log.info("Loading data from clean_jira schema...")
 
-    # Load required tables into Polars DataFrames
     issues_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, i.type_id, i.status_id, i.jira_created_at, i.jira_updated_at
+        SELECT i.id, i.project_id, i.type_id, i.status_id, i.jira_created_at, p.external_key AS project_key
         FROM clean_jira.issues i
+        JOIN clean_jira.projects p ON i.project_id = p.id
         """,
     )
 
+    if issues_df.is_empty():
+        return {"status": "skipped", "reason": "No issues found"}
+
+    # Map project_agg_ids
+    project_ids = issues_df["project_id"].unique().to_list()
+    project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
+
     status_changelog_df = read_table(
         engine,
-        """
-        SELECT issue_id, from_status_id, to_status_id, changed_at
-        FROM clean_jira.issue_status_changelog
-        ORDER BY changed_at
-        """,
+        "SELECT issue_id, from_status_id, to_status_id, changed_at FROM clean_jira.issue_status_changelog",
     )
 
     issue_statuses_df = read_table(
         engine,
-        """
-        SELECT id, project_id, external_id, name, category
-        FROM clean_jira.issue_statuses
-        """,
-    )
-
-    issue_types_df = read_table(
-        engine,
-        """
-        SELECT id, name
-        FROM clean_jira.issue_types
-        """,
+        "SELECT id, project_id, name, category FROM clean_jira.issue_statuses",
     )
 
     boards_df = read_table(engine, "SELECT id, project_id, name FROM clean_jira.boards")
@@ -91,15 +74,8 @@ def calculate_cumulative_flow_diagram(
         """,
     )
 
-    context.log.info(
-        f"Loaded {len(issues_df)} issues, {len(issue_statuses_df)} statuses"
-    )
-
-    # =====================================================
-    # Calculate CFD data (90 days back)
-    # =====================================================
-    context.log.info("Calculating CFD data for last 90 days...")
-    cfd_df = cfd_logic.calculate_cumulative_flow_diagram(
+    # 2. Calculate BASE CFD facts
+    cfd_wide = cfd_logic.calculate_cumulative_flow_diagram(
         issues_df=issues_df,
         status_changelog_df=status_changelog_df,
         issue_statuses_df=issue_statuses_df,
@@ -108,81 +84,74 @@ def calculate_cumulative_flow_diagram(
         days_back=90,
     )
 
-    if cfd_df.is_empty():
-        context.log.warning(
-            "⚠️ No CFD data calculated. Check that issues have status history."
-        )
-        return {
-            "status": "warning",
-            "message": "No CFD data - no issues found",
-            "fact_rows": 0,
-        }
+    if cfd_wide.is_empty():
+        return {"status": "no_data"}
 
-    context.log.info(f"Calculated CFD for {len(cfd_df)} date-status combinations")
-
-    # Write CFD facts to database
-    context.log.info("Writing to metrics.fact_cfd...")
-    write_table(cfd_df, engine, table="fact_cfd", schema="metrics")
-
-    # =====================================================
-    # Calculate CFD Slices
-    # =====================================================
-    context.log.info("Calculating CFD slices...")
-    from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
-
-    rules_df = get_slice_rules(engine, target_metric_table="fact_cfd")
-
-    def cfd_slice_calc(df_subset):
-        # We need issues from df_subset and potentially their changelog
-        subset_ids = df_subset.select("id")
-        subset_changelog = status_changelog_df.join(
-            subset_ids, left_on="issue_id", right_on="id"
-        )
-
-        return cfd_logic.calculate_cumulative_flow_diagram(
-            issues_df=df_subset,
-            status_changelog_df=subset_changelog,
-            issue_statuses_df=issue_statuses_df,
-            boards_df=boards_df,
-            board_columns_df=board_columns_df,
-            days_back=90,
-        )
-
-    # Join type name for slicing
-    issues_with_type = issues_df.join(
-        issue_types_df.select(["id", "name"]),
-        left_on="type_id",
-        right_on="id",
-        how="left",
-    ).rename({"name": "issue_type"})
-
-    slice_df = apply_slicing(
-        issues_with_type, rules_df, cfd_slice_calc, base_columns=["project_id", "date"]
+    # 3. Transform to Long Format (fact_values)
+    # CFD uses board_column_id as entity_id. If NULL, use status_id.
+    facts = cfd_wide.with_columns(
+        [
+            pl.lit(calc_id).alias("metric_id"),
+            pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
+            # date -> time_id (YYYYMMDD)
+            pl.col("date").dt.strftime("%Y%m%d").cast(pl.Int32).alias("time_id"),
+            pl.col("issue_count").cast(pl.Float64).alias("value"),
+            pl.lit("board_column").alias("entity_type"),
+            pl.coalesce([pl.col("column_id"), pl.col("status_id")])
+            .cast(pl.Utf8)
+            .alias("entity_id"),
+            pl.lit(None).cast(pl.Utf8).alias("slice_rule_id"),
+            pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+            pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+            pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+            pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
+        ]
     )
 
-    if not slice_df.is_empty():
-        # Remove empty date-status pairs for slices to save space and avoid showing unused types
-        # CFD is a density plot, so 0-count statuses for a slice (e.g. Bugs) are just noise.
-        slice_df = slice_df.filter(pl.col("issue_count") > 0)
+    final_df = facts.select(
+        [
+            "metric_id",
+            "project_agg_id",
+            "time_id",
+            "value",
+            "entity_type",
+            "entity_id",
+            "slice_rule_id",
+            "slice_value",
+            "commitment_rule_id",
+            "event_start_at",
+            "event_end_at",
+        ]
+    )
 
-    if not slice_df.is_empty():
-        context.log.info(f"Writing {len(slice_df)} rows to metrics.fact_cfd_slices...")
-        write_table(slice_df, engine, table="fact_cfd_slices", schema="metrics")
+    # 5. Write to DB
+    time_id_start = final_df["time_id"].min()
+    time_id_end = final_df["time_id"].max()
+    project_agg_ids = list(project_agg_map.values())
 
-    # =====================================================
-    # Return summary statistics
-    # =====================================================
-    unique_dates = len(cfd_df["date"].unique())
-    unique_statuses = len(cfd_df["status_name"].unique())
-
-    context.log.info(
-        f"✅ CFD calculation complete: "
-        f"{unique_dates} days × {unique_statuses} statuses"
+    rows_written = write_fact_values(
+        final_df,
+        engine,
+        metric_ids=[calc_id],
+        project_agg_ids=project_agg_ids,
+        time_id_start=time_id_start,
+        time_id_end=time_id_end,
     )
 
     return {
         "status": "success",
-        "total_days": unique_dates,
-        "total_statuses": unique_statuses,
-        "fact_rows": len(cfd_df),
+        "rows_written": rows_written,
+        "days_processed": len(cfd_wide["date"].unique()),
     }
+
+
+@asset_check(asset=calculate_cumulative_flow_diagram)
+def cfd_data_quality_check(database: DatabaseResource) -> AssetCheckResult:
+    engine = database.get_engine()
+    calc_id = get_calculation_id(engine, "cfd_count")
+
+    query = "SELECT COUNT(*) FROM metrics.fact_values WHERE metric_id = :calc_id"
+    df = read_table(engine, query, params={"calc_id": calc_id})
+    count = df[0, 0]
+
+    return AssetCheckResult(passed=count > 0, metadata={"row_count": count})

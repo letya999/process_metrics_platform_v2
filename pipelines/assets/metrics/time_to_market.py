@@ -1,17 +1,21 @@
 """
-Time to Market Metrics Dagster Asset
-
-This asset calculates Time to Market (TTM) - time from creation to release/deployment.
+Time to Market Metrics Dagster Asset (Generic Long Metric Store)
 """
 
 from typing import Any
 
 import polars as pl
-from dagster import AssetExecutionContext, asset
+from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
 
 from pipelines.calculations import time_to_market as ttm_logic
+from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
-from pipelines.utils.polars_db import read_table, write_table
+from pipelines.utils.metric_registry import (
+    get_calculation_id,
+    get_definition_id,
+    get_project_agg_id,
+)
+from pipelines.utils.polars_db import read_table, write_fact_values
 
 
 @asset(
@@ -24,72 +28,55 @@ from pipelines.utils.polars_db import read_table, write_table
         "clean_jira_issue_status_changelog",
         "clean_jira_board_columns",
     ],
-    description="Calculate Time to Market metrics (creation to release)",
+    description="Calculate Time to Market facts and write to generic fact_values",
     compute_kind="python",
 )
 def calculate_time_to_market(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """
-    Calculate Time to Market (TTM) metrics.
-
-    This asset calculates:
-    - Time to market for features/epics
-    - TTM aggregates (avg, median, P90)
-    - Release cadence metrics
-
-    Outputs:
-    - metrics.fact_time_to_market (per-issue TTM)
-    - metrics.fact_ttm_aggregates (summary statistics)
-    - metrics.fact_release_cadence (release frequency)
-    """
     engine = database.get_engine()
+
+    # 1. Resolve metadata
+    def_id = get_definition_id(engine, "ttm")
+    calc_id = get_calculation_id(engine, "ttm_days")
 
     context.log.info("Loading data from clean_jira schema...")
 
-    # Load required tables into Polars DataFrames
     issues_df = read_table(
         engine,
         """
         SELECT i.id, i.project_id, i.external_key AS key, i.type_id,
-               i.jira_created_at, i.jira_resolved_at
+               i.jira_created_at, i.jira_resolved_at, p.external_key AS project_key
         FROM clean_jira.issues i
+        JOIN clean_jira.projects p ON i.project_id = p.id
         """,
     )
 
+    if issues_df.is_empty():
+        return {"status": "skipped", "reason": "No issues found"}
+
+    # Map project_agg_ids
+    project_ids = issues_df["project_id"].unique().to_list()
+    project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
+
     issue_types_df = read_table(
-        engine,
-        """
-        SELECT id, name, hierarchy_level
-        FROM clean_jira.issue_types
-        """,
+        engine, "SELECT id, name, hierarchy_level FROM clean_jira.issue_types"
     )
 
     releases_df = read_table(
         engine,
-        """
-        SELECT id, project_id, external_id, name, release_date, is_released
-        FROM clean_jira.releases
-        """,
+        "SELECT id, project_id, name, release_date, is_released FROM clean_jira.releases",
     )
 
     issue_fix_versions_df = read_table(
         engine,
-        """
-        SELECT issue_id, release_id AS version_id
-        FROM clean_jira.release_issues
-        WHERE is_active = true
-        """,
+        "SELECT issue_id, release_id AS version_id FROM clean_jira.release_issues WHERE is_active = true",
     )
 
     status_changelog_df = read_table(
         engine,
-        """
-        SELECT issue_id, to_status_id, changed_at
-        FROM clean_jira.issue_status_changelog
-        ORDER BY changed_at
-        """,
+        "SELECT issue_id, to_status_id, changed_at FROM clean_jira.issue_status_changelog",
     )
 
     board_columns_df = read_table(
@@ -101,13 +88,8 @@ def calculate_time_to_market(
         """,
     )
 
-    context.log.info(f"Loaded {len(issues_df)} issues, {len(releases_df)} releases")
-
-    # =====================================================
-    # Calculate Time to Market facts
-    # =====================================================
-    context.log.info("Calculating time to market metrics...")
-    ttm_df = ttm_logic.calculate_time_to_market(
+    # 2. Calculate BASE TTM facts
+    ttm_wide = ttm_logic.calculate_time_to_market(
         issues_df=issues_df,
         issue_types_df=issue_types_df,
         releases_df=releases_df,
@@ -116,95 +98,124 @@ def calculate_time_to_market(
         board_columns_df=board_columns_df,
     )
 
-    if ttm_df.is_empty():
-        context.log.warning(
-            "⚠️ No TTM data calculated. Check that high-level issues "
-            "(Epics/Stories) have release or completion dates."
-        )
-        return {
-            "status": "warning",
-            "message": "No TTM data - no completed high-level issues found",
-            "fact_rows": 0,
-        }
+    if ttm_wide.is_empty():
+        return {"status": "no_data"}
 
-    context.log.info(f"Calculated TTM for {len(ttm_df)} high-level issues")
-
-    # Write TTM facts to database
-    context.log.info("Writing to metrics.fact_time_to_market...")
-    write_table(ttm_df, engine, table="fact_time_to_market", schema="metrics")
-
-    # =====================================================
-    # Calculate Custom Slices (Generic)
-    # =====================================================
-    context.log.info("Calculating time to market slices...")
-    from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
-
-    rules_df = get_slice_rules(engine, target_metric_table="fact_time_to_market")
-
-    def ttm_slice_identity(df_subset):
-        # Return raw rows for the slice (NO AGGREGATION)
-        if df_subset.is_empty():
+    # 3. Transform to Long Format (fact_values)
+    def transform_to_fact_values(
+        df_wide, slice_rule_id=None, slice_value_col=None, slice_value=None
+    ):
+        if df_wide.is_empty():
             return pl.DataFrame()
-        return df_subset.select(
+
+        facts = df_wide.with_columns(
             [
-                "project_id",
-                pl.col("issue_id"),
-                "issue_key",
-                "jira_created_at",
-                "released_at",
-                "time_to_market_days",
+                pl.lit(calc_id).alias("metric_id"),
+                pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
+                # release date -> time_id (YYYYMMDD)
+                pl.col("released_at")
+                .dt.strftime("%Y%m%d")
+                .cast(pl.Int32)
+                .alias("time_id"),
+                pl.col("time_to_market_days").alias("value"),
+                pl.lit("issue").alias("entity_type"),
+                pl.col("issue_key").cast(pl.Utf8).alias("entity_id"),
+                pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
+                pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
+                if slice_value_col
+                else (
+                    pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
+                    if slice_value is not None
+                    else pl.lit(None).cast(pl.Utf8).alias("slice_value")
+                ),
+                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                pl.col("jira_created_at")
+                .cast(pl.Datetime("us", "UTC"))
+                .alias("event_start_at"),
+                pl.col("released_at")
+                .cast(pl.Datetime("us", "UTC"))
+                .alias("event_end_at"),
             ]
         )
 
-    slice_df = apply_slicing(
-        ttm_df, rules_df, ttm_slice_identity, base_columns=["project_id"]
-    )
+        return facts.select(
+            [
+                "metric_id",
+                "project_agg_id",
+                "time_id",
+                "value",
+                "entity_type",
+                "entity_id",
+                "slice_rule_id",
+                "slice_value",
+                "commitment_rule_id",
+                "event_start_at",
+                "event_end_at",
+            ]
+        ).drop_nulls(subset=["value"])
 
-    if not slice_df.is_empty():
-        context.log.info(
-            f"Writing {len(slice_df)} rows to metrics.fact_time_to_market_slices..."
-        )
-        # Note: 0015 migration created fact_time_to_market_slices
-        write_table(
-            slice_df, engine, table="fact_time_to_market_slices", schema="metrics"
-        )
+    base_facts = transform_to_fact_values(ttm_wide)
 
-    # =====================================================
-    # Calculate TTM aggregates (Legacy/Summary compatibility)
-    # =====================================================
-    # context.log.info("Calculating TTM aggregates...")
-    # aggregates_df = ttm_logic.calculate_ttm_aggregates(ttm_df)
-    # write_table(aggregates_df, engine, table="fact_ttm_aggregates", schema="metrics")
+    # 4. Calculate Sliced facts
+    rules_df = get_slice_rules(engine, target_definition_id=def_id)
 
-    # =====================================================
-    # Calculate release cadence -> REMOVED
-    # =====================================================
-    # context.log.info("Calculating release cadence...")
-    # cadence_df = ttm_logic.calculate_release_cadence(releases_df, days_back=180)
-    # write_table(cadence_df, engine, table="fact_release_cadence", schema="metrics")
+    all_facts = [base_facts]
 
-    # =====================================================
-    # Return summary statistics
-    # =====================================================
-    avg_ttm = (
-        float(ttm_df["time_to_market_days"].mean()) if not ttm_df.is_empty() else 0.0
-    )
-    median_ttm = (
-        float(ttm_df["time_to_market_days"].quantile(0.5))
-        if not ttm_df.is_empty()
-        else 0.0
-    )
+    if not rules_df.is_empty():
+        for rule in rules_df.to_dicts():
+            rule_id = rule["slice_rule_id"]
 
-    context.log.info(
-        f"✅ Time to Market calculation complete: "
-        f"{len(ttm_df)} issues, avg {avg_ttm:.1f} days, median {median_ttm:.1f} days"
+            # Use ttm_wide as source for slicing (no expensive recalculation needed).
+            def ttm_slice_identity(df_subset):
+                return df_subset
+
+            sliced_wide = apply_slicing(
+                ttm_wide,
+                rules_df.filter(pl.col("slice_rule_id") == rule_id),
+                ttm_slice_identity,
+                engine=engine,
+            )
+
+            if not sliced_wide.is_empty():
+                facts = transform_to_fact_values(
+                    sliced_wide, slice_rule_id=rule_id, slice_value_col="slice_value"
+                )
+                all_facts.append(facts)
+
+    final_df = pl.concat(all_facts)
+
+    # 5. Write to DB
+    if final_df.is_empty():
+        return {"status": "no_data"}
+
+    time_id_start = final_df["time_id"].min()
+    time_id_end = final_df["time_id"].max()
+    project_agg_ids = list(project_agg_map.values())
+
+    rows_written = write_fact_values(
+        final_df,
+        engine,
+        metric_ids=[calc_id],
+        project_agg_ids=project_agg_ids,
+        time_id_start=time_id_start,
+        time_id_end=time_id_end,
     )
 
     return {
         "status": "success",
-        "total_issues": len(ttm_df),
-        "avg_ttm_days": round(avg_ttm, 2),
-        "median_ttm_days": round(median_ttm, 2),
-        # "aggregate_rows": len(aggregates_df),
-        # "cadence_rows": len(cadence_df),
+        "rows_written": rows_written,
+        "issues_processed": len(ttm_wide),
+        "metric_ids": [calc_id],
     }
+
+
+@asset_check(asset=calculate_time_to_market)
+def ttm_data_quality_check(database: DatabaseResource) -> AssetCheckResult:
+    engine = database.get_engine()
+    calc_id = get_calculation_id(engine, "ttm_days")
+
+    query = "SELECT COUNT(*) FROM metrics.fact_values WHERE metric_id = :calc_id"
+    df = read_table(engine, query, params={"calc_id": calc_id})
+    count = df[0, 0]
+
+    return AssetCheckResult(passed=count > 0, metadata={"row_count": count})

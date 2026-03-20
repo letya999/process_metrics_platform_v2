@@ -1,404 +1,89 @@
 -- ============================================================================
--- METRICS SCHEMA - Materialized Views for BI
--- Purpose: Pre-aggregated metrics for Lead Time, Velocity, Throughput
--- Refresh: After each data sync via Dagster assets
+-- METRICS SCHEMA - Unified Views over Generic Fact Store
+-- Purpose: Presentation layer for BI tools (Metabase, etc.)
 -- ============================================================================
 
-CREATE SCHEMA IF NOT EXISTS metrics;
-
-COMMENT ON SCHEMA metrics IS 'Materialized views for team metrics (Lead Time, Velocity, Throughput)';
-
--- ============================================================================
--- MATERIALIZED VIEW: mv_lead_time
--- Purpose: Lead time per issue (time from creation to resolution)
--- Refactored: Now reads from public.fact_lead_time (calculated by Dagster job)
--- ============================================================================
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS metrics.mv_lead_time AS
+-- 1. Velocity View (Aggregation by Sprint)
+CREATE OR REPLACE VIEW metrics.mv_velocity AS
+WITH sprint_metrics AS (
+    SELECT
+        project_key, entity_id AS sprint_id, entity_type, full_date,
+        MAX(CASE WHEN calc_code = 'velocity_planned_sp' THEN value END) as planned_story_points,
+        MAX(CASE WHEN calc_code = 'velocity_completed_sp' THEN value END) as completed_story_points,
+        MAX(CASE WHEN calc_code = 'velocity_planned_count' THEN value END) as planned_issues,
+        MAX(CASE WHEN calc_code = 'velocity_completed_count' THEN value END) as completed_issues
+    FROM metrics.v_facts
+    WHERE metric_code = 'velocity' AND slice_rule_name IS NULL
+    GROUP BY project_key, entity_id, entity_type, full_date
+)
 SELECT
-    i.id AS issue_id,
-    i.external_key AS issue_key,
-    i.summary,
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    it.name AS issue_type,
-    it.hierarchy_level,
-    ist.name AS status_name,
-    ist.category AS status_category,
-    f.commitment_start_at,
-    f.commitment_end_at,
-    f.lead_time_days,
-     -- Lead time in hours
-    (f.lead_time_days * 24) AS lead_time_hours,
-    i.db_updated_at
-FROM metrics.fact_lead_time f
-JOIN clean_jira.issues i ON i.id = f.issue_id
-JOIN clean_jira.projects p ON f.project_id = p.id
-JOIN clean_jira.issue_types it ON i.type_id = it.id
-JOIN clean_jira.issue_statuses ist ON i.status_id = ist.id
-WITH DATA;
+    sm.*,
+    CASE WHEN sm.planned_story_points > 0 THEN sm.completed_story_points / sm.planned_story_points * 100 ELSE 0 END as completion_rate_points_pct,
+    CASE WHEN sm.planned_issues > 0 THEN sm.completed_issues / sm.planned_issues * 100 ELSE 0 END as completion_rate_issues_pct
+FROM sprint_metrics sm;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_lead_time_issue_id
-    ON metrics.mv_lead_time(issue_id);
-CREATE INDEX IF NOT EXISTS idx_mv_lead_time_project
-    ON metrics.mv_lead_time(project_id, commitment_end_at);
-CREATE INDEX IF NOT EXISTS idx_mv_lead_time_type
-    ON metrics.mv_lead_time(issue_type);
-
-COMMENT ON MATERIALIZED VIEW metrics.mv_lead_time IS
-    'Lead time per resolved issue (reading from fact_lead_time which uses board logic)';
-
--- ============================================================================
--- MATERIALIZED VIEW: mv_velocity
--- Purpose: Velocity per sprint (issues and story points completed)
--- Refactored: Now reads from public.fact_velocity (calculated by Dagster job)
--- ============================================================================
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS metrics.mv_velocity AS
+-- 2. Lead Time View (Per Issue)
+CREATE OR REPLACE VIEW metrics.mv_lead_time AS
 SELECT
-    f.iteration_id AS sprint_id,
-    f.iteration_name AS sprint_name,
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.start_date,
-    f.end_date,
-    f.planned_story_points,
-    f.completed_story_points,
-    f.planned_issues,
-    f.completed_issues,
-    -- Completion rate (Points)
-    CASE
-        WHEN f.planned_story_points > 0 THEN
-            ROUND((f.completed_story_points::numeric / f.planned_story_points::numeric) * 100, 2)
-        ELSE 0
-    END AS completion_rate_points_pct,
-     -- Completion rate (Issues)
-    CASE
-        WHEN f.planned_issues > 0 THEN
-            ROUND((f.completed_issues::numeric / f.planned_issues::numeric) * 100, 2)
-        ELSE 0
-    END AS completion_rate_issues_pct
-FROM metrics.fact_velocity f
-JOIN clean_jira.projects p ON f.project_id = p.id
-WHERE f.issue_type IS NULL
-  AND f.custom_field_value IS NULL -- aggregates only
-WITH DATA;
+    project_key, entity_id AS issue_key, value AS lead_time_days,
+    event_start_at AS commitment_start_at, event_end_at AS commitment_end_at,
+    slice_value as issue_type -- if issue_type rule was applied or from base
+FROM metrics.v_facts
+WHERE calc_code = 'lead_time_days' AND slice_rule_name IS NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_velocity_sprint_id
-    ON metrics.mv_velocity(sprint_id);
-CREATE INDEX IF NOT EXISTS idx_mv_velocity_project
-    ON metrics.mv_velocity(project_id, start_date);
-
-COMMENT ON MATERIALIZED VIEW metrics.mv_velocity IS
-    'Velocity metrics per sprint (reading from fact_velocity calculated by job)';
-
--- ============================================================================
--- MATERIALIZED VIEW: mv_throughput
--- Purpose: Daily throughput (issues completed per day)
--- Note: Throughput usually based on count of items completed per day.
--- We can still derive this from fact_lead_time (completed items) + clean_jira
--- or stick to the simple logic if fact_throughput isn't calculated.
--- The user didn't ask for throughput calculation refactor, passing for now but update to align schema.
--- ============================================================================
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS metrics.mv_throughput AS
+-- 3. Throughput View (Weekly)
+CREATE OR REPLACE VIEW metrics.mv_throughput AS
 SELECT
-    DATE(f.commitment_end_at) AS resolved_date,
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    it.name AS issue_type,
-    it.hierarchy_level,
-    count(*) AS issues_completed,
-    ROUND(AVG(f.lead_time_days)::numeric, 2) AS avg_lead_time_days
-FROM metrics.fact_lead_time f
-JOIN clean_jira.projects p ON f.project_id = p.id
-JOIN clean_jira.issues i ON i.id = f.issue_id
-JOIN clean_jira.issue_types it ON i.type_id = it.id
-WHERE f.commitment_end_at IS NOT NULL
-GROUP BY DATE(f.commitment_end_at), f.project_id, p.external_key, p.name, it.name, it.hierarchy_level
-WITH DATA;
+    project_key, full_date AS week_start_date, value AS issues_completed
+FROM metrics.v_facts
+WHERE calc_code = 'throughput_count' AND slice_rule_name IS NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_throughput_date_project_type
-    ON metrics.mv_throughput(resolved_date, project_id, issue_type);
-CREATE INDEX IF NOT EXISTS idx_mv_throughput_project
-    ON metrics.mv_throughput(project_id, resolved_date);
-
-COMMENT ON MATERIALIZED VIEW metrics.mv_throughput IS
-    'Daily throughput (issues completed per day by type, from fact_lead_time)';
-
--- ============================================================================
--- REFRESH FUNCTION
--- Purpose: Refresh all metrics views (called by Dagster)
--- ============================================================================
-
--- ============================================================================
--- MATERIALIZED VIEW: mv_velocity_slice
--- Purpose: Velocity per sprint sliced by dimensions (issue_type, custom_field)
--- Includes Plan (Issues/SP) vs Fact (Issues/SP)
--- ============================================================================
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS metrics.mv_velocity_slice AS
-SELECT
-    f.iteration_id AS sprint_id,
-    f.iteration_name AS sprint_name,
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.start_date,
-    f.end_date,
-    f.slice_dim,
-    f.slice_value,
-    f.planned_story_points,
-    f.completed_story_points,
-    f.planned_issues,
-    f.completed_issues,
-    -- Completion rate (Points)
-    CASE
-        WHEN f.planned_story_points > 0 THEN
-            ROUND((f.completed_story_points::numeric / f.planned_story_points::numeric) * 100, 2)
-        ELSE 0
-    END AS completion_rate_points_pct,
-     -- Completion rate (Issues)
-    CASE
-        WHEN f.planned_issues > 0 THEN
-            ROUND((f.completed_issues::numeric / f.planned_issues::numeric) * 100, 2)
-        ELSE 0
-    END AS completion_rate_issues_pct
-FROM metrics.fact_velocity_slice f
-JOIN clean_jira.projects p ON f.project_id = p.id
-WITH DATA;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_velocity_slice_sprint_dim_val
-    ON metrics.mv_velocity_slice(sprint_id, slice_dim, slice_value);
-CREATE INDEX IF NOT EXISTS idx_mv_velocity_slice_project
-    ON metrics.mv_velocity_slice(project_id, start_date);
-
-COMMENT ON MATERIALIZED VIEW metrics.mv_velocity_slice IS
-    'Velocity metrics per sprint sliced by type/field (Plan vs Fact)';
-
--- ============================================================================
--- MATERIALIZED VIEW: mv_lead_time_slice
--- Purpose: Lead time per issue sliced (allows filtering by slice_value)
--- ============================================================================
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS metrics.mv_lead_time_slice AS
-SELECT
-    i.id AS issue_id,
-    i.external_key AS issue_key,
-    i.summary,
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    it.name AS issue_type,
-    f.slice_dim,
-    f.slice_value,
-    f.commitment_start_at,
-    f.commitment_end_at,
-    f.lead_time_days,
-     -- Lead time in hours
-    (f.lead_time_days * 24) AS lead_time_hours,
-    i.db_updated_at
-FROM metrics.fact_lead_time_slice f
-JOIN clean_jira.issues i ON i.id = f.issue_id
-JOIN clean_jira.projects p ON f.project_id = p.id
-JOIN clean_jira.issue_types it ON i.type_id = it.id
-WITH DATA;
-
-CREATE INDEX IF NOT EXISTS idx_mv_lead_time_slice_project_dim
-    ON metrics.mv_lead_time_slice(project_id, slice_dim, slice_value);
-CREATE INDEX IF NOT EXISTS idx_mv_lead_time_slice_end_date
-    ON metrics.mv_lead_time_slice(commitment_end_at);
-
-COMMENT ON MATERIALIZED VIEW metrics.mv_lead_time_slice IS
-    'Lead time per issue sliced by configured dimensions';
-
--- ============================================================================
--- MATERIALIZED VIEW: mv_lead_time_bins_slice
--- Purpose: Histogram bins for Lead Time sliced
--- ============================================================================
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS metrics.mv_lead_time_bins_slice AS
-SELECT
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.slice_dim,
-    f.slice_value,
-    f.bin_number,
-    f.tickets_count
-FROM metrics.fact_lead_time_bins_slice f
-JOIN clean_jira.projects p ON f.project_id = p.id
-WITH DATA;
-
-CREATE INDEX IF NOT EXISTS idx_mv_lt_bins_slice_project_dim
-    ON metrics.mv_lead_time_bins_slice(project_id, slice_dim, slice_value);
-
-COMMENT ON MATERIALIZED VIEW metrics.mv_lead_time_bins_slice IS
-    'Lead time histogram bins sliced by configured dimensions';
-
--- ============================================================================
--- REFRESH FUNCTION
--- Purpose: Refresh all metrics views (called by Dagster)
--- ============================================================================
-
--- ============================================================================
--- VIEW: mv_throughput_weekly
--- Purpose: Weekly throughput (issues completed per week)
--- ============================================================================
-
-CREATE OR REPLACE VIEW metrics.mv_throughput_weekly AS
-SELECT
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.week_start_date,
-    f.week_end_date,
-    f.issue_type,
-    f.issues_completed,
-    f.avg_lead_time_days
-FROM metrics.fact_throughput f
-JOIN clean_jira.projects p ON f.project_id = p.id
-ORDER BY f.project_id, f.week_start_date;
-
-COMMENT ON VIEW metrics.mv_throughput_weekly IS
-    'Weekly throughput metrics (issues completed per week by type)';
-
--- ============================================================================
--- VIEW: mv_cfd
--- Purpose: Cumulative Flow Diagram data (daily status counts)
--- ============================================================================
-
+-- 4. CFD View (Daily Snapshot)
 CREATE OR REPLACE VIEW metrics.mv_cfd AS
 SELECT
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.date,
-    f.status_name,
-    f.status_category,
-    f.issue_count,
-    f.column_position
-FROM metrics.fact_cfd f
-JOIN clean_jira.projects p ON f.project_id = p.id
-ORDER BY f.project_id, f.date, f.column_position;
+    f.project_key, f.full_date as date, f.value as issue_count,
+    bc.name as status_name, bc.position as column_position
+FROM metrics.v_facts f
+LEFT JOIN clean_jira.board_columns bc ON f.entity_id = bc.id::text
+WHERE f.calc_code = 'cfd_count';
 
-COMMENT ON VIEW metrics.mv_cfd IS
-    'Cumulative Flow Diagram data showing daily issue counts per status';
-
--- ============================================================================
--- VIEW: mv_backlog_health
--- Purpose: Backlog health metrics (size, age, staleness)
--- ============================================================================
-
+-- 5. Backlog Health View (Daily Snapshot)
 CREATE OR REPLACE VIEW metrics.mv_backlog_health AS
 SELECT
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.total_backlog_size,
-    f.avg_age_days,
-    f.stale_issues_count,
-    f.stale_percentage,
-    f.oldest_issue_days,
-    f.backlog_growth_last_week,
-    f.backlog_growth_last_month
-FROM metrics.fact_backlog_health f
-JOIN clean_jira.projects p ON f.project_id = p.id;
+    project_key, full_date as date,
+    MAX(CASE WHEN calc_code = 'backlog_size' THEN value END) as total_backlog_size,
+    MAX(CASE WHEN calc_code = 'backlog_created' THEN value END) as created_daily,
+    MAX(CASE WHEN calc_code = 'backlog_resolved' THEN value END) as resolved_daily,
+    MAX(CASE WHEN calc_code = 'backlog_net_growth' THEN value END) as net_growth_daily
+FROM metrics.v_facts
+WHERE metric_code = 'backlog_growth' AND slice_rule_name IS NULL
+GROUP BY project_key, full_date;
 
-COMMENT ON VIEW metrics.mv_backlog_health IS
-    'Backlog health metrics including size, age, and staleness indicators';
-
--- ============================================================================
--- VIEW: mv_backlog_distribution
--- Purpose: Backlog breakdown by type and priority
--- ============================================================================
-
-CREATE OR REPLACE VIEW metrics.mv_backlog_distribution AS
+-- 6. Generic Sliced View (For all metrics)
+CREATE OR REPLACE VIEW metrics.mv_sliced_metrics AS
 SELECT
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.issue_type,
-    f.priority,
-    f.issue_count,
-    f.percentage
-FROM metrics.fact_backlog_distribution f
-JOIN clean_jira.projects p ON f.project_id = p.id
-ORDER BY f.project_id, f.issue_type, f.priority;
+    project_key, metric_code, calc_code, slice_rule_name, slice_value,
+    full_date as date, value, unit_code
+FROM metrics.v_facts
+WHERE slice_rule_name IS NOT NULL;
 
-COMMENT ON VIEW metrics.mv_backlog_distribution IS
-    'Backlog distribution by issue type and priority';
-
--- ============================================================================
--- VIEW: mv_time_to_market
--- Purpose: Time to Market for features/epics
--- ============================================================================
-
-CREATE OR REPLACE VIEW metrics.mv_time_to_market AS
+-- 7. Advanced: Flow Efficiency
+CREATE OR REPLACE VIEW metrics.mv_flow_efficiency AS
 SELECT
-    f.issue_id,
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.issue_key,
-    f.issue_type,
-    f.created_at,
-    f.released_at,
-    f.time_to_market_days,
-    (f.time_to_market_days * 24) AS time_to_market_hours
-FROM metrics.fact_time_to_market f
-JOIN clean_jira.projects p ON f.project_id = p.id
-ORDER BY f.project_id, f.released_at DESC;
+    project_key, entity_id as issue_key,
+    MAX(CASE WHEN calc_code = 'flow_active_days' THEN value END) as active_days,
+    MAX(CASE WHEN calc_code = 'flow_wait_days' THEN value END) as wait_days,
+    MAX(CASE WHEN calc_code = 'flow_efficiency_pct' THEN value END) as efficiency_pct,
+    event_end_at as completion_date
+FROM metrics.v_facts
+WHERE metric_code = 'flow_efficiency'
+GROUP BY project_key, entity_id, event_end_at;
 
-COMMENT ON VIEW metrics.mv_time_to_market IS
-    'Time to Market metrics showing creation to release duration for features/epics';
-
--- ============================================================================
--- VIEW: mv_release_cadence
--- Purpose: Release frequency and cadence metrics
--- ============================================================================
-
-CREATE OR REPLACE VIEW metrics.mv_release_cadence AS
-SELECT
-    f.project_id,
-    p.external_key AS project_key,
-    p.name AS project_name,
-    f.total_releases,
-    f.avg_days_between_releases,
-    f.min_gap,
-    f.max_gap,
-    f.releases_per_month
-FROM metrics.fact_release_cadence f
-JOIN clean_jira.projects p ON f.project_id = p.id;
-
-COMMENT ON VIEW metrics.mv_release_cadence IS
-    'Release cadence metrics showing frequency and regularity of releases';
-
--- ============================================================================
--- REFRESH FUNCTION (Updated to include new views)
--- Purpose: Refresh all metrics views (called by Dagster)
--- ============================================================================
-
+-- Compatibility / Legacy Refresh (Now No-op as these are standard views)
 CREATE OR REPLACE FUNCTION metrics.refresh_all_views()
 RETURNS void AS $$
 BEGIN
-    REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_lead_time;
-    REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_velocity;
-    REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_throughput;
-
-    -- Refresh sliced views (check existence just in case, though they are created above)
-    REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_velocity_slice;
-    REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_lead_time_slice;
-    REFRESH MATERIALIZED VIEW CONCURRENTLY metrics.mv_lead_time_bins_slice;
-
-    -- Note: New metrics (throughput_weekly, cfd, backlog_health, ttm, release_cadence)
-    -- are standard VIEWs (not materialized), so they auto-update when underlying
-    -- fact tables change. No manual refresh needed.
+    -- No-op for standard views
+    RETURN;
 END;
 $$ LANGUAGE plpgsql;
-
-COMMENT ON FUNCTION metrics.refresh_all_views() IS
-    'Refresh all metrics materialized views including sliced views';

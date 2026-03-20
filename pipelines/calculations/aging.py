@@ -82,7 +82,7 @@ def calculate_work_item_aging_facts(
         )
     else:
         active_issues = active_issues.with_columns(
-            pl.lit(None).cast(pl.Datetime).alias("start_at_from_changelog")
+            pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("start_at_from_changelog")
         )
 
     now = datetime.now(timezone.utc)
