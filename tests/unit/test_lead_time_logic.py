@@ -232,6 +232,79 @@ class TestLeadTimeCalculation:
         assert len(result) == 1
         assert result["lead_time_days"][0] == 9.0
 
+    def test_start_can_come_from_middle_status_when_in_progress_missing(self):
+        """If issue never entered In Progress, start can be another middle status."""
+        issues = pl.DataFrame(
+            {
+                "id": ["ISS-3C"],
+                "project_id": ["PROJ-1"],
+                "key": ["PROJ-3C"],
+                "type_name": ["Task"],
+                "jira_created_at": [datetime(2024, 1, 1, 10, 0)],
+                "jira_resolved_at": [datetime(2024, 1, 12, 10, 0)],
+            }
+        )
+
+        status_changelog = pl.DataFrame(
+            {
+                "issue_id": ["ISS-3C", "ISS-3C"],
+                "from_status_id": [None, "STATUS-CODE-REVIEW"],
+                "to_status_id": ["STATUS-CODE-REVIEW", "STATUS-DONE"],
+                "changed_at": [
+                    datetime(2024, 1, 3, 10, 0),  # first middle status (used as start)
+                    datetime(2024, 1, 8, 10, 0),  # done
+                ],
+            }
+        )
+
+        result = calculate_lead_time_per_issue(
+            issues,
+            status_changelog,
+            middle_status_ids=["STATUS-IN-PROGRESS", "STATUS-CODE-REVIEW"],
+            end_status_ids=["STATUS-DONE"],
+        )
+
+        assert len(result) == 1
+        assert result["commitment_start_at"][0] == datetime(2024, 1, 3, 10, 0)
+        assert result["lead_time_days"][0] == 5.0
+
+    def test_start_ignores_statuses_before_middle_range(self):
+        """Start is taken from first middle status, not earlier outside-range statuses."""
+        issues = pl.DataFrame(
+            {
+                "id": ["ISS-3D"],
+                "project_id": ["PROJ-1"],
+                "key": ["PROJ-3D"],
+                "type_name": ["Task"],
+                "jira_created_at": [datetime(2024, 1, 1, 10, 0)],
+                "jira_resolved_at": [datetime(2024, 1, 15, 10, 0)],
+            }
+        )
+
+        status_changelog = pl.DataFrame(
+            {
+                "issue_id": ["ISS-3D", "ISS-3D", "ISS-3D"],
+                "from_status_id": [None, "STATUS-TODO", "STATUS-CODE-REVIEW"],
+                "to_status_id": ["STATUS-TODO", "STATUS-CODE-REVIEW", "STATUS-DONE"],
+                "changed_at": [
+                    datetime(2024, 1, 2, 10, 0),  # outside middle range
+                    datetime(2024, 1, 4, 10, 0),  # first middle status (used as start)
+                    datetime(2024, 1, 9, 10, 0),  # done
+                ],
+            }
+        )
+
+        result = calculate_lead_time_per_issue(
+            issues,
+            status_changelog,
+            middle_status_ids=["STATUS-IN-PROGRESS", "STATUS-CODE-REVIEW"],
+            end_status_ids=["STATUS-DONE"],
+        )
+
+        assert len(result) == 1
+        assert result["commitment_start_at"][0] == datetime(2024, 1, 4, 10, 0)
+        assert result["lead_time_days"][0] == 5.0
+
     def test_empty_status_ids_returns_empty(self):
         """No middle/end status IDs = no lead time."""
         issues = pl.DataFrame(

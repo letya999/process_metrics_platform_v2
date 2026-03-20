@@ -679,6 +679,233 @@ def test_calculate_lead_time_with_slices(monkeypatch):
     assert out["rows_written"] == 2
 
 
+def test_calculate_lead_time_passes_middle_and_end_statuses_from_rule(monkeypatch):
+    monkeypatch.setattr(
+        lead_time, "get_definition_id", lambda *_args, **_kwargs: "def-lt"
+    )
+    monkeypatch.setattr(
+        lead_time, "get_calculation_id", lambda *_args, **_kwargs: "lt-id"
+    )
+    monkeypatch.setattr(
+        lead_time, "get_project_agg_id", lambda *_args, **_kwargs: "agg-1"
+    )
+    monkeypatch.setattr(
+        lead_time, "load_commitment_rules_for_calc", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        lead_time,
+        "resolve_commitment_columns",
+        lambda *_args, **_kwargs: {
+            "commitment_rule_id": "rule-1",
+            "start_column_id": "c1",
+            "end_column_id": "c3",
+        },
+    )
+    monkeypatch.setattr(
+        lead_time,
+        "identify_commitment_points_from_rule",
+        lambda *_args, **_kwargs: {
+            "middle_status_ids": ["s_in_progress", "s_code_review"],
+            "end_status_ids": ["s_done"],
+            "commitment_rule_id": "rule-1",
+        },
+    )
+
+    def _read_table(_engine, query, params=None):
+        if "FROM clean_jira.issues i" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["i1"],
+                    "project_id": ["p1"],
+                    "key": ["P1-1"],
+                    "type_name": ["Story"],
+                    "jira_created_at": [datetime(2026, 1, 1)],
+                    "jira_resolved_at": [datetime(2026, 1, 10)],
+                    "project_key": ["P1"],
+                }
+            )
+        if "FROM clean_jira.issue_status_changelog" in query:
+            return pl.DataFrame(
+                {
+                    "issue_id": ["i1", "i1"],
+                    "from_status_id": [None, "s_code_review"],
+                    "to_status_id": ["s_code_review", "s_done"],
+                    "changed_at": [datetime(2026, 1, 4), datetime(2026, 1, 9)],
+                }
+            )
+        if "FROM clean_jira.boards" in query:
+            return pl.DataFrame({"id": ["b1"], "project_id": ["p1"], "name": ["Board"]})
+        if "FROM clean_jira.board_columns bc" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["c1", "c2", "c3"],
+                    "board_id": ["b1", "b1", "b1"],
+                    "name": ["In Progress", "Code Review", "Done"],
+                    "status_id": ["s_in_progress", "s_code_review", "s_done"],
+                    "position": [1, 2, 3],
+                }
+            )
+        raise AssertionError(query)
+
+    monkeypatch.setattr(lead_time, "read_table", _read_table)
+
+    captured = {}
+
+    def _calc_lead_time_per_issue(
+        _issues_df, _status_changelog_df, middle_status_ids, end_status_ids
+    ):
+        captured["middle_status_ids"] = middle_status_ids
+        captured["end_status_ids"] = end_status_ids
+        return pl.DataFrame(
+            {
+                "issue_id": ["i1"],
+                "issue_key": ["P1-1"],
+                "project_id": ["p1"],
+                "lead_time_days": [5.0],
+                "commitment_start_at": [datetime(2026, 1, 4)],
+                "commitment_end_at": [datetime(2026, 1, 9)],
+            }
+        )
+
+    monkeypatch.setattr(
+        lead_time.lead_time_logic,
+        "calculate_lead_time_per_issue",
+        _calc_lead_time_per_issue,
+    )
+    monkeypatch.setattr(
+        lead_time, "get_slice_rules", lambda *_args, **_kwargs: pl.DataFrame()
+    )
+    monkeypatch.setattr(
+        lead_time, "write_fact_values", lambda df, *_args, **_kwargs: df.height
+    )
+
+    out = _asset_fn(lead_time.calculate_lead_time)(
+        _DummyContext(), _DummyDatabase(object())
+    )
+
+    assert out["status"] == "success"
+    assert captured["middle_status_ids"] == ["s_in_progress", "s_code_review"]
+    assert captured["end_status_ids"] == ["s_done"]
+
+
+def test_calculate_lead_time_deduplicates_same_issue_from_multiple_boards(monkeypatch):
+    monkeypatch.setattr(
+        lead_time, "get_definition_id", lambda *_args, **_kwargs: "def-lt"
+    )
+    monkeypatch.setattr(
+        lead_time, "get_calculation_id", lambda *_args, **_kwargs: "lt-id"
+    )
+    monkeypatch.setattr(
+        lead_time, "get_project_agg_id", lambda *_args, **_kwargs: "agg-1"
+    )
+    monkeypatch.setattr(
+        lead_time, "load_commitment_rules_for_calc", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        lead_time,
+        "resolve_commitment_columns",
+        lambda *_args, **_kwargs: {
+            "commitment_rule_id": "rule-1",
+            "start_column_id": "c1",
+            "end_column_id": "c2",
+        },
+    )
+    monkeypatch.setattr(
+        lead_time,
+        "identify_commitment_points_from_rule",
+        lambda *_args, **_kwargs: {
+            "middle_status_ids": ["s1"],
+            "end_status_ids": ["s2"],
+            "commitment_rule_id": "rule-1",
+        },
+    )
+
+    def _read_table(_engine, query, params=None):
+        if "FROM clean_jira.issues i" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["i1"],
+                    "project_id": ["p1"],
+                    "key": ["P1-1"],
+                    "type_name": ["Story"],
+                    "jira_created_at": [datetime(2026, 1, 1)],
+                    "jira_resolved_at": [datetime(2026, 1, 10)],
+                    "project_key": ["P1"],
+                }
+            )
+        if "FROM clean_jira.issue_status_changelog" in query:
+            return pl.DataFrame(
+                {
+                    "issue_id": ["i1", "i1"],
+                    "from_status_id": [None, "s1"],
+                    "to_status_id": ["s1", "s2"],
+                    "changed_at": [datetime(2026, 1, 2), datetime(2026, 1, 5)],
+                }
+            )
+        if "FROM clean_jira.boards" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["b1", "b2"],
+                    "project_id": ["p1", "p1"],
+                    "name": ["Board-1", "Board-2"],
+                }
+            )
+        if "FROM clean_jira.board_columns bc" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["c1", "c2", "c3", "c4"],
+                    "board_id": ["b1", "b1", "b2", "b2"],
+                    "name": ["In Progress", "Done", "In Progress", "Done"],
+                    "status_id": ["s1", "s2", "s1", "s2"],
+                    "position": [1, 2, 1, 2],
+                }
+            )
+        raise AssertionError(query)
+
+    monkeypatch.setattr(lead_time, "read_table", _read_table)
+
+    def _calc_lead_time_per_issue(
+        _issues_df, _status_changelog_df, middle_status_ids, end_status_ids
+    ):
+        assert middle_status_ids == ["s1"]
+        assert end_status_ids == ["s2"]
+        return pl.DataFrame(
+            {
+                "issue_id": ["i1"],
+                "issue_key": ["P1-1"],
+                "project_id": ["p1"],
+                "lead_time_days": [3.0],
+                "commitment_start_at": [datetime(2026, 1, 2)],
+                "commitment_end_at": [datetime(2026, 1, 5)],
+            }
+        )
+
+    monkeypatch.setattr(
+        lead_time.lead_time_logic,
+        "calculate_lead_time_per_issue",
+        _calc_lead_time_per_issue,
+    )
+    monkeypatch.setattr(
+        lead_time, "get_slice_rules", lambda *_args, **_kwargs: pl.DataFrame()
+    )
+
+    captured = {}
+
+    def _write_fact_values(df, *_args, **_kwargs):
+        captured["height"] = df.height
+        return df.height
+
+    monkeypatch.setattr(lead_time, "write_fact_values", _write_fact_values)
+
+    out = _asset_fn(lead_time.calculate_lead_time)(
+        _DummyContext(), _DummyDatabase(object())
+    )
+
+    assert out["status"] == "success"
+    assert out["issues_processed"] == 1
+    assert captured["height"] == 1
+
+
 def test_calculate_throughput_success(monkeypatch):
     monkeypatch.setattr(
         throughput, "get_definition_id", lambda *_args, **_kwargs: "def-tp"
