@@ -2,6 +2,7 @@
 Velocity Metrics Dagster Asset (Generic Long Metric Store)
 """
 
+import logging
 from typing import Any
 
 import polars as pl
@@ -10,7 +11,9 @@ from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
 from pipelines.calculations import velocity as velocity_logic
 from pipelines.calculations.commitment_resolver import (
     identify_commitment_points_from_rule,
+    load_commitment_rules_for_calc,
     resolve_commitment_columns,
+    resolve_rule_from_cache,
 )
 from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
@@ -21,55 +24,7 @@ from pipelines.utils.metric_registry import (
 )
 from pipelines.utils.polars_db import read_table, write_fact_values
 
-
-def _load_commitment_rules(engine, calc_code: str) -> list[dict[str, Any]]:
-    """Load commitment rules for a calculation in one query."""
-    try:
-        rules_df = read_table(
-            engine,
-            """
-            SELECT
-                cr.id AS commitment_rule_id,
-                cr.project_id,
-                cr.board_id,
-                cr.start_column_id,
-                cr.end_column_id,
-                cr.start_column_name_snapshot AS start_column_name,
-                cr.end_column_name_snapshot AS end_column_name
-            FROM metrics.commitment_rules cr
-            JOIN metrics.calculations c ON c.id = cr.target_calculation_id
-            WHERE c.calc_code = :calc_code
-            """,
-            params={"calc_code": calc_code},
-        )
-        return rules_df.to_dicts() if not rules_df.is_empty() else []
-    except Exception:
-        # Compatibility path for tests where this query is not stubbed.
-        return []
-
-
-def _resolve_rule_from_cache(
-    rules: list[dict[str, Any]], project_id: str, board_id: str
-) -> dict[str, Any] | None:
-    """Pick best rule with priority: project+board > project > board > global."""
-    candidates = []
-    for rule in rules:
-        rule_project = str(rule["project_id"]) if rule.get("project_id") else None
-        rule_board = str(rule["board_id"]) if rule.get("board_id") else None
-
-        if rule_project not in (None, str(project_id)):
-            continue
-        if rule_board not in (None, str(board_id)):
-            continue
-
-        score = (int(rule_project is not None), int(rule_board is not None))
-        candidates.append((score, rule))
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+logger = logging.getLogger(__name__)
 
 
 def _resolve_done_status_ids_from_commitment_rules(
@@ -87,8 +42,8 @@ def _resolve_done_status_ids_from_commitment_rules(
     if boards_df.is_empty() or board_columns_df.is_empty():
         return []
 
-    velocity_rules = _load_commitment_rules(engine, "velocity_completed_sp")
-    lead_time_rules = _load_commitment_rules(engine, "lead_time_days")
+    velocity_rules = load_commitment_rules_for_calc(engine, "velocity_completed_sp")
+    lead_time_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
     done_status_ids: list[str] = []
 
     for board in boards_df.to_dicts():
@@ -98,9 +53,9 @@ def _resolve_done_status_ids_from_commitment_rules(
         if board_cols.is_empty():
             continue
 
-        rule = _resolve_rule_from_cache(
+        rule = resolve_rule_from_cache(
             velocity_rules, p_id, b_id
-        ) or _resolve_rule_from_cache(lead_time_rules, p_id, b_id)
+        ) or resolve_rule_from_cache(lead_time_rules, p_id, b_id)
 
         if not rule:
             # DB fallback in case cache is empty/stale.
@@ -108,14 +63,26 @@ def _resolve_done_status_ids_from_commitment_rules(
                 rule = resolve_commitment_columns(
                     engine, p_id, b_id, "velocity_completed_sp"
                 )
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Failed resolve_commitment_columns for velocity_completed_sp (project_id=%s, board_id=%s): %s",
+                    p_id,
+                    b_id,
+                    exc,
+                )
                 rule = None
             if not rule:
                 try:
                     rule = resolve_commitment_columns(
                         engine, p_id, b_id, "lead_time_days"
                     )
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "Failed resolve_commitment_columns for lead_time_days (project_id=%s, board_id=%s): %s",
+                        p_id,
+                        b_id,
+                        exc,
+                    )
                     rule = None
 
         if rule:
@@ -328,7 +295,7 @@ def calculate_velocity(
             ]
         )
 
-        if slice_value:
+        if slice_value is not None:
             mapped = mapped.with_columns(
                 pl.lit(str(slice_value)).cast(pl.Utf8).alias("slice_value")
             )
@@ -466,10 +433,35 @@ def calculate_velocity(
 @asset_check(asset=calculate_velocity)
 def velocity_data_quality_check(database: DatabaseResource) -> AssetCheckResult:
     engine = database.get_engine()
-    calc_id = get_calculation_id(engine, "velocity_completed_sp")
+    calc_codes = [
+        "velocity_planned_sp",
+        "velocity_completed_sp",
+        "velocity_planned_count",
+        "velocity_completed_count",
+    ]
+    metric_counts: dict[str, int] = {}
+    negative_counts: dict[str, int] = {}
 
-    query = "SELECT COUNT(*) FROM metrics.fact_values WHERE metric_id = :calc_id"
-    df = read_table(engine, query, params={"calc_id": calc_id})
-    count = df[0, 0]
+    for calc_code in calc_codes:
+        calc_id = get_calculation_id(engine, calc_code)
+        query = """
+        SELECT
+            COUNT(*) AS row_count,
+            SUM(CASE WHEN value < 0 THEN 1 ELSE 0 END) AS negative_count
+        FROM metrics.fact_values
+        WHERE metric_id = :calc_id
+        """
+        df = read_table(engine, query, params={"calc_id": calc_id})
+        metric_counts[calc_code] = int(df[0, "row_count"] or 0)
+        negative_counts[calc_code] = int(df[0, "negative_count"] or 0)
 
-    return AssetCheckResult(passed=count > 0, metadata={"row_count": count})
+    has_all_metrics = all(metric_counts[code] > 0 for code in calc_codes)
+    has_negative_values = any(negative_counts[code] > 0 for code in calc_codes)
+
+    return AssetCheckResult(
+        passed=has_all_metrics and not has_negative_values,
+        metadata={
+            "metric_counts": metric_counts,
+            "negative_counts": negative_counts,
+        },
+    )

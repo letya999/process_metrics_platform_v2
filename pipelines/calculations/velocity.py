@@ -10,8 +10,7 @@ JIRA Sprint Report Definitions (based on actual Jira behavior):
 1. **COMMITMENT (Plan)**:
    - Issues that were in the sprint at START time
    - Story Points value at sprint START
-   - EXCLUDES issues that were REMOVED from sprint later
-   - The formula: Commitment = (Issues at start) - (Issues removed after start)
+   - Snapshot semantics: later removals do NOT change initial commitment
 
 2. **COMPLETED (Fact)**:
    - Issues in final sprint scope that became "Done" DURING the sprint window
@@ -166,6 +165,10 @@ def identify_sprint_commitment(
 ) -> pl.DataFrame:
     """
     Identify Sprint Commitment (Issues in sprint at Start Date + Grace Period).
+
+    Definition contract:
+    - Commitment is a snapshot at sprint start/cutoff.
+    - Issues removed later remain part of commitment.
 
     Logic:
     1. Find issues that were in the sprint at (start_date + GRACE_PERIOD_MINUTES).
@@ -810,34 +813,19 @@ def calculate_velocity_facts(
         )
     )
 
-    # 8. Deduplicate sprints with same name (merge metrics)
-    final_metrics = (
-        result.group_by(["project_id", "name"])
-        .agg(
-            [
-                pl.col("planned_issues").sum(),
-                pl.col("planned_story_points").sum(),
-                pl.col("completed_issues").sum(),
-                pl.col("completed_story_points").sum(),
-                pl.col("start_date").min(),
-                pl.col("end_date").max(),
-                pl.col("id").first().alias("iteration_id"),
-            ]
-        )
-        .rename({"name": "iteration_name"})
-        .select(
-            [
-                "project_id",
-                "iteration_id",
-                "iteration_name",
-                "start_date",
-                "end_date",
-                "planned_story_points",
-                "completed_story_points",
-                "planned_issues",
-                "completed_issues",
-            ]
-        )
+    # 8. Keep sprint-level granularity by stable sprint id.
+    final_metrics = result.select(
+        [
+            "project_id",
+            pl.col("id").alias("iteration_id"),
+            pl.col("name").alias("iteration_name"),
+            "start_date",
+            "end_date",
+            "planned_story_points",
+            "completed_story_points",
+            "planned_issues",
+            "completed_issues",
+        ]
     )
 
     return final_metrics
@@ -873,7 +861,13 @@ def calculate_velocity_slice_by_issue_type(
     # Get issue types
     issue_types_df = issues_df.select(["id", "type_name"]).rename({"id": "issue_id"})
 
-    # Plan scope based on final sprint scope (SP valued at sprint start)
+    # Plan scope is commitment at sprint start (snapshot semantics).
+    commitment_df = identify_sprint_commitment(
+        sprint_changelog_df,
+        sprints_df,
+        issues_df,
+        sprint_issues_df,
+    )
     final_scope_df = identify_sprint_final_scope(
         sprint_issues_df, sprint_changelog_df, issues_df
     )
@@ -885,7 +879,7 @@ def calculate_velocity_slice_by_issue_type(
 
     # Historical SP
     commitment_with_sp = determine_story_points_at_date(
-        final_scope_df,
+        commitment_df,
         sprints_df,
         current_story_points_df,
         field_value_changelog_df,
@@ -955,21 +949,10 @@ def calculate_velocity_slice_by_issue_type(
     # Join with Sprint Details
     result = sprints_df.join(combined, left_on="id", right_on="sprint_id", how="left")
 
-    # Deduplicate
     final_metrics = (
-        result.group_by(["project_id", "name", "type_name"])
-        .agg(
-            [
-                pl.col("planned_issues").sum(),
-                pl.col("planned_story_points").sum(),
-                pl.col("completed_issues").sum(),
-                pl.col("completed_story_points").sum(),
-                pl.col("start_date").min(),
-                pl.col("end_date").max(),
-                pl.col("id").first().alias("iteration_id"),
-            ]
+        result.rename(
+            {"id": "iteration_id", "name": "iteration_name", "type_name": "issue_type"}
         )
-        .rename({"name": "iteration_name", "type_name": "issue_type"})
         .with_columns(pl.col("issue_type").fill_null("Unknown"))
         .select(
             [

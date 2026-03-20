@@ -176,3 +176,172 @@ def test_calculate_velocity_facts_orchestrates_with_stubbed_components(monkeypat
     assert row["completed_story_points"] == 5.0
     assert row["planned_issues"] == 1
     assert row["completed_issues"] == 1
+
+
+def test_calculate_velocity_facts_keeps_same_name_sprints_separate(monkeypatch):
+    monkeypatch.setattr(
+        velocity, "get_done_status_ids", lambda *_args, **_kwargs: ["done"]
+    )
+    monkeypatch.setattr(
+        velocity,
+        "extract_story_points",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {"issue_id": ["i1", "i2"], "story_points": [5.0, 8.0]}
+        ),
+    )
+    monkeypatch.setattr(
+        velocity,
+        "identify_sprint_commitment",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {"issue_id": ["i1", "i2"], "sprint_id": ["s1", "s2"]}
+        ),
+    )
+    monkeypatch.setattr(
+        velocity,
+        "identify_sprint_final_scope",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {"issue_id": ["i1", "i2"], "sprint_id": ["s1", "s2"]}
+        ),
+    )
+    monkeypatch.setattr(
+        velocity,
+        "identify_completed_issues",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {
+                "issue_id": ["i1", "i2"],
+                "sprint_id": ["s1", "s2"],
+                "is_completed": [True, True],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        velocity,
+        "determine_story_points_at_date",
+        lambda scope_df, _sprints_df, current_sp_df, *_args, **_kwargs: scope_df.join(
+            current_sp_df, on="issue_id", how="left"
+        ),
+    )
+
+    sprints = pl.DataFrame(
+        {
+            "id": ["s1", "s2"],
+            "project_id": ["p1", "p1"],
+            "name": ["Sprint Shared Name", "Sprint Shared Name"],
+            "start_date": [date(2026, 1, 1), date(2026, 1, 15)],
+            "end_date": [date(2026, 1, 14), date(2026, 1, 28)],
+            "complete_date": [None, None],
+        }
+    )
+
+    result = velocity.calculate_velocity_facts(
+        sprints_df=sprints,
+        sprint_issues_df=pl.DataFrame(
+            {"issue_id": ["i1", "i2"], "sprint_id": ["s1", "s2"]}
+        ),
+        sprint_changelog_df=pl.DataFrame(),
+        issues_df=pl.DataFrame(
+            {
+                "id": ["i1", "i2"],
+                "type_name": ["Story", "Story"],
+                "status_id": ["done", "done"],
+            }
+        ),
+        field_values_df=pl.DataFrame(),
+        field_keys_df=pl.DataFrame(),
+        status_changelog_df=pl.DataFrame(),
+        boards_df=pl.DataFrame(),
+        board_columns_df=pl.DataFrame(),
+        field_value_changelog_df=pl.DataFrame(),
+        issue_statuses_df=pl.DataFrame(),
+    )
+
+    assert result.height == 2
+    rows = sorted(result.to_dicts(), key=lambda x: x["iteration_id"])
+    assert rows[0]["iteration_id"] == "s1"
+    assert rows[0]["planned_story_points"] == 5.0
+    assert rows[1]["iteration_id"] == "s2"
+    assert rows[1]["planned_story_points"] == 8.0
+
+
+def test_calculate_velocity_slice_by_issue_type_uses_commitment_for_plan(monkeypatch):
+    captured_scope_issue_sets = []
+
+    monkeypatch.setattr(
+        velocity, "get_done_status_ids", lambda *_args, **_kwargs: ["done"]
+    )
+    monkeypatch.setattr(
+        velocity,
+        "extract_story_points",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {"issue_id": ["i-commit", "i-final"], "story_points": [3.0, 5.0]}
+        ),
+    )
+    monkeypatch.setattr(
+        velocity,
+        "identify_sprint_commitment",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {"issue_id": ["i-commit"], "sprint_id": ["s1"]}
+        ),
+    )
+    monkeypatch.setattr(
+        velocity,
+        "identify_sprint_final_scope",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {"issue_id": ["i-final"], "sprint_id": ["s1"]}
+        ),
+    )
+    monkeypatch.setattr(
+        velocity,
+        "identify_completed_issues",
+        lambda *_args, **_kwargs: pl.DataFrame(
+            {"issue_id": ["i-final"], "sprint_id": ["s1"], "is_completed": [True]}
+        ),
+    )
+
+    def _determine_story_points_at_date(
+        scope_df, _sprints_df, current_sp_df, *_args, **_kwargs
+    ):
+        captured_scope_issue_sets.append(
+            sorted(scope_df["issue_id"].cast(pl.Utf8).to_list())
+        )
+        return scope_df.join(current_sp_df, on="issue_id", how="left")
+
+    monkeypatch.setattr(
+        velocity, "determine_story_points_at_date", _determine_story_points_at_date
+    )
+
+    result = velocity.calculate_velocity_slice_by_issue_type(
+        sprint_issues_df=pl.DataFrame(
+            {"issue_id": ["i-commit", "i-final"], "sprint_id": ["s1", "s1"]}
+        ),
+        sprint_changelog_df=pl.DataFrame(),
+        issues_df=pl.DataFrame(
+            {
+                "id": ["i-commit", "i-final"],
+                "type_name": ["Story", "Bug"],
+                "status_id": ["todo", "done"],
+            }
+        ),
+        sprints_df=pl.DataFrame(
+            {
+                "id": ["s1"],
+                "project_id": ["p1"],
+                "name": ["Sprint 1"],
+                "start_date": [date(2026, 1, 1)],
+                "end_date": [date(2026, 1, 14)],
+                "complete_date": [None],
+            }
+        ),
+        field_values_df=pl.DataFrame(),
+        field_keys_df=pl.DataFrame(),
+        status_changelog_df=pl.DataFrame(),
+        boards_df=pl.DataFrame(),
+        board_columns_df=pl.DataFrame(),
+        field_value_changelog_df=pl.DataFrame(),
+        issue_statuses_df=pl.DataFrame(),
+    )
+
+    assert result.height >= 1
+    # First call is plan path, second call is completed path.
+    assert captured_scope_issue_sets[0] == ["i-commit"]
+    assert captured_scope_issue_sets[1] == ["i-final"]
