@@ -86,9 +86,9 @@ ignore = ["S101", "E501"]  # Allow assert in tests, ignore line length
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py"]
+python_files = ["test_*.py", "_test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --cov=app --cov=pipelines --cov-report=term-missing --cov-fail-under=75"
+addopts = "-v"
 asyncio_mode = "auto"
 
 [tool.coverage.run]

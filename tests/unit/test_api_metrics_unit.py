@@ -1,18 +1,10 @@
 """Unit tests for app.api.metrics branches and response shaping."""
 
-import os
 from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-
-# Ensure app.database initializes with local test credentials during collection.
-_password = "woJX9+pYcU+y2JApOCcqs5HP"
-_db_name = "process_metrics_v2"
-os.environ.setdefault(
-    "DATABASE_URL", f"postgresql://postgres:{_password}@localhost:5432/{_db_name}"
-)
 
 from app.api import metrics as metrics_api  # noqa: E402
 from app.schemas.metrics import MetricConfigUpdate  # noqa: E402

@@ -18,6 +18,16 @@ from fastapi.testclient import TestClient
 # =============================================================================
 
 
+def pytest_addoption(parser):
+    """Add optional flags for slow/external test suites."""
+    parser.addoption(
+        "--run-db-tests",
+        action="store_true",
+        default=False,
+        help="Run validation tests that require a live database with seeded data.",
+    )
+
+
 @pytest.fixture
 def sample_jira_issue() -> dict[str, Any]:
     """Sample raw Jira issue data for testing."""
@@ -252,3 +262,13 @@ def database_env_vars(monkeypatch):
     monkeypatch.setenv("DAGSTER_POSTGRES_PASSWORD", password)
     monkeypatch.setenv("DAGSTER_POSTGRES_DB", db_name)
     monkeypatch.setenv("DAGSTER_POSTGRES_HOST", "localhost")
+
+
+@pytest.fixture(autouse=True)
+def reset_database_module_state(database_env_vars):
+    """Reset cached database engine/session between tests."""
+    from app.database import reset_db_state_for_tests
+
+    reset_db_state_for_tests()
+    yield
+    reset_db_state_for_tests()

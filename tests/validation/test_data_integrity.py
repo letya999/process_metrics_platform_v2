@@ -48,10 +48,10 @@ class TestRawLayerIntegrity:
             )
             table_exists = result.scalar()
 
-            if table_exists:
-                result = conn.execute(text("SELECT count(*) FROM raw_jira.issues"))
-                count = result.scalar()
-                assert count >= 0, "raw_jira.issues should exist"
+            assert table_exists, "raw_jira.issues table must exist"
+            result = conn.execute(text("SELECT count(*) FROM raw_jira.issues"))
+            count = result.scalar()
+            assert count > 0, "raw_jira.issues should contain data"
 
     def test_raw_jira_projects_has_data(self, engine):
         """Test that raw_jira.projects has data after load."""
@@ -68,10 +68,10 @@ class TestRawLayerIntegrity:
             )
             table_exists = result.scalar()
 
-            if table_exists:
-                result = conn.execute(text("SELECT count(*) FROM raw_jira.projects"))
-                count = result.scalar()
-                assert count >= 0, "raw_jira.projects should exist"
+            assert table_exists, "raw_jira.projects table must exist"
+            result = conn.execute(text("SELECT count(*) FROM raw_jira.projects"))
+            count = result.scalar()
+            assert count > 0, "raw_jira.projects should contain data"
 
 
 class TestCleanLayerIntegrity:
@@ -332,13 +332,3 @@ class TestCrossLayerConsistency:
         assert (
             clean_count == metrics_count
         ), f"Mismatch: clean={clean_count}, metrics={metrics_count}"
-
-
-def pytest_addoption(parser):
-    """Add command line option for database tests."""
-    parser.addoption(
-        "--run-db-tests",
-        action="store_true",
-        default=False,
-        help="Run database integration tests",
-    )

@@ -1,6 +1,5 @@
 """Unit tests for app.api.integrations business branches."""
 
-import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -8,14 +7,6 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
-
-# Ensure app.database initializes with the same local test credentials
-# as tests/conftest.py when imported during collection.
-_password = "woJX9+pYcU+y2JApOCcqs5HP"
-_db_name = "process_metrics_v2"
-os.environ.setdefault(
-    "DATABASE_URL", f"postgresql://postgres:{_password}@localhost:5432/{_db_name}"
-)
 
 from app.api import integrations as integrations_api  # noqa: E402
 from app.schemas.integration import IntegrationCreate, IntegrationUpdate  # noqa: E402
