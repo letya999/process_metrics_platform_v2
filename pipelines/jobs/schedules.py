@@ -102,6 +102,69 @@ time_to_market_recalc_job = define_asset_job(
     description="Recalculate Time to Market facts",
 )
 
+# Job: Recalculate Sprint Health
+sprint_health_recalc_job = define_asset_job(
+    name="recalculate_sprint_health_job",
+    selection=AssetSelection.assets("calculate_sprint_health"),
+    description="Recalculate sprint health metrics (scope changes, burndown, spillover)",
+)
+
+# Job: Recalculate Flow Dynamics
+flow_dynamics_recalc_job = define_asset_job(
+    name="recalculate_flow_dynamics_job",
+    selection=AssetSelection.assets("calculate_flow_dynamics"),
+    description="Recalculate flow dynamics metrics (daily status entry, field changes)",
+)
+
+# Job: Recalculate Quality Metrics
+quality_recalc_job = define_asset_job(
+    name="recalculate_quality_metrics_job",
+    selection=AssetSelection.assets("calculate_quality_metrics"),
+    description="Recalculate quality metrics (defect density, backflow rate)",
+)
+
+# Job: Recalculate Delivery Metrics
+delivery_recalc_job = define_asset_job(
+    name="recalculate_delivery_metrics_job",
+    selection=AssetSelection.assets("calculate_delivery_metrics"),
+    description="Recalculate delivery metrics (release burnup scope/done)",
+)
+
+# Job: Recalculate Cycle Time Extended
+cycle_time_ext_recalc_job = define_asset_job(
+    name="recalculate_cycle_time_extended_job",
+    selection=AssetSelection.assets("calculate_cycle_time_extended"),
+    description="Recalculate extended cycle time metrics (lifetime, custom CT, epic delivery)",
+)
+
+# Job: Recalculate Waste Metrics
+waste_recalc_job = define_asset_job(
+    name="recalculate_waste_metrics_job",
+    selection=AssetSelection.assets("calculate_waste_metrics"),
+    description="Recalculate waste metrics (cancellation rate)",
+)
+
+# Job: Recalculate Estimation Metrics
+estimation_recalc_job = define_asset_job(
+    name="recalculate_estimation_metrics_job",
+    selection=AssetSelection.assets("calculate_estimation_metrics"),
+    description="Recalculate estimation metrics (estimate volatility)",
+)
+
+# Job: Recalculate Input Flow
+input_flow_recalc_job = define_asset_job(
+    name="recalculate_input_flow_job",
+    selection=AssetSelection.assets("calculate_input_flow"),
+    description="Recalculate input flow metrics (weekly issue intake)",
+)
+
+# Job: Recalculate Aging Extended
+aging_extended_recalc_job = define_asset_job(
+    name="recalculate_aging_extended_job",
+    selection=AssetSelection.assets("calculate_aging_extended"),
+    description="Recalculate extended aging metrics (blocked time, stale days)",
+)
+
 
 # Export all jobs and schedules
 jobs = [
@@ -115,6 +178,16 @@ jobs = [
     cfd_recalc_job,
     backlog_growth_recalc_job,
     time_to_market_recalc_job,
+    # New metrics
+    sprint_health_recalc_job,
+    flow_dynamics_recalc_job,
+    quality_recalc_job,
+    delivery_recalc_job,
+    cycle_time_ext_recalc_job,
+    waste_recalc_job,
+    estimation_recalc_job,
+    input_flow_recalc_job,
+    aging_extended_recalc_job,
 ]
 
 schedules = [

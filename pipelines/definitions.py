@@ -16,16 +16,26 @@ from pipelines.assets.jira import (
 )
 from pipelines.assets.metrics import (
     advanced_metrics_data_quality_check,
+    aging_extended_data_quality_check,
     backlog_growth_data_quality_check,
     cfd_data_quality_check,
     check_lead_time_no_nulls,
     check_lead_time_positive,
     check_throughput_no_future_dates,
     check_velocity_completion_rate_valid,
+    cycle_time_ext_data_quality_check,
+    delivery_data_quality_check,
+    estimation_data_quality_check,
+    flow_dynamics_data_quality_check,
+    input_flow_data_quality_check,
     lead_time_data_quality_check,
+    quality_data_quality_check,
+    # New metrics checks
+    sprint_health_data_quality_check,
     throughput_data_quality_check,
     ttm_data_quality_check,
     velocity_data_quality_check,
+    waste_data_quality_check,
 )
 from pipelines.jobs.schedules import jobs, schedules
 from pipelines.resources.database import database_resource
@@ -65,6 +75,16 @@ asset_checks = [
     backlog_growth_data_quality_check,
     ttm_data_quality_check,
     advanced_metrics_data_quality_check,
+    # New metrics checks
+    sprint_health_data_quality_check,
+    flow_dynamics_data_quality_check,
+    quality_data_quality_check,
+    delivery_data_quality_check,
+    cycle_time_ext_data_quality_check,
+    waste_data_quality_check,
+    estimation_data_quality_check,
+    input_flow_data_quality_check,
+    aging_extended_data_quality_check,
 ]
 
 # Create Definitions
