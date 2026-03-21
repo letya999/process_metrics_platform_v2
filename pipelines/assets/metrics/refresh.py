@@ -142,7 +142,20 @@ def metrics_throughput(
 
 @asset(
     group_name="metrics",
-    deps=["metrics_lead_time", "metrics_velocity", "metrics_throughput"],
+    deps=[
+        "metrics_lead_time",
+        "metrics_velocity",
+        "metrics_throughput",
+        "calculate_sprint_health",
+        "calculate_flow_dynamics",
+        "calculate_input_flow",
+        "calculate_quality_metrics",
+        "calculate_delivery_metrics",
+        "calculate_cycle_time_extended",
+        "calculate_waste_metrics",
+        "calculate_estimation_metrics",
+        "calculate_aging_extended",
+    ],
     description="Aggregate stats across all metrics",
     compute_kind="sql",
 )

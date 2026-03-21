@@ -6,6 +6,7 @@ Aging = Now - Commitment Start (Entry to "In Progress").
 """
 
 from datetime import datetime, timezone
+from typing import List
 
 import polars as pl
 
@@ -164,4 +165,135 @@ def calculate_work_item_aging_facts(
             "age_days",
             "age_in_status_days",
         ]
+    )
+
+
+def calculate_blocked_time(
+    issues_df: pl.DataFrame,
+    field_value_changelog_df: pl.DataFrame,
+    blocked_field_key_id: str,
+    now_date: datetime = None,
+) -> pl.DataFrame:
+    """
+    Calculate total hours an issue was in "blocked" state.
+    """
+    if now_date is None:
+        now_date = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    if field_value_changelog_df.is_empty():
+        return pl.DataFrame(
+            schema={
+                "project_id": pl.Utf8,
+                "issue_id": pl.Utf8,
+                "issue_key": pl.Utf8,
+                "blocked_hours": pl.Float64,
+            }
+        )
+
+    # Get changes for blocked field
+    changes = field_value_changelog_df.filter(
+        pl.col("field_key_id") == blocked_field_key_id
+    ).sort(["issue_id", "change_time"])
+
+    if changes.is_empty():
+        return pl.DataFrame(
+            schema={
+                "project_id": pl.Utf8,
+                "issue_id": pl.Utf8,
+                "issue_key": pl.Utf8,
+                "blocked_hours": pl.Float64,
+            }
+        )
+
+    # Find intervals where value is 'true'
+    # We need to pair 'true' with subsequent change
+    def is_blocked_val(val):
+        if val is None:
+            return False
+        v = str(val).lower()
+        return v in ["true", "1", "yes", "blocked"]
+
+    # We iterate over issues to find intervals
+    issue_ids = changes["issue_id"].unique().to_list()
+    all_results = []
+
+    for issue_id in issue_ids:
+        issue_changes = changes.filter(pl.col("issue_id") == issue_id).to_dicts()
+        total_seconds = 0.0
+        blocked_since = None
+
+        for change in issue_changes:
+            new_val_blocked = is_blocked_val(change["new_value"])
+            old_val_blocked = is_blocked_val(change["old_value"])
+
+            if new_val_blocked and not old_val_blocked:
+                # Started being blocked
+                blocked_since = change["change_time"]
+            elif not new_val_blocked and old_val_blocked:
+                # Stopped being blocked
+                if blocked_since:
+                    total_seconds += (
+                        change["change_time"] - blocked_since
+                    ).total_seconds()
+                    blocked_since = None
+
+        # If still blocked
+        if blocked_since:
+            total_seconds += (now_date - blocked_since).total_seconds()
+
+        all_results.append(
+            {"issue_id": issue_id, "blocked_hours": round(total_seconds / 3600.0, 2)}
+        )
+
+    result = pl.DataFrame(all_results)
+
+    # Join with issues to get project_id and key
+    issues = issues_df.select(["id", "project_id", "key"]).rename(
+        {"id": "issue_id", "key": "issue_key"}
+    )
+    result = issues.join(result, on="issue_id", how="inner")
+
+    return result
+
+
+def calculate_stale_days(
+    issues_df: pl.DataFrame,
+    issue_status_changelog_df: pl.DataFrame,
+    done_status_ids: List[str],
+    now_date: datetime = None,
+) -> pl.DataFrame:
+    """
+    Calculate days since last update for open issues.
+    """
+    if now_date is None:
+        now_date = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # Filter issues: not in done category
+    # We need issue_statuses to know category, but if not available, use done_status_ids
+    open_issues = issues_df.filter(
+        ~pl.col("status_id")
+        .cast(pl.Utf8)
+        .str.to_lowercase()
+        .is_in([s.lower() for s in done_status_ids])
+    )
+
+    if open_issues.is_empty():
+        return pl.DataFrame(
+            schema={
+                "project_id": pl.Utf8,
+                "issue_id": pl.Utf8,
+                "issue_key": pl.Utf8,
+                "current_status_id": pl.Utf8,
+                "stale_days": pl.Float64,
+            }
+        )
+
+    result = open_issues.with_columns(
+        ((pl.lit(now_date) - pl.col("updated_at")).dt.total_seconds() / 86400.0)
+        .round(2)
+        .alias("stale_days")
+    ).rename({"id": "issue_id", "key": "issue_key", "status_id": "current_status_id"})
+
+    return result.select(
+        ["project_id", "issue_id", "issue_key", "current_status_id", "stale_days"]
     )
