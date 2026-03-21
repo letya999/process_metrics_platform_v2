@@ -37,7 +37,7 @@ def calculate_cycle_time_extended(
     # 1. Load Data
     issues_df = read_table(
         engine,
-        "SELECT id, project_id, issue_key, created_at, type_id as issue_type_id, parent_id FROM clean_jira.issues",
+        "SELECT id, project_id, external_key as issue_key, jira_created_at as created_at, type_id as issue_type_id, parent_id FROM clean_jira.issues",
     )
     if issues_df.is_empty():
         return {"status": "skipped", "reason": "No issues found"}
@@ -62,7 +62,7 @@ def calculate_cycle_time_extended(
     lead_time_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
     custom_cycle_rules = load_commitment_rules_for_calc(engine, "cycle_time_custom")
     epic_rules = load_commitment_rules_for_calc(engine, "epic_delivery_time")
-    if epic_rules.is_empty():
+    if not epic_rules:
         epic_rules = lead_time_rules
 
     all_facts = []

@@ -1,421 +1,59 @@
 """
-Time to Market Metrics Calculation
-
-This module calculates Time to Market (TTM) - the time from idea/creation
-to production deployment/release.
-
-Key Metrics:
-- Time to Market: Creation → Release/Done
-- Feature Lead Time: Epic/Feature level tracking
-- Release Cadence: Frequency of releases
-- Cycle Time by Stage: Breakdown by workflow stages
-
-Business Rules:
-1. TTM = Time from issue creation to first release/deployment
-2. For issues without release info, use completion date as proxy
-3. Track at Epic/Feature level (high-level items)
-4. Calculate percentiles (P50, P90) for benchmarking
+Time to Market Calculations utility.
+Provides logic to load TTM-specific settings from the database.
 """
 
-from datetime import datetime, timedelta
+import json
 
 import polars as pl
 
-from pipelines.calculations.commitment_resolver import get_done_column_ids
+from pipelines.utils.polars_db import read_table
 
 
-def calculate_time_to_market(
-    issues_df: pl.DataFrame,
-    issue_types_df: pl.DataFrame,
-    releases_df: pl.DataFrame,
-    issue_fix_versions_df: pl.DataFrame,
-    status_changelog_df: pl.DataFrame,
-    board_columns_df: pl.DataFrame,
-) -> pl.DataFrame:
+def _parse_settings(settings) -> list[str]:
+    """Parse JSON setting if string, and return 'include' key as list."""
+    if isinstance(settings, str):
+        try:
+            settings = json.loads(settings)
+        except Exception:
+            return ["Epic"]
+    if not isinstance(settings, dict):
+        return ["Epic"]
+    return settings.get("include", ["Epic"])
+
+
+def load_issue_type_filter(engine, calc_code: str, project_id: str = None) -> list[str]:
     """
-    Calculate Time to Market for features/epics.
-
-    Args:
-        issues_df: Issue details (id, project_id, type_id, jira_created_at, jira_resolved_at)
-        issue_types_df: Issue type definitions
-        releases_df: Release/version information
-        issue_fix_versions_df: Issue-to-release mappings
-        status_changelog_df: Status change history
-        board_columns_df: Board configuration
-
-    Returns:
-        DataFrame: [issue_id, project_id, issue_key, issue_type, jira_created_at,
-                    released_at, time_to_market_days]
+    Load issue type names from calculation_settings for a given calc_code.
+    Priority: project-specific setting > global setting.
+    Returns list of type names (e.g., ["Epic"]).
+    Fallback: ["Epic"] if no settings found.
     """
-    if issues_df.is_empty():
-        return pl.DataFrame(
-            schema={
-                "issue_id": pl.Utf8,
-                "project_id": pl.Utf8,
-                "issue_key": pl.Utf8,
-                "issue_type": pl.Utf8,
-                "jira_created_at": pl.Datetime,
-                "released_at": pl.Datetime,
-                "time_to_market_days": pl.Float64,
-            }
-        )
-
-    # Filter to high-level items (Epic only)
-    high_level_types = ["Epic"]
-
-    issues_with_type = issues_df.join(
-        issue_types_df.select(["id", "name", "hierarchy_level"]),
-        left_on="type_id",
-        right_on="id",
-        how="inner",
-    )
-
-    # Focus on epics
-    strategic_issues = issues_with_type.filter(pl.col("name").is_in(high_level_types))
-
-    if strategic_issues.is_empty():
-        return pl.DataFrame(
-            schema={
-                "issue_id": pl.Utf8,
-                "project_id": pl.Utf8,
-                "issue_key": pl.Utf8,
-                "issue_type": pl.Utf8,
-                "jira_created_at": pl.Datetime,
-                "released_at": pl.Datetime,
-                "time_to_market_days": pl.Float64,
-            }
-        )
-
-    # Get release dates for issues
-    released_at = _get_release_dates(
-        strategic_issues,
-        releases_df,
-        issue_fix_versions_df,
-        status_changelog_df,
-        board_columns_df,
-    )
-
-    # Calculate TTM
-    ttm_data = (
-        strategic_issues.select(
-            [
-                pl.col("id").alias("issue_id"),
-                "project_id",
-                pl.col("key").alias("issue_key"),
-                pl.col("name").alias("issue_type"),
-                "jira_created_at",
-            ]
-        )
-        .join(released_at, on="issue_id", how="inner")
-        .with_columns(
-            [
-                # Defensive datetime casting to avoid subtraction errors
-                pl.col("released_at").cast(pl.Datetime("us", "UTC")),
-                pl.col("jira_created_at").cast(pl.Datetime("us", "UTC")),
-            ]
-        )
-        .with_columns(
-            [
-                # Calculate TTM in days
-                (
-                    (
-                        pl.col("released_at") - pl.col("jira_created_at")
-                    ).dt.total_seconds()
-                    / 86400.0
-                ).alias("time_to_market_days")
-            ]
-        )
-        .filter(
-            pl.col("released_at").is_not_null() & (pl.col("time_to_market_days") >= 0)
-        )
-        .sort(["project_id", "released_at"])
-    )
-
-    return ttm_data
-
-
-def _get_release_dates(
-    issues_df: pl.DataFrame,
-    releases_df: pl.DataFrame,
-    issue_fix_versions_df: pl.DataFrame,
-    status_changelog_df: pl.DataFrame,
-    board_columns_df: pl.DataFrame,
-) -> pl.DataFrame:
+    query = """
+        SELECT s.project_id, s.settings_json
+        FROM metrics.calculation_settings s
+        JOIN metrics.calculations c ON s.target_calculation_id = c.id
+        WHERE c.calc_code = :calc_code
+          AND s.settings_type = 'issue_type_filter'
+          AND s.enabled = true
+          AND (s.project_id = :project_id OR s.project_id IS NULL)
     """
-    Determine release date for each issue.
 
-    Priority:
-    1. Actual release date from fix_versions
-    2. Completion date (first entry to "Done")
-    3. jira_resolved_at
+    params = {"calc_code": calc_code, "project_id": project_id}
+    df = read_table(engine, query, params=params)
 
-    Args:
-        issues_df: Issues
-        releases_df: Releases
-        issue_fix_versions_df: Issue-release mappings
-        status_changelog_df: Status changelog
-        board_columns_df: Board configuration
+    if df.is_empty():
+        return ["Epic"]
 
-    Returns:
-        DataFrame: [issue_id, released_at]
-    """
-    # Strategy 1: Use actual release dates
-    released_via_version = None
-    if not releases_df.is_empty() and not issue_fix_versions_df.is_empty():
-        released_via_version = (
-            issue_fix_versions_df.join(
-                releases_df.select(["id", "release_date"]),
-                left_on="version_id",
-                right_on="id",
-                how="inner",
-            )
-            .filter(pl.col("release_date").is_not_null())
-            .group_by("issue_id")
-            .agg(
-                [
-                    # Use earliest release date if issue is in multiple releases
-                    pl.col("release_date")
-                    .min()
-                    .alias("released_at")
-                ]
-            )
-        )
+    # 1. Project-specific priority
+    if project_id:
+        project_rows = df.filter(pl.col("project_id").is_not_null())
+        if not project_rows.is_empty():
+            return _parse_settings(project_rows["settings_json"][0])
 
-    # Strategy 2: Use completion date (Done status)
-    done_status_ids = get_done_column_ids(board_columns_df)
-    completed_via_status = None
+    # 2. Global fallback (NULL project_id)
+    global_rows = df.filter(pl.col("project_id").is_null())
+    if not global_rows.is_empty():
+        return _parse_settings(global_rows["settings_json"][0])
 
-    if done_status_ids and not status_changelog_df.is_empty():
-        completed_via_status = (
-            status_changelog_df.filter(pl.col("to_status_id").is_in(done_status_ids))
-            .group_by("issue_id")
-            .agg([pl.col("changed_at").min().alias("released_at")])
-        )
-
-    # Strategy 3: Use jira_resolved_at
-    resolved_fallback = issues_df.select(
-        [
-            pl.col("id").alias("issue_id"),
-            pl.col("jira_resolved_at").alias("released_at"),
-        ]
-    ).filter(pl.col("released_at").is_not_null())
-
-    # Combine all strategies with priority
-    if released_via_version is not None:
-        result = released_via_version
-
-        # Add completion dates for issues without releases
-        if completed_via_status is not None:
-            result = (
-                result.join(
-                    completed_via_status,
-                    on="issue_id",
-                    how="full",
-                    coalesce=True,
-                    suffix="_completion",
-                )
-                .with_columns(
-                    [
-                        pl.coalesce(
-                            [pl.col("released_at"), pl.col("released_at_completion")]
-                        ).alias("released_at")
-                    ]
-                )
-                .select(["issue_id", "released_at"])
-            )
-
-        # Add resolved dates as final fallback
-        result = (
-            result.join(
-                resolved_fallback,
-                on="issue_id",
-                how="full",
-                coalesce=True,
-                suffix="_resolved",
-            )
-            .with_columns(
-                [
-                    pl.coalesce(
-                        [pl.col("released_at"), pl.col("released_at_resolved")]
-                    ).alias("released_at")
-                ]
-            )
-            .select(["issue_id", "released_at"])
-        )
-
-    elif completed_via_status is not None:
-        result = completed_via_status
-
-        # Add resolved dates as fallback
-        result = (
-            result.join(
-                resolved_fallback,
-                on="issue_id",
-                how="full",
-                coalesce=True,
-                suffix="_resolved",
-            )
-            .with_columns(
-                [
-                    pl.coalesce(
-                        [pl.col("released_at"), pl.col("released_at_resolved")]
-                    ).alias("released_at")
-                ]
-            )
-            .select(["issue_id", "released_at"])
-        )
-    else:
-        result = resolved_fallback
-
-    return result
-
-
-def calculate_ttm_aggregates(ttm_df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Calculate aggregate Time to Market metrics.
-
-    Args:
-        ttm_df: TTM facts
-
-    Returns:
-        DataFrame: [project_id, issue_type, total_issues, avg_ttm_days,
-                    median_ttm_days, p90_ttm_days, min_ttm, max_ttm]
-    """
-    if ttm_df.is_empty():
-        return pl.DataFrame(
-            schema={
-                "project_id": pl.Utf8,
-                "issue_type": pl.Utf8,
-                "total_issues": pl.Int64,
-                "avg_ttm_days": pl.Float64,
-                "median_ttm_days": pl.Float64,
-                "p90_ttm_days": pl.Float64,
-                "min_ttm": pl.Float64,
-                "max_ttm": pl.Float64,
-            }
-        )
-
-    aggregates = (
-        ttm_df.group_by(["project_id", "issue_type"])
-        .agg(
-            [
-                pl.len().alias("total_issues"),
-                pl.col("time_to_market_days").mean().round(2).alias("avg_ttm_days"),
-                pl.col("time_to_market_days")
-                .quantile(0.5)
-                .round(2)
-                .alias("median_ttm_days"),
-                pl.col("time_to_market_days")
-                .quantile(0.9)
-                .round(2)
-                .alias("p90_ttm_days"),
-                pl.col("time_to_market_days").min().round(2).alias("min_ttm"),
-                pl.col("time_to_market_days").max().round(2).alias("max_ttm"),
-            ]
-        )
-        .sort(["project_id", "issue_type"])
-    )
-
-    return aggregates
-
-
-def calculate_release_cadence(
-    releases_df: pl.DataFrame,
-    days_back: int = 180,
-) -> pl.DataFrame:
-    """
-    Calculate release cadence metrics (frequency and regularity).
-
-    Args:
-        releases_df: Release information
-        days_back: Number of days to analyze (default: 180)
-
-    Returns:
-        DataFrame: [project_id, total_releases, avg_days_between_releases,
-                    min_gap, max_gap, releases_per_month]
-    """
-    if releases_df.is_empty():
-        return pl.DataFrame(
-            schema={
-                "project_id": pl.Utf8,
-                "total_releases": pl.Int64,
-                "avg_days_between_releases": pl.Float64,
-                "min_gap": pl.Int64,
-                "max_gap": pl.Int64,
-                "releases_per_month": pl.Float64,
-            }
-        )
-
-    # Filter to recent releases
-    cutoff_date = datetime.now() - timedelta(days=days_back)
-
-    recent_releases = releases_df.filter(
-        pl.col("release_date").is_not_null() & (pl.col("release_date") >= cutoff_date)
-    ).sort(["project_id", "release_date"])
-
-    if recent_releases.is_empty():
-        return pl.DataFrame(
-            schema={
-                "project_id": pl.Utf8,
-                "total_releases": pl.Int64,
-                "avg_days_between_releases": pl.Float64,
-                "min_gap": pl.Int64,
-                "max_gap": pl.Int64,
-                "releases_per_month": pl.Float64,
-            }
-        )
-
-    # Calculate gaps between releases
-    releases_with_gaps = (
-        recent_releases.with_columns(
-            [
-                # Get previous release date within same project
-                pl.col("release_date")
-                .shift(1)
-                .over("project_id")
-                .alias("prev_release_date")
-            ]
-        )
-        .with_columns(
-            [
-                # Days since previous release (with defensive casting)
-                (
-                    (
-                        pl.col("release_date").cast(pl.Datetime("us", "UTC"))
-                        - pl.col("prev_release_date").cast(pl.Datetime("us", "UTC"))
-                    ).dt.total_seconds()
-                    / 86400.0
-                )
-                .cast(pl.Int64)
-                .alias("days_since_prev")
-            ]
-        )
-        .filter(pl.col("days_since_prev").is_not_null())
-    )
-
-    # Calculate cadence metrics
-    cadence = (
-        releases_with_gaps.group_by("project_id")
-        .agg(
-            [
-                pl.len().alias("total_releases"),
-                pl.col("days_since_prev")
-                .mean()
-                .round(2)
-                .alias("avg_days_between_releases"),
-                pl.col("days_since_prev").min().alias("min_gap"),
-                pl.col("days_since_prev").max().alias("max_gap"),
-            ]
-        )
-        .with_columns(
-            [
-                # Releases per month = 30 / avg_days_between
-                (30.0 / pl.col("avg_days_between_releases"))
-                .round(2)
-                .alias("releases_per_month")
-            ]
-        )
-        .sort("project_id")
-    )
-
-    return cadence
+    return ["Epic"]

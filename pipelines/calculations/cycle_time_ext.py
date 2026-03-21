@@ -31,10 +31,9 @@ def calculate_issue_lifetime(
 
     # Calculate lifetime
     result = issues_with_done.with_columns(
-        (
-            (pl.col("done_date") - pl.col("created_at")).dt.total_seconds()
-            / (24 * 3600)
-        ).alias("lifetime_days")
+        ((pl.col("done_date") - pl.col("created_at")).dt.total_seconds() / (24 * 3600))
+        .ceil()
+        .alias("lifetime_days")
     ).filter(pl.col("lifetime_days") >= 0)
 
     return result
@@ -83,9 +82,9 @@ def calculate_cycle_time_custom(
     )
 
     result = result.with_columns(
-        (
-            (pl.col("end_at") - pl.col("start_at")).dt.total_seconds() / (24 * 3600)
-        ).alias("cycle_days")
+        ((pl.col("end_at") - pl.col("start_at")).dt.total_seconds() / (24 * 3600))
+        .ceil()
+        .alias("cycle_days")
     )
 
     return result
@@ -169,9 +168,9 @@ def calculate_epic_delivery_time(
     )
 
     result = result.with_columns(
-        (
-            (pl.col("epic_end") - pl.col("epic_start")).dt.total_seconds() / (24 * 3600)
-        ).alias("delivery_days")
+        ((pl.col("epic_end") - pl.col("epic_start")).dt.total_seconds() / (24 * 3600))
+        .ceil()
+        .alias("delivery_days")
     ).filter(pl.col("delivery_days") >= 0)
 
     return result

@@ -160,3 +160,41 @@ def test_calculate_epic_delivery_time_no_children():
         issues, status_changelog, ["START"], ["DONE"]
     )
     assert result.is_empty()
+
+
+def test_calculate_cycle_time_ceil_fractional():
+    """Cycle time 12 hours should be ceiled to 1.0 day."""
+    issues = pl.DataFrame({"id": ["I1"], "issue_key": ["K1"], "project_id": ["P1"]})
+    status_changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I1"],
+            "to_status_id": ["START", "END"],
+            "changed_at": [
+                datetime(2024, 1, 1, 8, 0),
+                datetime(2024, 1, 1, 20, 0),
+            ],
+        }
+    )
+    result = logic.calculate_cycle_time_custom(issues, status_changelog, "START", "END")
+    assert result[0, "cycle_days"] == 1.0
+
+
+def test_calculate_issue_lifetime_ceil_fractional():
+    """Issue lifetime 12 hours should be ceiled to 1.0 day."""
+    issues = pl.DataFrame(
+        {
+            "id": ["I1"],
+            "issue_key": ["K1"],
+            "project_id": ["P1"],
+            "created_at": [datetime(2024, 1, 1, 8, 0)],
+        }
+    )
+    status_changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1"],
+            "to_status_id": ["DONE"],
+            "changed_at": [datetime(2024, 1, 1, 20, 0)],
+        }
+    )
+    result = logic.calculate_issue_lifetime(issues, status_changelog, ["DONE"])
+    assert result[0, "lifetime_days"] == 1.0
