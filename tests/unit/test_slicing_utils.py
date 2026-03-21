@@ -7,23 +7,25 @@ from pipelines.calculations import slicing_utils
 from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 
 
+@pytest.fixture
+def df():
+    return pl.DataFrame(
+        {
+            "id": ["i1", "i2", "i3", "i4"],
+            "project_id": ["p1", "p1", "p1", "p2"],
+            "issue_type": ["Bug", "Story", "Bug", "Story"],
+            "priority": ["High", "Low", "Medium", "High"],
+            "value": [10, 20, 30, 40],
+        }
+    )
+
+
+@pytest.fixture
+def mock_engine():
+    return MagicMock()
+
+
 class TestSlicingUtils:
-    @pytest.fixture
-    def df(self):
-        return pl.DataFrame(
-            {
-                "id": ["i1", "i2", "i3", "i4"],
-                "project_id": ["p1", "p1", "p1", "p2"],
-                "issue_type": ["Bug", "Story", "Bug", "Story"],
-                "priority": ["High", "Low", "Medium", "High"],
-                "value": [10, 20, 30, 40],
-            }
-        )
-
-    @pytest.fixture
-    def mock_engine(self):
-        return MagicMock()
-
     def test_apply_slicing_basic_exact_match(self, df, mock_engine):
         rules_df = pl.DataFrame(
             {
@@ -197,3 +199,86 @@ def test_apply_slicing_dynamic_injection():
         assert not result.is_empty()
         assert result["slice_value"][0] == "Sprint 1"
         assert result["sum_val"][0] == 30
+
+
+def test_apply_slicing_no_join_key(mock_engine):
+    # DF has no id, issue_id or source_id
+    df = pl.DataFrame({"val": [1, 2]})
+    rules_df = pl.DataFrame(
+        {
+            "slice_rule_id": ["r1"],
+            "slice_rule_name": ["N1"],
+            "group_by_column": ["external_col"],
+            "enabled": [True],
+        }
+    )
+
+    with patch("pipelines.calculations.slicing_utils.SmartSlicer"):
+        # Should return empty instead of crashing
+        result = apply_slicing(df, rules_df, lambda x: x, engine=mock_engine)
+        assert result.is_empty()
+
+
+def test_apply_slicing_mapping_none_or_empty(mock_engine):
+    df = pl.DataFrame({"id": ["i1"], "val": [1]})
+    rules_df = pl.DataFrame(
+        {
+            "slice_rule_id": ["r1"],
+            "slice_rule_name": ["N1"],
+            "group_by_column": ["external_col"],
+            "enabled": [True],
+        }
+    )
+
+    with patch("pipelines.calculations.slicing_utils.SmartSlicer") as mock_slicer_cls:
+        mock_slicer = mock_slicer_cls.return_value
+
+        # Case 1: mapping is None
+        mock_slicer.get_slice_mapping.return_value = None
+        result = apply_slicing(df, rules_df, lambda x: x, engine=mock_engine)
+        assert result.is_empty()
+
+        # Case 2: mapping is empty
+        mock_slicer.get_slice_mapping.return_value = pl.DataFrame()
+        result = apply_slicing(df, rules_df, lambda x: x, engine=mock_engine)
+        assert result.is_empty()
+
+
+def test_apply_slicing_calc_returns_empty(mock_engine):
+    df = pl.DataFrame({"id": ["i1"], "issue_type": ["Bug"]})
+    rules_df = pl.DataFrame(
+        {
+            "slice_rule_id": ["r1"],
+            "slice_rule_name": ["N1"],
+            "group_by_column": ["issue_type"],
+            "enabled": [True],
+        }
+    )
+
+    # calc returns empty
+    result = apply_slicing(df, rules_df, lambda x: pl.DataFrame(), engine=mock_engine)
+    assert result.is_empty()
+
+
+def test_apply_slicing_with_qualified_column(mock_engine):
+    df = pl.DataFrame({"id": ["i1"], "val": [1]})
+    rules_df = pl.DataFrame(
+        {
+            "slice_rule_id": ["r1"],
+            "slice_rule_name": ["N1"],
+            "group_by_column": ["issue_types.name"],  # qualified
+            "enabled": [True],
+        }
+    )
+
+    with patch("pipelines.calculations.slicing_utils.SmartSlicer") as mock_slicer_cls:
+        mock_slicer = mock_slicer_cls.return_value
+        mock_slicer.get_slice_mapping.return_value = pl.DataFrame(
+            {"source_id": ["i1"], "slice_value": ["Bug"]}
+        )
+
+        result = apply_slicing(
+            df, rules_df, lambda x: pl.DataFrame({"res": [10]}), engine=mock_engine
+        )
+        assert not result.is_empty()
+        assert result["slice_value"][0] == "Bug"

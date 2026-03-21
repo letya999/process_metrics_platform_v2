@@ -151,13 +151,34 @@ def apply_slicing(
             if mapping_df is not None and not mapping_df.is_empty():
                 # Robust Join: cast both to string to avoid UUID type mismatch
                 mapping_df = mapping_df.with_columns(pl.col("source_id").cast(pl.Utf8))
-                current_df = df.with_columns(pl.col("id").cast(pl.Utf8)).join(
+                join_key = None
+                if "id" in df.columns:
+                    join_key = "id"
+                elif source_table.endswith(".issues") and "issue_id" in df.columns:
+                    # Metric-wide frames often rename clean_jira.issues.id -> issue_id
+                    join_key = "issue_id"
+                elif "source_id" in df.columns:
+                    join_key = "source_id"
+
+                if not join_key:
+                    logger.warning(
+                        "Cannot apply slice rule %s: no suitable join key in DataFrame. "
+                        "Expected one of: id, issue_id, source_id",
+                        rule_id,
+                    )
+                    continue
+
+                current_df = df.with_columns(
+                    pl.col(join_key).cast(pl.Utf8).alias("__slice_source_id")
+                ).join(
                     mapping_df,
-                    left_on="id",
+                    left_on="__slice_source_id",
                     right_on="source_id",
                     how="left",
                     coalesce=True,
                 )
+                if "__slice_source_id" in current_df.columns:
+                    current_df = current_df.drop("__slice_source_id")
                 target_col = "slice_value"
             else:
                 continue

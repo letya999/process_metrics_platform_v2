@@ -322,3 +322,124 @@ class TestBacklogHealth:
 
         assert result.height == 4
         assert result["issue_count"].sum() == 4
+
+
+def test_calculate_backlog_growth_empty():
+    """Test backlog growth calculation with empty issues."""
+    issues = pl.DataFrame(
+        schema={
+            "id": pl.Utf8,
+            "project_id": pl.Utf8,
+            "status_id": pl.Utf8,
+            "jira_created_at": pl.Datetime,
+        }
+    )
+    statuses = pl.DataFrame({"id": ["1"], "category": ["todo"]})
+    fields = pl.DataFrame()
+    keys = pl.DataFrame()
+
+    result = calculate_backlog_health(issues, statuses, fields, keys)
+    assert result.is_empty()
+    assert "total_backlog_size" in result.columns
+
+
+def test_calculate_backlog_growth_trends_empty():
+    """Test backlog growth trends with empty issues."""
+    issues = pl.DataFrame(
+        schema={
+            "id": pl.Utf8,
+            "project_id": pl.Utf8,
+            "status_id": pl.Utf8,
+            "jira_created_at": pl.Datetime,
+        }
+    )
+    statuses = pl.DataFrame({"id": ["1"], "category": ["todo"]})
+
+    result = calculate_backlog_growth_trends(issues, statuses)
+    assert result.is_empty()
+    assert "net_growth" in result.columns
+
+
+def test_calculate_backlog_distribution_priority_extraction():
+    """Test priority extraction from JSON field values in backlog distribution."""
+    issues = pl.DataFrame(
+        {"id": ["I1"], "project_id": ["P1"], "status_id": ["S1"], "type_id": ["T1"]}
+    )
+    statuses = pl.DataFrame({"id": ["S1"], "category": ["todo"]})
+    types = pl.DataFrame({"id": ["T1"], "name": ["Story"]})
+    keys = pl.DataFrame({"id": ["K1"], "name": ["Priority"]})
+    values = pl.DataFrame(
+        {"issue_id": ["I1"], "field_key_id": ["K1"], "json_value": ['{"name": "High"}']}
+    )
+
+    result = calculate_backlog_distribution(issues, statuses, types, values, keys)
+    assert not result.is_empty()
+    assert result.filter(pl.col("priority") == "High").height == 1
+
+
+def test_calculate_backlog_distribution_empty():
+    """Test backlog distribution with empty issues."""
+    issues = pl.DataFrame(
+        schema={
+            "id": pl.Utf8,
+            "project_id": pl.Utf8,
+            "status_id": pl.Utf8,
+            "type_id": pl.Utf8,
+        }
+    )
+    statuses = pl.DataFrame()
+    types = pl.DataFrame()
+    values = pl.DataFrame()
+    keys = pl.DataFrame()
+
+    result = calculate_backlog_distribution(issues, statuses, types, values, keys)
+    assert result.is_empty()
+
+
+def test_calculate_age_distribution_empty():
+    """Test age distribution with empty issues."""
+    issues = pl.DataFrame(
+        schema={"id": pl.Utf8, "project_id": pl.Utf8, "status_id": pl.Utf8}
+    )
+    statuses = pl.DataFrame()
+
+    result = calculate_age_distribution(issues, statuses)
+    assert result.is_empty()
+
+
+def test_calculate_issue_status_on_dates_internal():
+    """Test the internal helper for status tracking on dates."""
+    from datetime import date
+
+    issues = pl.DataFrame(
+        {
+            "id": ["I1"],
+            "project_id": ["P1"],
+            "status_id": ["S1"],
+            "jira_created_at": [datetime(2025, 1, 1)],
+        }
+    )
+    changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1"],
+            "to_status_id": ["S2"],
+            "changed_at": [datetime(2025, 1, 3)],
+        }
+    )
+    dates = pl.DataFrame(
+        {
+            "fact_date": [
+                date(2025, 1, 1),
+                date(2025, 1, 2),
+                date(2025, 1, 3),
+                date(2025, 1, 4),
+            ]
+        }
+    )
+
+    result = _calculate_issue_status_on_dates(issues, changelog, dates)
+    assert result.height == 4
+    # On Jan 1, date should be date(2025, 1, 1)
+    assert result.filter(pl.col("date") == date(2025, 1, 1))["status_id"][0] == "S1"
+    # On Jan 3, status should be S2
+    assert result.filter(pl.col("date") == date(2025, 1, 3))["status_id"][0] == "S2"

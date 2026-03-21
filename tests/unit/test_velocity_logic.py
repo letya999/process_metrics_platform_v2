@@ -350,3 +350,29 @@ class TestDoneStatusIdentification:
         result = get_done_status_ids(boards, board_columns)
 
         assert result == []
+
+    def test_identify_done_statuses_by_position(self):
+        """Done statuses identified as right-most column by position."""
+        boards = pl.DataFrame({"id": ["BOARD-1"]})
+        board_columns = pl.DataFrame(
+            {
+                "board_id": ["BOARD-1", "BOARD-1", "BOARD-1"],
+                "position": [0, 1, 2],
+                "status_id": ["S1", "S2", "S3"],
+            }
+        )
+        result = get_done_status_ids(boards, board_columns)
+        assert "s3" in result
+        assert "s1" not in result
+        assert "s2" not in result
+
+    def test_identify_done_statuses_fallback_to_category(self):
+        """Done statuses fallback to status category when board mapping is missing."""
+        boards = pl.DataFrame()
+        board_columns = pl.DataFrame()
+        issue_statuses = pl.DataFrame(
+            {"id": ["S1", "S2"], "category": ["to_do", "done"]}
+        )
+        result = get_done_status_ids(boards, board_columns, issue_statuses)
+        assert "s2" in result
+        assert "s1" not in result

@@ -466,3 +466,45 @@ class TestLeadTimeSlice:
         result = calculate_lead_time_slice(lead_time_df)
 
         assert result.is_empty()
+
+
+def test_calculate_histogram_bins_slice():
+    """Test histogram bins by slice (issue type)."""
+    from pipelines.calculations.lead_time import calculate_histogram_bins_slice
+
+    # Empty
+    res_empty = calculate_histogram_bins_slice(
+        pl.DataFrame(
+            schema={
+                "project_id": pl.Utf8,
+                "issue_type": pl.Utf8,
+                "lead_time_days": pl.Float64,
+            }
+        )
+    )
+    assert res_empty.is_empty()
+
+    # Happy path
+    df = pl.DataFrame(
+        {
+            "project_id": ["P1", "P1", "P1"],
+            "issue_type": ["Story", "Story", "Bug"],
+            "lead_time_days": [1.2, 1.8, 0.5],
+        }
+    )
+    res = calculate_histogram_bins_slice(df)
+    assert res.height == 2  # Story bin 2, Bug bin 1
+    # Story bin 2 should have count 2
+    assert (
+        res.filter((pl.col("issue_type") == "Story") & (pl.col("bin_number") == 2))[
+            "tickets_count"
+        ][0]
+        == 2
+    )
+    # Bug bin 1 should have count 1
+    assert (
+        res.filter((pl.col("issue_type") == "Bug") & (pl.col("bin_number") == 1))[
+            "tickets_count"
+        ][0]
+        == 1
+    )
