@@ -128,13 +128,39 @@ def clean_jira_issue_statuses(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Sync issue statuses from raw to clean."""
+    """Sync issue statuses from raw to clean.
+
+    Sources:
+    1. Current status on issues (fields__status__id)
+    2. Historical statuses from status changelog (to/from values in history items)
+
+    This ensures statuses that no issue currently holds (e.g. "On review") are
+    still present in clean_jira.issue_statuses so board_column_statuses and
+    issue_status_changelog can resolve them correctly.
+    """
     engine = database.get_engine()
     with engine.connect() as conn:
-        context.log.info("Syncing issue statuses...")
-        result = conn.execute(
+        context.log.info("Syncing issue statuses (current + changelog history)...")
+
+        # Check if changelog items table exists for the second source
+        changelog_exists = conn.execute(
             text(
                 """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira'
+                  AND table_name = 'issues__changelog__histories__items'
+            )
+        """
+            )
+        ).scalar()
+
+        if changelog_exists:
+            # Two-step approach to avoid (project_id, name) unique constraint conflicts
+            # when the changelog contains duplicate names with different external_ids.
+
+            # Step 1: sync current statuses - has accurate category info.
+            sql_current = """
             INSERT INTO clean_jira.issue_statuses (
                 project_id,
                 external_id,
@@ -146,12 +172,9 @@ def clean_jira_issue_statuses(
                 r.fields__status__id as external_id,
                 r.fields__status__name as name,
                 CASE r.fields__status__status_category__key
-                    WHEN 'new'
-                        THEN 'to_do'::clean_jira.issue_status_category
-                    WHEN 'indeterminate'
-                        THEN 'in_progress'::clean_jira.issue_status_category
-                    WHEN 'done'
-                        THEN 'done'::clean_jira.issue_status_category
+                    WHEN 'new'           THEN 'to_do'::clean_jira.issue_status_category
+                    WHEN 'indeterminate' THEN 'in_progress'::clean_jira.issue_status_category
+                    WHEN 'done'          THEN 'done'::clean_jira.issue_status_category
                     ELSE 'to_do'::clean_jira.issue_status_category
                 END as category
             FROM raw_jira.issues r
@@ -161,11 +184,94 @@ def clean_jira_issue_statuses(
                 name = EXCLUDED.name,
                 category = EXCLUDED.category
             RETURNING id
-        """
+            """
+            result1 = conn.execute(text(sql_current))
+            count = len(result1.fetchall())
+
+            # Step 2: sync historical statuses from changelog that are not yet in the
+            # table by external_id NOR by name. Uses DISTINCT ON (project_id, name) to
+            # ensure only one row per name is inserted even if the changelog has the
+            # same status name with multiple IDs.
+            sql_changelog = """
+            WITH changelog_candidates AS (
+                SELECT DISTINCT ON (p.id, hi.to_string)
+                    p.id as project_id,
+                    hi.to as external_id,
+                    hi.to_string as name,
+                    CASE
+                        WHEN LOWER(hi.to_string) IN ('done', 'canceled', 'cancelled',
+                                                      'closed', 'resolved', 'отмена')
+                            OR LOWER(hi.to_string) LIKE '%cancel%'
+                            OR LOWER(hi.to_string) LIKE '%отмен%'
+                            THEN 'done'::clean_jira.issue_status_category
+                        WHEN LOWER(hi.to_string) IN ('to do', 'к выполнению', 'open',
+                                                      'backlog', 'new', 'todo')
+                            OR LOWER(hi.to_string) LIKE '%to do%'
+                            OR LOWER(hi.to_string) LIKE '%к выполнению%'
+                            THEN 'to_do'::clean_jira.issue_status_category
+                        ELSE 'in_progress'::clean_jira.issue_status_category
+                    END as category
+                FROM raw_jira.issues__changelog__histories__items hi
+                JOIN raw_jira.issues__changelog__histories h ON hi._dlt_parent_id = h._dlt_id
+                JOIN raw_jira.issues r ON h._dlt_root_id = r._dlt_id
+                JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+                WHERE hi.field = 'status'
+                  AND hi.fieldtype = 'jira'
+                  AND hi.to IS NOT NULL
+                  AND hi.to_string IS NOT NULL
+                ORDER BY p.id, hi.to_string, hi.to  -- deterministic: lowest external_id wins
             )
-        )
-        count = len(result.fetchall())
+            INSERT INTO clean_jira.issue_statuses (
+                project_id, external_id, name, category
+            )
+            SELECT project_id, external_id, name, category
+            FROM changelog_candidates cc
+            WHERE NOT EXISTS (
+                SELECT 1 FROM clean_jira.issue_statuses s
+                WHERE s.project_id = cc.project_id
+                  AND (s.external_id = cc.external_id OR s.name = cc.name)
+            )
+            ON CONFLICT DO NOTHING
+            RETURNING id
+            """
+            result2 = conn.execute(text(sql_changelog))
+            count += len(result2.fetchall())
+            sql = None  # handled above
+        else:
+            context.log.warning(
+                "Changelog items table not found - syncing current statuses only"
+            )
+            sql = """
+            INSERT INTO clean_jira.issue_statuses (
+                project_id,
+                external_id,
+                name,
+                category
+            )
+            SELECT DISTINCT
+                p.id as project_id,
+                r.fields__status__id as external_id,
+                r.fields__status__name as name,
+                CASE r.fields__status__status_category__key
+                    WHEN 'new'         THEN 'to_do'::clean_jira.issue_status_category
+                    WHEN 'indeterminate' THEN 'in_progress'::clean_jira.issue_status_category
+                    WHEN 'done'        THEN 'done'::clean_jira.issue_status_category
+                    ELSE 'to_do'::clean_jira.issue_status_category
+                END as category
+            FROM raw_jira.issues r
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            WHERE r.fields__status__id IS NOT NULL
+            ON CONFLICT (project_id, external_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                category = EXCLUDED.category
+            RETURNING id
+            """
+
+        if sql is not None:
+            result = conn.execute(text(sql))
+            count = len(result.fetchall())
         conn.commit()
+    context.log.info(f"Synced {count} issue statuses")
     return {"status": "success", "count": count}
 
 
