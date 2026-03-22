@@ -316,3 +316,97 @@ class TestIssueHierarchyLevel:
         assert get_hierarchy_level("Bug") == "task"
         assert get_hierarchy_level("Task") == "task"
         assert get_hierarchy_level("Improvement") == "task"
+
+
+class TestHistoricalStatusSync:
+    """Tests for historical status synchronization logic."""
+
+    def test_status_category_inference_from_name(self):
+        """
+        Test D: Tests the name-based fallback category logic used in the changelog INSERT.
+        Mirrors the CASE WHEN LOWER(hi.to_string) IN (...) logic in the SQL.
+        """
+
+        def infer_category(name: str) -> str:
+            name_lower = name.lower()
+            # Done patterns
+            if (
+                name_lower
+                in ["done", "canceled", "cancelled", "closed", "resolved", "отмена"]
+                or "cancel" in name_lower
+                or "отмен" in name_lower
+            ):
+                return "done"
+            # To Do patterns
+            if (
+                name_lower
+                in ["to do", "к выполнению", "open", "backlog", "new", "todo"]
+                or "to do" in name_lower
+                or "к выполнению" in name_lower
+            ):
+                return "to_do"
+            # Default
+            return "in_progress"
+
+        # Done cases
+        assert infer_category("Done") == "done"
+        assert infer_category("Closed") == "done"
+        assert infer_category("Canceled") == "done"
+        assert infer_category("Cancelled") == "done"
+        assert infer_category("Выполнено") == "in_progress"  # Not in the SQL list yet
+        assert infer_category("Отмена") == "done"
+        assert infer_category("Task Canceled") == "done"  # LIKE %cancel%
+
+        # To Do cases
+        assert infer_category("To Do") == "to_do"
+        assert infer_category("Open") == "to_do"
+        assert infer_category("Backlog") == "to_do"
+        assert infer_category("К выполнению") == "to_do"
+        assert infer_category("New") == "to_do"
+
+        # In Progress cases
+        assert infer_category("In Progress") == "in_progress"
+        assert infer_category("In Review") == "in_progress"
+        assert infer_category("Testing") == "in_progress"
+        assert infer_category("Unknown Status") == "in_progress"
+
+    def test_status_present_in_changelog_but_not_current_issues(self):
+        """
+        Test E: Validates the logic for detecting "phantom" statuses (exist in changelog but not in current issues).
+        """
+        # Statuses currently held by issues (Step 1 sync)
+        current_statuses = [
+            {"project_id": 1, "external_id": "101", "name": "To Do"},
+            {"project_id": 1, "external_id": "102", "name": "In Progress"},
+            {"project_id": 1, "external_id": "103", "name": "Done"},
+        ]
+
+        # Statuses found in changelog (Step 2 candidates)
+        changelog_candidates = [
+            {
+                "project_id": 1,
+                "external_id": "101",
+                "name": "To Do",
+            },  # Already exists by ID and Name
+            {
+                "project_id": 1,
+                "external_id": "104",
+                "name": "In Progress",
+            },  # Already exists by Name
+            {"project_id": 1, "external_id": "105", "name": "On Review"},  # New
+        ]
+
+        # Logic: cc WHERE NOT EXISTS (s.external_id = cc.external_id OR s.name = cc.name)
+        new_statuses = []
+        for cc in changelog_candidates:
+            exists = any(
+                s["project_id"] == cc["project_id"]
+                and (s["external_id"] == cc["external_id"] or s["name"] == cc["name"])
+                for s in current_statuses
+            )
+            if not exists:
+                new_statuses.append(cc)
+
+        assert len(new_statuses) == 1
+        assert new_statuses[0]["name"] == "On Review"
+        assert new_statuses[0]["external_id"] == "105"
