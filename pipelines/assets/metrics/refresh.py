@@ -146,6 +146,8 @@ def metrics_throughput(
         "metrics_lead_time",
         "metrics_velocity",
         "metrics_throughput",
+        "calculate_aging",
+        "calculate_flow_efficiency",
         "calculate_sprint_health",
         "calculate_flow_dynamics",
         "calculate_input_flow",

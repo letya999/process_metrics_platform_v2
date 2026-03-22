@@ -15,7 +15,7 @@ from pipelines.assets.jira import (
     check_sprint_issues_integrity,
 )
 from pipelines.assets.metrics import (
-    advanced_metrics_data_quality_check,
+    aging_data_quality_check,
     aging_extended_data_quality_check,
     backlog_growth_data_quality_check,
     cfd_data_quality_check,
@@ -27,6 +27,7 @@ from pipelines.assets.metrics import (
     delivery_data_quality_check,
     estimation_data_quality_check,
     flow_dynamics_data_quality_check,
+    flow_efficiency_data_quality_check,
     input_flow_data_quality_check,
     lead_time_data_quality_check,
     quality_data_quality_check,
@@ -74,7 +75,8 @@ asset_checks = [
     cfd_data_quality_check,
     backlog_growth_data_quality_check,
     ttm_data_quality_check,
-    advanced_metrics_data_quality_check,
+    aging_data_quality_check,
+    flow_efficiency_data_quality_check,
     # New metrics checks
     sprint_health_data_quality_check,
     flow_dynamics_data_quality_check,
