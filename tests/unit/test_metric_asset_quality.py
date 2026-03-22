@@ -18,6 +18,8 @@ def _asset_fn(defn):
 
 
 def test_calculate_quality_metrics_skipped(monkeypatch):
+    monkeypatch.setattr(quality, "get_definition_id", lambda *_a, **_k: "def-1")
+    monkeypatch.setattr(quality, "get_calculation_id", lambda *_a, **_k: "calc-1")
     monkeypatch.setattr(quality, "read_table", lambda *_a, **_k: pl.DataFrame())
     out = _asset_fn(quality.calculate_quality_metrics)(None, _DummyDatabase(object()))
     assert out["status"] == "skipped"
@@ -25,6 +27,7 @@ def test_calculate_quality_metrics_skipped(monkeypatch):
 
 def test_calculate_quality_metrics_no_data(monkeypatch):
     calc_ids = {"defect_density_by_type": "m1", "backflow_column_rate": "m2"}
+    monkeypatch.setattr(quality, "get_definition_id", lambda *_a, **_k: "def-1")
     monkeypatch.setattr(quality, "get_calculation_id", lambda _e, c: calc_ids[c])
     monkeypatch.setattr(quality, "get_project_agg_id", lambda *_a, **_k: "agg-1")
 
@@ -41,7 +44,12 @@ def test_calculate_quality_metrics_no_data(monkeypatch):
             return pl.DataFrame({"issue_id": ["I1"], "sprint_id": ["S1"]})
         if "FROM clean_jira.issues" in query:
             return pl.DataFrame(
-                {"id": ["I1"], "project_id": ["P1"], "issue_type_id": ["T1"]}
+                {
+                    "id": ["I1"],
+                    "project_id": ["P1"],
+                    "issue_type_id": ["T1"],
+                    "type_name": ["Story"],
+                }
             )
         if "FROM clean_jira.issue_types" in query:
             return pl.DataFrame({"id": ["T1"], "name": ["Story"]})
@@ -60,7 +68,7 @@ def test_calculate_quality_metrics_no_data(monkeypatch):
                     "id": ["C1"],
                     "board_id": ["B1"],
                     "name": ["To Do"],
-                    "status_ids": [["TODO"]],
+                    "status_id": ["TODO"],
                     "position": [1],
                 }
             )
@@ -74,12 +82,15 @@ def test_calculate_quality_metrics_no_data(monkeypatch):
         "calculate_backflow_rate",
         lambda *_a, **_k: pl.DataFrame(),
     )
+    monkeypatch.setattr(quality, "get_slice_rules", lambda *_a, **_k: pl.DataFrame())
+
     out = _asset_fn(quality.calculate_quality_metrics)(None, _DummyDatabase(object()))
     assert out["status"] == "no_data"
 
 
-def test_calculate_quality_metrics_success(monkeypatch):
+def test_calculate_quality_metrics_success_with_slicing(monkeypatch):
     calc_ids = {"defect_density_by_type": "m1", "backflow_column_rate": "m2"}
+    monkeypatch.setattr(quality, "get_definition_id", lambda *_a, **_k: "def-1")
     monkeypatch.setattr(quality, "get_calculation_id", lambda _e, c: calc_ids[c])
     monkeypatch.setattr(quality, "get_project_agg_id", lambda *_a, **_k: "agg-1")
     monkeypatch.setattr(quality, "write_fact_values", lambda df, *_a, **_k: df.height)
@@ -97,7 +108,12 @@ def test_calculate_quality_metrics_success(monkeypatch):
             return pl.DataFrame({"issue_id": ["I1"], "sprint_id": ["S1"]})
         if "FROM clean_jira.issues" in query:
             return pl.DataFrame(
-                {"id": ["I1"], "project_id": ["P1"], "issue_type_id": ["T1"]}
+                {
+                    "id": ["I1"],
+                    "project_id": ["P1"],
+                    "issue_type_id": ["T1"],
+                    "type_name": ["Story"],
+                }
             )
         if "FROM clean_jira.issue_types" in query:
             return pl.DataFrame({"id": ["T1"], "name": ["Story"]})
@@ -116,7 +132,7 @@ def test_calculate_quality_metrics_success(monkeypatch):
                     "id": ["C1"],
                     "board_id": ["B1"],
                     "name": ["To Do"],
-                    "status_ids": [["TODO"]],
+                    "status_id": ["TODO"],
                     "position": [1],
                 }
             )
@@ -133,6 +149,7 @@ def test_calculate_quality_metrics_success(monkeypatch):
         raise AssertionError(query)
 
     monkeypatch.setattr(quality, "read_table", _read_table)
+
     monkeypatch.setattr(
         quality.quality_logic,
         "calculate_defect_density",
@@ -158,9 +175,40 @@ def test_calculate_quality_metrics_success(monkeypatch):
         ),
     )
 
+    # Mock Slicing
+    monkeypatch.setattr(
+        quality,
+        "get_slice_rules",
+        lambda *_a, **_k: pl.DataFrame(
+            {
+                "slice_rule_id": ["rule-1"],
+                "slice_rule_name": ["By Type"],
+                "group_by_column": ["issue_type"],
+                "source_table": ["clean_jira.issues"],
+                "project_id": [None],
+                "enabled": [True],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        quality,
+        "apply_slicing",
+        lambda *_a, **_k: pl.DataFrame(
+            {
+                "project_id": ["P1"],
+                "start_date": [datetime(2026, 1, 1)],
+                "value": [0.3],
+                "iteration_id": ["S1"],
+                "slice_value": ["Story"],
+                "calc_id": ["m1"],
+            }
+        ),
+    )
+
     out = _asset_fn(quality.calculate_quality_metrics)(None, _DummyDatabase(object()))
     assert out["status"] == "success"
-    assert out["rows_written"] == 2
+    # 2 base facts + 1 sliced fact = 3
+    assert out["rows_written"] == 3
 
 
 def test_quality_data_quality_check_fail_and_pass(monkeypatch):

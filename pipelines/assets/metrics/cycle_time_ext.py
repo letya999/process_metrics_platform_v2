@@ -1,4 +1,9 @@
+"""
+Extended Cycle Time Metrics Dagster Asset (Generic Long Metric Store)
+"""
+
 import logging
+from typing import Any
 
 import polars as pl
 from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
@@ -9,8 +14,13 @@ from pipelines.calculations.commitment_resolver import (
     load_commitment_rules_for_calc,
     resolve_rule_from_cache,
 )
+from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
-from pipelines.utils.metric_registry import get_calculation_id, get_project_agg_id
+from pipelines.utils.metric_registry import (
+    get_calculation_id,
+    get_definition_id,
+    get_project_agg_id,
+)
 from pipelines.utils.polars_db import read_table, write_fact_values
 
 logger = logging.getLogger(__name__)
@@ -31,13 +41,27 @@ logger = logging.getLogger(__name__)
 def calculate_cycle_time_extended(
     context: AssetExecutionContext,
     database: DatabaseResource,
-):
+) -> dict[str, Any]:
     engine = database.get_engine()
 
-    # 1. Load Data
+    # 1. Resolve metadata
+    def_id = get_definition_id(engine, "cycle_time")
+    calc_id_lifetime = get_calculation_id(engine, "issue_lifetime_days")
+    calc_id_custom = get_calculation_id(engine, "cycle_time_custom")
+    calc_id_epic = get_calculation_id(engine, "epic_delivery_time")
+
+    context.log.info("Loading data for Extended Cycle Time metrics...")
+
+    # Load Data
     issues_df = read_table(
         engine,
-        "SELECT id, project_id, external_key as issue_key, jira_created_at as created_at, type_id as issue_type_id, parent_id FROM clean_jira.issues",
+        """
+        SELECT i.id, i.project_id, i.external_key as issue_key,
+               i.jira_created_at as created_at, it.name as type_name,
+               i.type_id as issue_type_id, i.parent_id
+        FROM clean_jira.issues i
+        LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
+        """,
     )
     if issues_df.is_empty():
         return {"status": "skipped", "reason": "No issues found"}
@@ -55,7 +79,7 @@ def calculate_cycle_time_extended(
     )
     boards_df = read_table(engine, "SELECT * FROM clean_jira.boards")
 
-    # 2. Resolve IDs and Rules
+    # Map project_agg_ids
     project_ids = issues_df["project_id"].unique().to_list()
     project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
 
@@ -65,142 +89,264 @@ def calculate_cycle_time_extended(
     if not epic_rules:
         epic_rules = lead_time_rules
 
-    all_facts = []
+    # 2. Calculation functions
+    def calculate_base_facts(df_subset, sub_status_changelog):
+        results = []
+        p_ids = df_subset["project_id"].unique().to_list()
 
-    # 3. Calculations
-
-    # A. Issue Lifetime
-    calc_id_lifetime = get_calculation_id(engine, "issue_lifetime_days")
-    # For lifetime, we need done_status_ids
-    # We aggregate done_status_ids across all boards for a project
-    for p_id in project_ids:
-        p_boards = boards_df.filter(pl.col("project_id") == p_id)["id"].to_list()
-        all_done_ids = []
-        for b_id in p_boards:
-            rule = resolve_rule_from_cache(lead_time_rules, p_id, b_id)
-            if rule:
-                points = identify_commitment_points_from_rule(
-                    rule, board_columns_df.filter(pl.col("board_id") == b_id)
+        # A. Issue Lifetime
+        lifetime_results = []
+        for p_id in p_ids:
+            p_boards = boards_df.filter(pl.col("project_id") == p_id)["id"].to_list()
+            all_done_ids = []
+            for b_id in p_boards:
+                rule = resolve_rule_from_cache(lead_time_rules, p_id, b_id)
+                if rule:
+                    points = identify_commitment_points_from_rule(
+                        rule, board_columns_df.filter(pl.col("board_id") == b_id)
+                    )
+                    all_done_ids.extend(points.get("end_status_ids", []))
+            if all_done_ids:
+                lifetime = cycle_logic.calculate_issue_lifetime(
+                    df_subset.filter(pl.col("project_id") == p_id),
+                    sub_status_changelog,
+                    list(set(all_done_ids)),
                 )
-                all_done_ids.extend(points.get("end_status_ids", []))
+                if not lifetime.is_empty():
+                    lifetime_results.append(lifetime)
+        if lifetime_results:
+            results.append(
+                pl.concat(lifetime_results).with_columns(
+                    pl.lit(calc_id_lifetime).alias("calc_id")
+                )
+            )
 
-        if not all_done_ids:
-            continue
+        # B. Cycle Time Custom
+        custom_results = []
+        for board in boards_df.to_dicts():
+            p_id = board["project_id"]
+            b_id = board["id"]
+            if p_id not in p_ids:
+                continue
+            rule = resolve_rule_from_cache(custom_cycle_rules, p_id, b_id)
+            if not rule:
+                continue
+            board_cols = board_columns_df.filter(pl.col("board_id") == b_id)
+            points = identify_commitment_points_from_rule(rule, board_cols)
+            start_ids, end_ids = points.get("start_status_ids", []), points.get(
+                "end_status_ids", []
+            )
+            if start_ids and end_ids:
+                custom_cycle = cycle_logic.calculate_cycle_time_custom(
+                    df_subset.filter(pl.col("project_id") == p_id),
+                    sub_status_changelog,
+                    start_ids[0],
+                    end_ids[0],
+                )
+                if not custom_cycle.is_empty():
+                    custom_results.append(custom_cycle)
+        if custom_results:
+            results.append(
+                pl.concat(custom_results).with_columns(
+                    pl.lit(calc_id_custom).alias("calc_id")
+                )
+            )
 
-        lifetime = cycle_logic.calculate_issue_lifetime(
-            issues_df.filter(pl.col("project_id") == p_id),
-            issue_status_changelog_df,
-            list(set(all_done_ids)),
-        )
+        # C. Epic Delivery Time
+        epic_results = []
+        for board in boards_df.to_dicts():
+            p_id = board["project_id"]
+            b_id = board["id"]
+            if p_id not in p_ids:
+                continue
+            rule = resolve_rule_from_cache(epic_rules, p_id, b_id)
+            if not rule:
+                continue
+            board_cols = board_columns_df.filter(pl.col("board_id") == b_id)
+            points = identify_commitment_points_from_rule(rule, board_cols)
+            start_ids, end_ids = points.get("start_status_ids", []), points.get(
+                "end_status_ids", []
+            )
+            if start_ids and end_ids:
+                epic_delivery = cycle_logic.calculate_epic_delivery_time(
+                    df_subset.filter(pl.col("project_id") == p_id),
+                    sub_status_changelog,
+                    start_ids,
+                    end_ids,
+                )
+                if not epic_delivery.is_empty():
+                    epic_results.append(epic_delivery)
+        if epic_results:
+            results.append(
+                pl.concat(epic_results).with_columns(
+                    pl.lit(calc_id_epic).alias("calc_id")
+                )
+            )
 
-        if not lifetime.is_empty():
-            facts = lifetime.select(
+        return results
+
+    def transform_to_fact_values(
+        wide_results, slice_rule_id=None, slice_value_col=None
+    ):
+        facts_list = []
+        for df_wide in wide_results:
+            cid = df_wide["calc_id"][0]
+            val_col = (
+                "lifetime_days"
+                if cid == calc_id_lifetime
+                else ("cycle_days" if cid == calc_id_custom else "delivery_days")
+            )
+            time_col = (
+                "done_date"
+                if cid == calc_id_lifetime
+                else ("end_at" if cid == calc_id_custom else "epic_end")
+            )
+            ent_id_col = "epic_id" if cid == calc_id_epic else "id"
+
+            facts = df_wide.with_columns(
                 [
-                    pl.lit(calc_id_lifetime).alias("metric_id"),
+                    pl.lit(cid).alias("metric_id"),
                     pl.col("project_id")
                     .replace(project_agg_map)
                     .alias("project_agg_id"),
-                    pl.col("done_date")
+                    pl.col(time_col)
                     .dt.strftime("%Y%m%d")
                     .cast(pl.Int32)
                     .alias("time_id"),
-                    pl.col("lifetime_days").alias("value"),
+                    pl.col(val_col).alias("value"),
                     pl.lit("issue").alias("entity_type"),
-                    pl.col("id").alias("entity_id"),
+                    pl.col(ent_id_col).alias("entity_id"),
+                    pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
+                    pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
+                    if slice_value_col
+                    else pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+                    pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                    pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+                    pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
                 ]
             )
-            all_facts.append(facts)
+            facts_list.append(
+                facts.select(
+                    [
+                        "metric_id",
+                        "project_agg_id",
+                        "time_id",
+                        "value",
+                        "entity_type",
+                        "entity_id",
+                        "slice_rule_id",
+                        "slice_value",
+                        "commitment_rule_id",
+                        "event_start_at",
+                        "event_end_at",
+                    ]
+                )
+            )
+        return facts_list
 
-    # B. Cycle Time Custom
-    calc_id_custom = get_calculation_id(engine, "cycle_time_custom")
-    for board in boards_df.to_dicts():
-        p_id = board["project_id"]
-        b_id = board["id"]
-        rule = resolve_rule_from_cache(custom_cycle_rules, p_id, b_id)
-        if not rule:
-            continue
+    # 3. BASE calculation
+    base_wide_list = calculate_base_facts(issues_df, issue_status_changelog_df)
+    all_facts = transform_to_fact_values(base_wide_list)
 
-        board_cols = board_columns_df.filter(pl.col("board_id") == b_id)
-        points = identify_commitment_points_from_rule(rule, board_cols)
-        start_ids = points.get("start_status_ids", [])
-        end_ids = points.get("end_status_ids", [])
+    # 4. Sliced calculation
+    rules_df = get_slice_rules(engine, target_definition_id=def_id)
+    issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
 
-        if not start_ids or not end_ids:
-            continue
-
-        custom_cycle = cycle_logic.calculate_cycle_time_custom(
-            issues_df.filter(pl.col("project_id") == p_id),
-            issue_status_changelog_df,
-            start_ids[0],
-            end_ids[0],
+    def cycle_extended_slice_calc(df_subset):
+        subset_ids = df_subset["id"].unique().to_list()
+        sub_changelog = issue_status_changelog_df.filter(
+            pl.col("issue_id").is_in(subset_ids)
         )
+        res_list = calculate_base_facts(df_subset, sub_changelog)
+        if not res_list:
+            return pl.DataFrame()
 
-        if not custom_cycle.is_empty():
-            facts = custom_cycle.select(
-                [
-                    pl.lit(calc_id_custom).alias("metric_id"),
-                    pl.col("project_id")
-                    .replace(project_agg_map)
-                    .alias("project_agg_id"),
-                    pl.col("end_at")
-                    .dt.strftime("%Y%m%d")
-                    .cast(pl.Int32)
-                    .alias("time_id"),
-                    pl.col("cycle_days").alias("value"),
-                    pl.lit("issue").alias("entity_type"),
-                    pl.col("id").alias("entity_id"),
-                ]
+        # Unify columns for apply_slicing
+        for df in res_list:
+            cid = df["calc_id"][0]
+            val_col = (
+                "lifetime_days"
+                if cid == calc_id_lifetime
+                else ("cycle_days" if cid == calc_id_custom else "delivery_days")
             )
-            all_facts.append(facts)
-
-    # C. Epic Delivery Time
-    calc_id_epic = get_calculation_id(engine, "epic_delivery_time")
-    for board in boards_df.to_dicts():
-        p_id = board["project_id"]
-        b_id = board["id"]
-        rule = resolve_rule_from_cache(epic_rules, p_id, b_id)
-        if not rule:
-            continue
-
-        board_cols = board_columns_df.filter(pl.col("board_id") == b_id)
-        points = identify_commitment_points_from_rule(rule, board_cols)
-        start_ids = points.get("start_status_ids", [])
-        end_ids = points.get("end_status_ids", [])
-
-        if not start_ids or not end_ids:
-            continue
-
-        epic_delivery = cycle_logic.calculate_epic_delivery_time(
-            issues_df.filter(pl.col("project_id") == p_id),
-            issue_status_changelog_df,
-            start_ids,
-            end_ids,
-        )
-
-        if not epic_delivery.is_empty():
-            facts = epic_delivery.select(
-                [
-                    pl.lit(calc_id_epic).alias("metric_id"),
-                    pl.col("project_id")
-                    .replace(project_agg_map)
-                    .alias("project_agg_id"),
-                    pl.col("epic_end")
-                    .dt.strftime("%Y%m%d")
-                    .cast(pl.Int32)
-                    .alias("time_id"),
-                    pl.col("delivery_days").alias("value"),
-                    pl.lit("issue").alias("entity_type"),
-                    pl.col("epic_id").alias("entity_id"),
-                ]
+            time_col = (
+                "done_date"
+                if cid == calc_id_lifetime
+                else ("end_at" if cid == calc_id_custom else "epic_end")
             )
-            all_facts.append(facts)
+            ent_id_col = "epic_id" if cid == calc_id_epic else "id"
+            df.rename(
+                {
+                    val_col: "value",
+                    time_col: "time_id_src",
+                    ent_id_col: "entity_id_src",
+                },
+                in_place=True,
+            )
+        return pl.concat(res_list)
 
-    # 4. Write to DB
+    if not rules_df.is_empty():
+        for rule in rules_df.to_dicts():
+            rule_id = rule["slice_rule_id"]
+            sliced_wide = apply_slicing(
+                issues_for_slicing,
+                rules_df.filter(pl.col("slice_rule_id") == rule_id),
+                cycle_extended_slice_calc,
+                engine=engine,
+            )
+
+            if not sliced_wide.is_empty():
+                for cid in [calc_id_lifetime, calc_id_custom, calc_id_epic]:
+                    sub_sliced = sliced_wide.filter(pl.col("calc_id") == cid)
+                    if not sub_sliced.is_empty():
+                        facts = sub_sliced.with_columns(
+                            [
+                                pl.lit(cid).alias("metric_id"),
+                                pl.col("project_id")
+                                .replace(project_agg_map)
+                                .alias("project_agg_id"),
+                                pl.col("time_id_src")
+                                .dt.strftime("%Y%m%d")
+                                .cast(pl.Int32)
+                                .alias("time_id"),
+                                pl.col("value").alias("value"),
+                                pl.lit("issue").alias("entity_type"),
+                                pl.col("entity_id_src").alias("entity_id"),
+                                pl.lit(rule_id).cast(pl.Utf8).alias("slice_rule_id"),
+                                pl.col("slice_value")
+                                .cast(pl.Utf8)
+                                .alias("slice_value"),
+                                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                                pl.lit(None)
+                                .cast(pl.Datetime("us", "UTC"))
+                                .alias("event_start_at"),
+                                pl.lit(None)
+                                .cast(pl.Datetime("us", "UTC"))
+                                .alias("event_end_at"),
+                            ]
+                        ).select(
+                            [
+                                "metric_id",
+                                "project_agg_id",
+                                "time_id",
+                                "value",
+                                "entity_type",
+                                "entity_id",
+                                "slice_rule_id",
+                                "slice_value",
+                                "commitment_rule_id",
+                                "event_start_at",
+                                "event_end_at",
+                            ]
+                        )
+                        all_facts.append(facts)
+
     if not all_facts:
         return {"status": "no_data"}
 
-    final_df = pl.concat([f for f in all_facts if not f.is_empty()])
+    final_df = pl.concat(all_facts)
 
+    # 5. Write to DB
     metric_ids = final_df["metric_id"].unique().to_list()
     project_agg_ids = final_df["project_agg_id"].unique().to_list()
     time_id_start = final_df["time_id"].min()

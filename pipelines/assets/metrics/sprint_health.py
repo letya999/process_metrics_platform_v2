@@ -1,4 +1,9 @@
+"""
+Sprint Health Metrics Dagster Asset (Generic Long Metric Store)
+"""
+
 import logging
+from typing import Any
 
 import polars as pl
 from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
@@ -9,8 +14,13 @@ from pipelines.calculations.commitment_resolver import (
     load_commitment_rules_for_calc,
     resolve_rule_from_cache,
 )
+from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
-from pipelines.utils.metric_registry import get_calculation_id, get_project_agg_id
+from pipelines.utils.metric_registry import (
+    get_calculation_id,
+    get_definition_id,
+    get_project_agg_id,
+)
 from pipelines.utils.polars_db import read_table, write_fact_values
 
 logger = logging.getLogger(__name__)
@@ -23,6 +33,7 @@ logger = logging.getLogger(__name__)
         "clean_jira_sprint_issues",
         "clean_jira_sprint_issues_changelog",
         "clean_jira_issues",
+        "clean_jira_issue_types",
         "clean_jira_field_values",
         "clean_jira_field_keys",
         "clean_jira_issue_status_changelog",
@@ -35,10 +46,24 @@ logger = logging.getLogger(__name__)
 def calculate_sprint_health(
     context: AssetExecutionContext,
     database: DatabaseResource,
-):
+) -> dict[str, Any]:
     engine = database.get_engine()
 
-    # 1. Load Data
+    # 1. Resolve metadata
+    def_id = get_definition_id(engine, "sprint_health")
+    calc_id_added_count = get_calculation_id(engine, "sprint_added_issues_count")
+    calc_id_added_sp = get_calculation_id(engine, "sprint_added_sp_sum")
+    calc_id_removed_count = get_calculation_id(engine, "sprint_removed_issues_count")
+    calc_id_removed_sp = get_calculation_id(engine, "sprint_removed_sp_sum")
+    calc_id_spillover = get_calculation_id(engine, "sprint_spillover_count")
+    calc_id_burndown = get_calculation_id(engine, "sprint_burndown_remaining_sp")
+    calc_id_activation = get_calculation_id(engine, "activation_velocity_pct")
+    calc_id_unestimated = get_calculation_id(engine, "unestimated_closed_count")
+    calc_id_field_pct = get_calculation_id(engine, "field_value_sprint_pct")
+
+    context.log.info("Loading data for Sprint Health metrics...")
+
+    # Load Data
     sprints_df = read_table(
         engine,
         "SELECT * FROM clean_jira.sprints WHERE status IN ('closed', 'active') AND start_date IS NOT NULL",
@@ -53,7 +78,9 @@ def calculate_sprint_health(
     issues_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, i.external_key as issue_key, i.jira_created_at as created_at, i.jira_updated_at as updated_at, i.jira_resolved_at, i.status_id, i.type_id as issue_type_id, it.name as type_name
+        SELECT i.id, i.project_id, i.external_key as issue_key, i.jira_created_at as created_at,
+               i.jira_updated_at as updated_at, i.jira_resolved_at, i.status_id,
+               i.type_id as issue_type_id, it.name as type_name
         FROM clean_jira.issues i
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
     """,
@@ -83,11 +110,11 @@ def calculate_sprint_health(
     )
     boards_df = read_table(engine, "SELECT * FROM clean_jira.boards")
 
-    # 2. Resolve IDs and Rules
+    # Map project_agg_ids
     project_ids = sprints_df["project_id"].unique().to_list()
     project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
 
-    # SP field key (heuristic from velocity)
+    # SP field key
     sp_fields = field_keys_df.filter(
         (
             pl.col("external_key").is_in(
@@ -98,165 +125,78 @@ def calculate_sprint_health(
     )
     sp_field_key_id = sp_fields["id"][0] if not sp_fields.is_empty() else None
 
-    # Done status IDs (from commitment rules)
     lead_time_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
-
-    # 3. Calculations
-    all_facts = []
-
-    # A. Scope Changes
-    scope_changes = sprint_health_logic.calculate_sprint_scope_changes(
-        sprints_df,
-        sprint_changelog_df,
-        issues_df,
-        field_values_df,
-        field_keys_df,
-        field_value_changelog_df,
+    activation_rules = (
+        load_commitment_rules_for_calc(engine, "activation_velocity_pct")
+        or lead_time_rules
     )
 
-    calc_map_scope = {
-        "added_count": get_calculation_id(engine, "sprint_added_issues_count"),
-        "added_sp": get_calculation_id(engine, "sprint_added_sp_sum"),
-        "removed_count": get_calculation_id(engine, "sprint_removed_issues_count"),
-        "removed_sp": get_calculation_id(engine, "sprint_removed_sp_sum"),
-    }
+    # 2. Calculation functions
+    def calculate_base_facts(
+        sub_issues,
+        sub_sprint_issues,
+        sub_sprint_changelog,
+        sub_status_changelog,
+        sub_field_values,
+        sub_field_changelog,
+    ):
+        results = []
+        p_ids = sub_issues["project_id"].unique().to_list()
+        sub_sprints = sprints_df.filter(pl.col("project_id").is_in(p_ids))
+        if sub_sprints.is_empty():
+            return results
 
-    for col, calc_id in calc_map_scope.items():
-        facts = scope_changes.select(
-            [
-                pl.lit(calc_id).alias("metric_id"),
-                pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
-                pl.col("start_date")
-                .dt.strftime("%Y%m%d")
-                .cast(pl.Int32)
-                .alias("time_id"),
-                pl.col(col).alias("value"),
-                pl.lit("sprint").alias("entity_type"),
-                pl.col("iteration_id").alias("entity_id"),
-            ]
-        )
-        all_facts.append(facts)
-
-    # B. Spillover
-    spillover = sprint_health_logic.calculate_sprint_spillover(
-        sprints_df, sprint_issues_df
-    )
-    calc_id_spillover = get_calculation_id(engine, "sprint_spillover_count")
-    facts_spillover = spillover.select(
-        [
-            pl.lit(calc_id_spillover).alias("metric_id"),
-            pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
-            pl.col("start_date").dt.strftime("%Y%m%d").cast(pl.Int32).alias("time_id"),
-            pl.col("spillover_count").alias("value"),
-            pl.lit("sprint").alias("entity_type"),
-            pl.col("iteration_id").alias("entity_id"),
-        ]
-    )
-    all_facts.append(facts_spillover)
-
-    # C. Burndown and Activation Velocity (Daily)
-    # We need to resolve done_status_ids and initial_status_id per project/board
-    calc_id_burndown = get_calculation_id(engine, "sprint_burndown_remaining_sp")
-    calc_id_activation = get_calculation_id(engine, "activation_velocity_pct")
-
-    # Activation rule calc_code is usually 'lead_time_days' or specific 'activation_velocity_pct'
-    activation_rules = load_commitment_rules_for_calc(engine, "activation_velocity_pct")
-    if not activation_rules:
-        activation_rules = lead_time_rules
-
-    # We iterate over sprints to handle different board configs
-    for sprint in sprints_df.to_dicts():
-        p_id = sprint["project_id"]
-        sprint_id = sprint["id"]
-        sprint_df = sprints_df.filter(pl.col("id") == sprint_id)
-        b_id = boards_df.filter(pl.col("project_id") == p_id).select("id").to_series()
-        b_id = b_id[0] if not b_id.is_empty() else None
-
-        if not b_id:
-            continue
-
-        board_cols = board_columns_df.filter(pl.col("board_id") == b_id)
-        rule = resolve_rule_from_cache(lead_time_rules, p_id, b_id)
-        if not rule:
-            continue
-
-        points = identify_commitment_points_from_rule(rule, board_cols)
-        done_ids = points.get("end_status_ids", [])
-
-        # Burndown
-        burndown = sprint_health_logic.calculate_sprint_burndown(
-            sprint_df,
-            sprint_issues_df,
-            sprint_changelog_df,
-            issue_status_changelog_df,
-            done_ids,
-            issues_df,
-            field_values_df,
+        # A. Scope Changes
+        scope_changes = sprint_health_logic.calculate_sprint_scope_changes(
+            sub_sprints,
+            sub_sprint_changelog,
+            sub_issues,
+            sub_field_values,
             field_keys_df,
-            field_value_changelog_df,
+            sub_field_changelog,
         )
-        if not burndown.is_empty():
-            facts_burndown = burndown.select(
-                [
-                    pl.lit(calc_id_burndown).alias("metric_id"),
-                    pl.col("project_id")
-                    .replace(project_agg_map)
-                    .alias("project_agg_id"),
-                    pl.col("time_date")
-                    .dt.strftime("%Y%m%d")
-                    .cast(pl.Int32)
-                    .alias("time_id"),
-                    pl.col("remaining_sp").alias("value"),
-                    pl.lit("sprint").alias("entity_type"),
-                    pl.col("iteration_id").alias("entity_id"),
-                ]
-            )
-            all_facts.append(facts_burndown)
-
-        # Activation
-        act_rule = resolve_rule_from_cache(activation_rules, p_id, b_id)
-        if act_rule:
-            act_points = identify_commitment_points_from_rule(act_rule, board_cols)
-            # Initial status is the start of commitment
-            initial_status_ids = act_points.get("start_status_ids", [])
-            if initial_status_ids:
-                activation = sprint_health_logic.calculate_activation_velocity(
-                    sprint_df,
-                    sprint_issues_df,
-                    sprint_changelog_df,
-                    issue_status_changelog_df,
-                    issues_df,
-                    field_values_df,
-                    field_keys_df,
-                    field_value_changelog_df,
-                    initial_status_ids[0],
-                )
-                if not activation.is_empty():
-                    facts_activation = activation.select(
+        if not scope_changes.is_empty():
+            for col, cid in {
+                "added_count": calc_id_added_count,
+                "added_sp": calc_id_added_sp,
+                "removed_count": calc_id_removed_count,
+                "removed_sp": calc_id_removed_sp,
+            }.items():
+                results.append(
+                    scope_changes.select(
                         [
-                            pl.lit(calc_id_activation).alias("metric_id"),
-                            pl.col("project_id")
-                            .replace(project_agg_map)
-                            .alias("project_agg_id"),
-                            pl.col("time_date")
-                            .dt.strftime("%Y%m%d")
-                            .cast(pl.Int32)
-                            .alias("time_id"),
-                            pl.col("activation_pct").alias("value"),
+                            "project_id",
+                            pl.col("start_date").alias("time_date"),
+                            pl.col(col).alias("value"),
                             pl.lit("sprint").alias("entity_type"),
                             pl.col("iteration_id").alias("entity_id"),
+                            pl.lit(cid).alias("calc_id"),
                         ]
                     )
-                    all_facts.append(facts_activation)
+                )
 
-    # D. Unestimated Closed
-    # Use lead_time_rules for done status
-    calc_id_unestimated = get_calculation_id(engine, "unestimated_closed_count")
-    if sp_field_key_id:
-        for sprint in sprints_df.to_dicts():
-            p_id = sprint["project_id"]
-            sprint_id = sprint["id"]
-            sprint_df = sprints_df.filter(pl.col("id") == sprint_id)
+        # B. Spillover
+        spillover = sprint_health_logic.calculate_sprint_spillover(
+            sub_sprints, sub_sprint_issues
+        )
+        if not spillover.is_empty():
+            results.append(
+                spillover.select(
+                    [
+                        "project_id",
+                        pl.col("start_date").alias("time_date"),
+                        pl.col("spillover_count").alias("value"),
+                        pl.lit("sprint").alias("entity_type"),
+                        pl.col("iteration_id").alias("entity_id"),
+                        pl.lit(calc_id_spillover).alias("calc_id"),
+                    ]
+                )
+            )
+
+        # C. Burndown & Activation
+        for sprint in sub_sprints.to_dicts():
+            p_id, s_id = sprint["project_id"], sprint["id"]
+            s_df = sub_sprints.filter(pl.col("id") == s_id)
             b_id = (
                 boards_df.filter(pl.col("project_id") == p_id).select("id").to_series()
             )
@@ -264,109 +204,276 @@ def calculate_sprint_health(
             if not b_id:
                 continue
 
+            board_cols = board_columns_df.filter(pl.col("board_id") == b_id)
             rule = resolve_rule_from_cache(lead_time_rules, p_id, b_id)
             if not rule:
                 continue
-            points = identify_commitment_points_from_rule(
-                rule, board_columns_df.filter(pl.col("board_id") == b_id)
-            )
+            points = identify_commitment_points_from_rule(rule, board_cols)
             done_ids = points.get("end_status_ids", [])
 
-            unestimated = sprint_health_logic.calculate_unestimated_closed(
-                sprint_df,
-                sprint_issues_df,
-                sprint_changelog_df,
-                issues_df,
-                issue_status_changelog_df,
+            # Burndown
+            burndown = sprint_health_logic.calculate_sprint_burndown(
+                s_df,
+                sub_sprint_issues,
+                sub_sprint_changelog,
+                sub_status_changelog,
                 done_ids,
-                field_values_df,
-                sp_field_key_id,
+                sub_issues,
+                sub_field_values,
+                field_keys_df,
+                sub_field_changelog,
             )
-            if not unestimated.is_empty():
-                facts_unestimated = unestimated.select(
-                    [
-                        pl.lit(calc_id_unestimated).alias("metric_id"),
-                        pl.col("project_id")
-                        .replace(project_agg_map)
-                        .alias("project_agg_id"),
-                        pl.col("start_date")
-                        .dt.strftime("%Y%m%d")
-                        .cast(pl.Int32)
-                        .alias("time_id"),
-                        pl.col("unestimated_count").alias("value"),
-                        pl.lit("sprint").alias("entity_type"),
-                        pl.col("iteration_id").alias("entity_id"),
-                    ]
+            if not burndown.is_empty():
+                results.append(
+                    burndown.select(
+                        [
+                            "project_id",
+                            pl.col("time_date"),
+                            pl.col("remaining_sp").alias("value"),
+                            pl.lit("sprint").alias("entity_type"),
+                            pl.col("iteration_id").alias("entity_id"),
+                            pl.lit(calc_id_burndown).alias("calc_id"),
+                        ]
+                    )
                 )
-                all_facts.append(facts_unestimated)
 
-    # E. Field Value Sprint Pct (Parameterized)
-    calc_id_field_pct = get_calculation_id(engine, "field_value_sprint_pct")
-    # Load settings
-    settings_df = read_table(
-        engine,
-        """
-        SELECT cs.* FROM metrics.calculation_settings cs
-        WHERE cs.target_calculation_id = :calc_id AND cs.enabled = true
-    """,
-        params={"calc_id": calc_id_field_pct},
-    )
+            # Activation
+            act_rule = resolve_rule_from_cache(activation_rules, p_id, b_id)
+            if act_rule:
+                act_pts = identify_commitment_points_from_rule(act_rule, board_cols)
+                if act_pts.get("start_status_ids"):
+                    activation = sprint_health_logic.calculate_activation_velocity(
+                        s_df,
+                        sub_sprint_issues,
+                        sub_sprint_changelog,
+                        sub_status_changelog,
+                        sub_issues,
+                        sub_field_values,
+                        field_keys_df,
+                        sub_field_changelog,
+                        act_pts["start_status_ids"][0],
+                    )
+                    if not activation.is_empty():
+                        results.append(
+                            activation.select(
+                                [
+                                    "project_id",
+                                    pl.col("time_date"),
+                                    pl.col("activation_pct").alias("value"),
+                                    pl.lit("sprint").alias("entity_type"),
+                                    pl.col("iteration_id").alias("entity_id"),
+                                    pl.lit(calc_id_activation).alias("calc_id"),
+                                ]
+                            )
+                        )
 
-    if not settings_df.is_empty():
+            # D. Unestimated
+            if sp_field_key_id:
+                unest = sprint_health_logic.calculate_unestimated_closed(
+                    s_df,
+                    sub_sprint_issues,
+                    sub_sprint_changelog,
+                    sub_issues,
+                    sub_status_changelog,
+                    done_ids,
+                    sub_field_values,
+                    sp_field_key_id,
+                )
+                if not unest.is_empty():
+                    results.append(
+                        unest.select(
+                            [
+                                "project_id",
+                                pl.col("start_date").alias("time_date"),
+                                pl.col("unestimated_count").alias("value"),
+                                pl.lit("sprint").alias("entity_type"),
+                                pl.col("iteration_id").alias("entity_id"),
+                                pl.lit(calc_id_unestimated).alias("calc_id"),
+                            ]
+                        )
+                    )
+
+        # E. Field Value Pct
+        settings_df = read_table(
+            engine,
+            "SELECT * FROM metrics.calculation_settings WHERE target_calculation_id = :cid AND enabled = true",
+            params={"cid": calc_id_field_pct},
+        )
         for setting in settings_df.to_dicts():
-            s_json = setting["settings_json"]
-            f_name = s_json.get("field_name")
-            f_val = s_json.get("field_value")
-            target_p_id = setting["project_id"]
-
+            f_name, f_val, tp_id = (
+                setting["settings_json"].get("field_name"),
+                setting["settings_json"].get("field_value"),
+                setting["project_id"],
+            )
             if not f_name or not f_val:
                 continue
-
-            # Filter sprints for this project or all if target_p_id is None
-            sprints_subset = sprints_df
-            if target_p_id:
-                sprints_subset = sprints_df.filter(pl.col("project_id") == target_p_id)
-
-            if sprints_subset.is_empty():
+            ss_sprints = (
+                sub_sprints.filter(pl.col("project_id") == tp_id)
+                if tp_id
+                else sub_sprints
+            )
+            if ss_sprints.is_empty():
                 continue
-
             field_pct = sprint_health_logic.calculate_field_value_sprint_pct(
-                sprints_subset,
-                sprint_issues_df,
-                issues_df,
+                ss_sprints,
+                sub_sprint_issues,
+                sub_issues,
                 f_name,
                 f_val,
-                field_values_df,
+                sub_field_values,
                 field_keys_df,
             )
-
             if not field_pct.is_empty():
-                facts_field_pct = field_pct.select(
+                results.append(
+                    field_pct.select(
+                        [
+                            "project_id",
+                            pl.col("start_date").alias("time_date"),
+                            pl.col("field_pct").alias("value"),
+                            pl.lit("sprint").alias("entity_type"),
+                            pl.col("iteration_id").alias("entity_id"),
+                            pl.lit(calc_id_field_pct).alias("calc_id"),
+                            pl.lit(setting["id"]).alias("settings_id"),
+                        ]
+                    )
+                )
+        return results
+
+    def transform_to_fact_values(
+        wide_results, slice_rule_id=None, slice_value_col=None
+    ):
+        facts_list = []
+        for df_wide in wide_results:
+            facts = df_wide.with_columns(
+                [
+                    pl.col("calc_id").alias("metric_id"),
+                    pl.col("project_id")
+                    .replace(project_agg_map)
+                    .alias("project_agg_id"),
+                    pl.col("time_date")
+                    .dt.strftime("%Y%m%d")
+                    .cast(pl.Int32)
+                    .alias("time_id"),
+                    pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
+                    pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
+                    if slice_value_col
+                    else pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+                    pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                    pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+                    pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
+                ]
+            )
+            facts_list.append(
+                facts.select(
                     [
-                        pl.lit(calc_id_field_pct).alias("metric_id"),
-                        pl.col("project_id")
-                        .replace(project_agg_map)
-                        .alias("project_agg_id"),
-                        pl.col("start_date")
-                        .dt.strftime("%Y%m%d")
-                        .cast(pl.Int32)
-                        .alias("time_id"),
-                        pl.col("field_pct").alias("value"),
-                        pl.lit("sprint").alias("entity_type"),
-                        pl.col("iteration_id").alias("entity_id"),
-                        pl.lit(setting["id"]).alias("settings_id"),
+                        "metric_id",
+                        "project_agg_id",
+                        "time_id",
+                        "value",
+                        "entity_type",
+                        "entity_id",
+                        "slice_rule_id",
+                        "slice_value",
+                        "commitment_rule_id",
+                        "event_start_at",
+                        "event_end_at",
+                        pl.col("settings_id")
+                        if "settings_id" in facts.columns
+                        else pl.lit(None).cast(pl.Utf8).alias("settings_id"),
                     ]
                 )
-                all_facts.append(facts_field_pct)
+            )
+        return facts_list
 
-    # 4. Write to DB
+    # 3. BASE calculation
+    base_wide_list = calculate_base_facts(
+        issues_df,
+        sprint_issues_df,
+        sprint_changelog_df,
+        issue_status_changelog_df,
+        field_values_df,
+        field_value_changelog_df,
+    )
+    all_facts = transform_to_fact_values(base_wide_list)
+
+    # 4. Sliced calculation
+    rules_df = get_slice_rules(engine, target_definition_id=def_id)
+    issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
+
+    def sprint_health_slice_calc(df_subset):
+        subset_ids = df_subset["id"].unique().to_list()
+        sub_si = sprint_issues_df.filter(pl.col("issue_id").is_in(subset_ids))
+        sub_sc = sprint_changelog_df.filter(pl.col("issue_id").is_in(subset_ids))
+        sub_st = issue_status_changelog_df.filter(pl.col("issue_id").is_in(subset_ids))
+        sub_fv = field_values_df.filter(pl.col("issue_id").is_in(subset_ids))
+        sub_fc = field_value_changelog_df.filter(pl.col("issue_id").is_in(subset_ids))
+
+        res_list = calculate_base_facts(
+            df_subset, sub_si, sub_sc, sub_st, sub_fv, sub_fc
+        )
+        if not res_list:
+            return pl.DataFrame()
+        return pl.concat(res_list, how="diagonal_relaxed")
+
+    if not rules_df.is_empty():
+        for rule in rules_df.to_dicts():
+            rule_id = rule["slice_rule_id"]
+            sliced_wide = apply_slicing(
+                issues_for_slicing,
+                rules_df.filter(pl.col("slice_rule_id") == rule_id),
+                sprint_health_slice_calc,
+                engine=engine,
+            )
+
+            if not sliced_wide.is_empty():
+                for cid in sliced_wide["calc_id"].unique().to_list():
+                    sub_sliced = sliced_wide.filter(pl.col("calc_id") == cid)
+                    facts = sub_sliced.with_columns(
+                        [
+                            pl.col("calc_id").alias("metric_id"),
+                            pl.col("project_id")
+                            .replace(project_agg_map)
+                            .alias("project_agg_id"),
+                            pl.col("time_date")
+                            .dt.strftime("%Y%m%d")
+                            .cast(pl.Int32)
+                            .alias("time_id"),
+                            pl.lit(rule_id).cast(pl.Utf8).alias("slice_rule_id"),
+                            pl.col("slice_value").cast(pl.Utf8).alias("slice_value"),
+                            pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                            pl.lit(None)
+                            .cast(pl.Datetime("us", "UTC"))
+                            .alias("event_start_at"),
+                            pl.lit(None)
+                            .cast(pl.Datetime("us", "UTC"))
+                            .alias("event_end_at"),
+                        ]
+                    ).select(
+                        [
+                            "metric_id",
+                            "project_agg_id",
+                            "time_id",
+                            "value",
+                            "entity_type",
+                            "entity_id",
+                            "slice_rule_id",
+                            "slice_value",
+                            "commitment_rule_id",
+                            "event_start_at",
+                            "event_end_at",
+                            pl.col("settings_id")
+                            if "settings_id" in sub_sliced.columns
+                            else pl.lit(None).cast(pl.Utf8).alias("settings_id"),
+                        ]
+                    )
+                    all_facts.append(facts)
+
     if not all_facts:
         return {"status": "no_data"}
 
-    final_df = pl.concat(
-        [f for f in all_facts if not f.is_empty()], how="diagonal_relaxed"
-    )
+    final_df = pl.concat(all_facts, how="diagonal_relaxed")
 
+    # 5. Write to DB
     metric_ids = final_df["metric_id"].unique().to_list()
     project_agg_ids = final_df["project_agg_id"].unique().to_list()
     time_id_start = final_df["time_id"].min()
@@ -390,7 +497,6 @@ def calculate_sprint_health(
 
 @asset_check(asset=calculate_sprint_health)
 def sprint_health_data_quality_check(database: DatabaseResource):
-    # Basic check for non-negative values
     engine = database.get_engine()
     calc_codes = [
         "sprint_added_issues_count",
@@ -400,7 +506,6 @@ def sprint_health_data_quality_check(database: DatabaseResource):
         "sprint_spillover_count",
         "sprint_burndown_remaining_sp",
     ]
-
     for code in calc_codes:
         calc_id = get_calculation_id(engine, code)
         df = read_table(
@@ -412,5 +517,4 @@ def sprint_health_data_quality_check(database: DatabaseResource):
             return AssetCheckResult(
                 passed=False, metadata={"error": f"Negative values found for {code}"}
             )
-
     return AssetCheckResult(passed=True)

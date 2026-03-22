@@ -8,8 +8,13 @@ import polars as pl
 from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
 
 from pipelines.calculations import cumulative_flow as cfd_logic
+from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
-from pipelines.utils.metric_registry import get_calculation_id, get_project_agg_id
+from pipelines.utils.metric_registry import (
+    get_calculation_id,
+    get_definition_id,
+    get_project_agg_id,
+)
 from pipelines.utils.polars_db import read_table, write_fact_values
 
 
@@ -33,6 +38,7 @@ def calculate_cumulative_flow_diagram(
     engine = database.get_engine()
 
     # 1. Resolve metadata
+    def_id = get_definition_id(engine, "cfd")
     calc_id = get_calculation_id(engine, "cfd_count")
 
     context.log.info("Loading data from clean_jira schema...")
@@ -40,9 +46,10 @@ def calculate_cumulative_flow_diagram(
     issues_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, i.type_id, i.status_id, i.jira_created_at, p.external_key AS project_key
+        SELECT i.id, i.project_id, it.name as type_name, i.status_id, i.jira_created_at, p.external_key AS project_key
         FROM clean_jira.issues i
         JOIN clean_jira.projects p ON i.project_id = p.id
+        LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
         """,
     )
 
@@ -88,41 +95,91 @@ def calculate_cumulative_flow_diagram(
         return {"status": "no_data"}
 
     # 3. Transform to Long Format (fact_values)
-    # CFD uses board_column_id as entity_id. If NULL, use status_id.
-    facts = cfd_wide.with_columns(
-        [
-            pl.lit(calc_id).alias("metric_id"),
-            pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
-            # date -> time_id (YYYYMMDD)
-            pl.col("date").dt.strftime("%Y%m%d").cast(pl.Int32).alias("time_id"),
-            pl.col("issue_count").cast(pl.Float64).alias("value"),
-            pl.lit("board_column").alias("entity_type"),
-            pl.coalesce([pl.col("column_id"), pl.col("status_id")])
-            .cast(pl.Utf8)
-            .alias("entity_id"),
-            pl.lit(None).cast(pl.Utf8).alias("slice_rule_id"),
-            pl.lit(None).cast(pl.Utf8).alias("slice_value"),
-            pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
-            pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
-            pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
-        ]
-    )
+    def transform_to_fact_values(
+        df_wide, slice_rule_id=None, slice_value_col=None, slice_value=None
+    ):
+        if df_wide.is_empty():
+            return pl.DataFrame()
 
-    final_df = facts.select(
-        [
-            "metric_id",
-            "project_agg_id",
-            "time_id",
-            "value",
-            "entity_type",
-            "entity_id",
-            "slice_rule_id",
-            "slice_value",
-            "commitment_rule_id",
-            "event_start_at",
-            "event_end_at",
-        ]
-    )
+        facts = df_wide.with_columns(
+            [
+                pl.lit(calc_id).alias("metric_id"),
+                pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
+                pl.col("date").dt.strftime("%Y%m%d").cast(pl.Int32).alias("time_id"),
+                pl.col("issue_count").cast(pl.Float64).alias("value"),
+                pl.lit("board_column").alias("entity_type"),
+                pl.coalesce([pl.col("column_id"), pl.col("status_id")])
+                .cast(pl.Utf8)
+                .alias("entity_id"),
+                pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
+                pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
+                if slice_value_col
+                else (
+                    pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
+                    if slice_value is not None
+                    else pl.lit(None).cast(pl.Utf8).alias("slice_value")
+                ),
+                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
+                pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
+            ]
+        )
+
+        return facts.select(
+            [
+                "metric_id",
+                "project_agg_id",
+                "time_id",
+                "value",
+                "entity_type",
+                "entity_id",
+                "slice_rule_id",
+                "slice_value",
+                "commitment_rule_id",
+                "event_start_at",
+                "event_end_at",
+            ]
+        )
+
+    base_facts = transform_to_fact_values(cfd_wide)
+
+    # 4. Calculate Sliced facts
+    rules_df = get_slice_rules(engine, target_definition_id=def_id)
+
+    # Slicing source: issues
+    issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
+
+    def cfd_slice_calc(df_subset):
+        subset_ids = df_subset["id"].unique().to_list()
+        sub_changelog = status_changelog_df.filter(pl.col("issue_id").is_in(subset_ids))
+        return cfd_logic.calculate_cumulative_flow_diagram(
+            issues_df=df_subset,
+            status_changelog_df=sub_changelog,
+            issue_statuses_df=issue_statuses_df,
+            boards_df=boards_df,
+            board_columns_df=board_columns_df,
+            days_back=90,
+        )
+
+    all_facts = [base_facts]
+
+    if not rules_df.is_empty():
+        for rule in rules_df.to_dicts():
+            rule_id = rule["slice_rule_id"]
+            sliced_wide = apply_slicing(
+                issues_for_slicing,
+                rules_df.filter(pl.col("slice_rule_id") == rule_id),
+                cfd_slice_calc,
+                engine=engine,
+            )
+
+            if not sliced_wide.is_empty():
+                facts = transform_to_fact_values(
+                    sliced_wide, slice_rule_id=rule_id, slice_value_col="slice_value"
+                )
+                all_facts.append(facts)
+
+    final_df = pl.concat(all_facts)
 
     # 5. Write to DB
     time_id_start = final_df["time_id"].min()
@@ -142,6 +199,7 @@ def calculate_cumulative_flow_diagram(
         "status": "success",
         "rows_written": rows_written,
         "days_processed": len(cfd_wide["date"].unique()),
+        "metric_ids": [calc_id],
     }
 
 
