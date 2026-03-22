@@ -5,6 +5,19 @@ import polars as pl
 from pipelines.assets.metrics import quality
 
 
+class _DummyLog:
+    def info(self, *args, **kwargs):
+        pass
+
+    def debug(self, *args, **kwargs):
+        pass
+
+
+class _DummyContext:
+    def __init__(self):
+        self.log = _DummyLog()
+
+
 class _DummyDatabase:
     def __init__(self, engine):
         self._engine = engine
@@ -21,7 +34,9 @@ def test_calculate_quality_metrics_skipped(monkeypatch):
     monkeypatch.setattr(quality, "get_definition_id", lambda *_a, **_k: "def-1")
     monkeypatch.setattr(quality, "get_calculation_id", lambda *_a, **_k: "calc-1")
     monkeypatch.setattr(quality, "read_table", lambda *_a, **_k: pl.DataFrame())
-    out = _asset_fn(quality.calculate_quality_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(quality.calculate_quality_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "skipped"
 
 
@@ -84,7 +99,9 @@ def test_calculate_quality_metrics_no_data(monkeypatch):
     )
     monkeypatch.setattr(quality, "get_slice_rules", lambda *_a, **_k: pl.DataFrame())
 
-    out = _asset_fn(quality.calculate_quality_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(quality.calculate_quality_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "no_data"
 
 
@@ -149,7 +166,6 @@ def test_calculate_quality_metrics_success_with_slicing(monkeypatch):
         raise AssertionError(query)
 
     monkeypatch.setattr(quality, "read_table", _read_table)
-
     monkeypatch.setattr(
         quality.quality_logic,
         "calculate_defect_density",
@@ -174,8 +190,6 @@ def test_calculate_quality_metrics_success_with_slicing(monkeypatch):
             }
         ),
     )
-
-    # Mock Slicing
     monkeypatch.setattr(
         quality,
         "get_slice_rules",
@@ -201,13 +215,15 @@ def test_calculate_quality_metrics_success_with_slicing(monkeypatch):
                 "iteration_id": ["S1"],
                 "slice_value": ["Story"],
                 "calc_id": ["m1"],
+                "settings_id": [None],
             }
         ),
     )
 
-    out = _asset_fn(quality.calculate_quality_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(quality.calculate_quality_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "success"
-    # 2 base facts + 1 sliced fact = 3
     assert out["rows_written"] == 3
 
 
@@ -218,7 +234,6 @@ def test_quality_data_quality_check_fail_and_pass(monkeypatch):
     )
     failed = _asset_fn(quality.quality_data_quality_check)(_DummyDatabase(object()))
     assert failed.passed is False
-
     monkeypatch.setattr(
         quality, "read_table", lambda *_a, **_k: pl.DataFrame({"cnt": [0]})
     )

@@ -1,7 +1,7 @@
 from .aging import aging_data_quality_check, calculate_aging
 from .aging_extended import aging_extended_data_quality_check, calculate_aging_extended
-from .backlog_growth import calculate_backlog_growth
-from .cumulative_flow import calculate_cumulative_flow_diagram
+from .backlog_growth import backlog_growth_data_quality_check, calculate_backlog_growth
+from .cumulative_flow import calculate_cumulative_flow_diagram, cfd_data_quality_check
 from .cycle_time_ext import (
     calculate_cycle_time_extended,
     cycle_time_ext_data_quality_check,
@@ -28,7 +28,7 @@ from .refresh import (
 )
 from .sprint_health import calculate_sprint_health, sprint_health_data_quality_check
 from .throughput import calculate_throughput, throughput_data_quality_check
-from .time_to_market import calculate_time_to_market
+from .time_to_market import calculate_time_to_market, ttm_data_quality_check
 from .velocity import calculate_velocity, velocity_data_quality_check
 from .waste import calculate_waste_metrics, waste_data_quality_check
 
@@ -72,4 +72,7 @@ __all__ = [
     "estimation_data_quality_check",
     "calculate_aging_extended",
     "aging_extended_data_quality_check",
+    "backlog_growth_data_quality_check",
+    "cfd_data_quality_check",
+    "ttm_data_quality_check",
 ]
