@@ -32,7 +32,7 @@ def calculate_flow_dynamics(
     # 1. Load Data
     sprints_df = read_table(
         engine,
-        "SELECT * FROM clean_jira.sprints WHERE state IN ('closed', 'active') AND start_date IS NOT NULL",
+        "SELECT * FROM clean_jira.sprints WHERE status IN ('closed', 'active') AND start_date IS NOT NULL",
     )
     if sprints_df.is_empty():
         return {"status": "skipped", "reason": "No sprints found"}

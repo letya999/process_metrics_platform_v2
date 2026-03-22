@@ -38,7 +38,8 @@ def calculate_delivery_metrics(
 
     # 1. Load Data
     issues_df = read_table(
-        engine, "SELECT id, project_id, created_at FROM clean_jira.issues"
+        engine,
+        "SELECT id, project_id, jira_created_at as created_at FROM clean_jira.issues",
     )
     if issues_df.is_empty():
         return {"status": "skipped", "reason": "No issues found"}
@@ -49,7 +50,7 @@ def calculate_delivery_metrics(
     field_keys_df = read_table(engine, "SELECT * FROM clean_jira.field_keys")
     field_values_df = read_table(
         engine,
-        "SELECT issue_id, field_key_id, json_value::text as value FROM clean_jira.field_values",
+        "SELECT issue_id, field_key_id, json_value::text as json_value FROM clean_jira.field_values",
     )
     field_value_changelog_df = read_table(
         engine,
@@ -68,23 +69,15 @@ def calculate_delivery_metrics(
     )
     boards_df = read_table(engine, "SELECT * FROM clean_jira.boards")
 
-    # fix_versions from issue_field_values or separate table?
-    # Let's check clean_jira.issue_field_values first if it exists.
-    # The plan says check clean_jira.issues actual columns or separate table.
-
-    # Looking at the directory structure again:
-    # clean_jira_schema.sql might have it.
-
-    # I'll try to find where fix_versions are stored.
+    # Release scope: map issues to release/version names via release_issues + releases.
     fix_versions_df = read_table(
         engine,
         """
-        SELECT fv.issue_id, fvk.name as version_name
-        FROM clean_jira.issue_fix_versions fv
-        JOIN clean_jira.fix_versions fvk ON fvk.id = fv.version_id
+        SELECT ri.issue_id, r.name as version_name
+        FROM clean_jira.release_issues ri
+        JOIN clean_jira.releases r ON r.id = ri.release_id
     """,
     )
-    # If this fails, I'll log and skip.
 
     # 2. Resolve IDs
     project_ids = issues_df["project_id"].unique().to_list()

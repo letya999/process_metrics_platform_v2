@@ -34,7 +34,7 @@ def calculate_quality_metrics(
     # 1. Load Data
     sprints_df = read_table(
         engine,
-        "SELECT * FROM clean_jira.sprints WHERE state IN ('closed', 'active') AND start_date IS NOT NULL",
+        "SELECT * FROM clean_jira.sprints WHERE status IN ('closed', 'active') AND start_date IS NOT NULL",
     )
     if sprints_df.is_empty():
         return {"status": "skipped", "reason": "No sprints found"}
@@ -50,13 +50,11 @@ def calculate_quality_metrics(
     board_columns_df = read_table(
         engine,
         """
-        SELECT bc.id, bc.board_id, bc.name, array_agg(bcs.status_id) as status_ids, bc.position
+        SELECT bc.id, bc.board_id, bc.name, bcs.status_id, bc.position
         FROM clean_jira.board_columns bc
         LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.board_column_id = bc.id
-        GROUP BY bc.id, bc.board_id, bc.name, bc.position
     """,
     )
-    # Note: board_columns_df status_ids is already an array in this query
 
     # 2. Resolve IDs
     project_ids = sprints_df["project_id"].unique().to_list()

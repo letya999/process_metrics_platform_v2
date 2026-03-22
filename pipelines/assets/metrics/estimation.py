@@ -32,7 +32,8 @@ def calculate_estimation_metrics(
 
     # 1. Load Data
     issues_df = read_table(
-        engine, "SELECT id, project_id, issue_key FROM clean_jira.issues"
+        engine,
+        "SELECT id, project_id, external_key as issue_key FROM clean_jira.issues",
     )
     if issues_df.is_empty():
         return {"status": "skipped", "reason": "No issues found"}
@@ -94,7 +95,7 @@ def calculate_estimation_metrics(
     rows_written = write_fact_values(
         facts,
         engine,
-        metric_id=calc_id_volatility,
+        metric_ids=[calc_id_volatility],
         project_agg_ids=list(project_agg_map.values()),
         time_id_start=today_id,
         time_id_end=today_id,

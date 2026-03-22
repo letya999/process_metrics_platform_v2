@@ -54,7 +54,7 @@ def calculate_input_flow(
     # 2. Resolve IDs and Rules
     calc_id_input_flow = get_calculation_id(engine, "input_flow_weekly")
     commitment_rules = load_commitment_rules_for_calc(engine, "input_flow_weekly")
-    if commitment_rules.is_empty():
+    if not commitment_rules:
         # Fallback to lead_time_days rules
         commitment_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
 

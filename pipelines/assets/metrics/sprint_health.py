@@ -41,7 +41,7 @@ def calculate_sprint_health(
     # 1. Load Data
     sprints_df = read_table(
         engine,
-        "SELECT * FROM clean_jira.sprints WHERE state IN ('closed', 'active') AND start_date IS NOT NULL",
+        "SELECT * FROM clean_jira.sprints WHERE status IN ('closed', 'active') AND start_date IS NOT NULL",
     )
     if sprints_df.is_empty():
         return {"status": "skipped", "reason": "No sprints found"}
@@ -53,7 +53,7 @@ def calculate_sprint_health(
     issues_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, i.issue_key, i.created_at, i.updated_at, i.type_id as issue_type_id, it.name as type_name
+        SELECT i.id, i.project_id, i.external_key as issue_key, i.jira_created_at as created_at, i.jira_updated_at as updated_at, i.jira_resolved_at, i.status_id, i.type_id as issue_type_id, it.name as type_name
         FROM clean_jira.issues i
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
     """,
@@ -66,7 +66,7 @@ def calculate_sprint_health(
     field_value_changelog_df = read_table(
         engine,
         """
-        SELECT issue_id, field_key_id, old_value::text as old_value, new_value::text as new_value, changed_at as change_time
+        SELECT issue_id, field_key_id, old_value::text as old_value, new_value::text as new_value, changed_at
         FROM clean_jira.field_value_changelog
     """,
     )
@@ -161,12 +161,14 @@ def calculate_sprint_health(
 
     # Activation rule calc_code is usually 'lead_time_days' or specific 'activation_velocity_pct'
     activation_rules = load_commitment_rules_for_calc(engine, "activation_velocity_pct")
-    if activation_rules.is_empty():
+    if not activation_rules:
         activation_rules = lead_time_rules
 
     # We iterate over sprints to handle different board configs
     for sprint in sprints_df.to_dicts():
         p_id = sprint["project_id"]
+        sprint_id = sprint["id"]
+        sprint_df = sprints_df.filter(pl.col("id") == sprint_id)
         b_id = boards_df.filter(pl.col("project_id") == p_id).select("id").to_series()
         b_id = b_id[0] if not b_id.is_empty() else None
 
@@ -183,7 +185,7 @@ def calculate_sprint_health(
 
         # Burndown
         burndown = sprint_health_logic.calculate_sprint_burndown(
-            pl.DataFrame([sprint]),
+            sprint_df,
             sprint_issues_df,
             sprint_changelog_df,
             issue_status_changelog_df,
@@ -219,7 +221,7 @@ def calculate_sprint_health(
             initial_status_ids = act_points.get("start_status_ids", [])
             if initial_status_ids:
                 activation = sprint_health_logic.calculate_activation_velocity(
-                    pl.DataFrame([sprint]),
+                    sprint_df,
                     sprint_issues_df,
                     sprint_changelog_df,
                     issue_status_changelog_df,
@@ -253,6 +255,8 @@ def calculate_sprint_health(
     if sp_field_key_id:
         for sprint in sprints_df.to_dicts():
             p_id = sprint["project_id"]
+            sprint_id = sprint["id"]
+            sprint_df = sprints_df.filter(pl.col("id") == sprint_id)
             b_id = (
                 boards_df.filter(pl.col("project_id") == p_id).select("id").to_series()
             )
@@ -269,7 +273,7 @@ def calculate_sprint_health(
             done_ids = points.get("end_status_ids", [])
 
             unestimated = sprint_health_logic.calculate_unestimated_closed(
-                pl.DataFrame([sprint]),
+                sprint_df,
                 sprint_issues_df,
                 sprint_changelog_df,
                 issues_df,
