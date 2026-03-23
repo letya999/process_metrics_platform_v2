@@ -3,7 +3,6 @@ from datetime import date, datetime
 import polars as pl
 
 from pipelines.assets.metrics import (
-    advanced,
     backlog_growth,
     cumulative_flow,
     lead_time,
@@ -302,7 +301,7 @@ def test_calculate_velocity_skipped_no_data_slices_and_check(monkeypatch):
         if "FROM clean_jira.issue_statuses" in query:
             return pl.DataFrame({"id": ["s1"], "name": ["Done"], "category": ["done"]})
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[2]], schema=["count"])
+            return pl.DataFrame({"row_count": [2], "negative_count": [0]})
         raise AssertionError(query)
 
     monkeypatch.setattr(velocity, "read_table", _read_table)
@@ -677,6 +676,233 @@ def test_calculate_lead_time_with_slices(monkeypatch):
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 2
+
+
+def test_calculate_lead_time_passes_middle_and_end_statuses_from_rule(monkeypatch):
+    monkeypatch.setattr(
+        lead_time, "get_definition_id", lambda *_args, **_kwargs: "def-lt"
+    )
+    monkeypatch.setattr(
+        lead_time, "get_calculation_id", lambda *_args, **_kwargs: "lt-id"
+    )
+    monkeypatch.setattr(
+        lead_time, "get_project_agg_id", lambda *_args, **_kwargs: "agg-1"
+    )
+    monkeypatch.setattr(
+        lead_time, "load_commitment_rules_for_calc", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        lead_time,
+        "resolve_commitment_columns",
+        lambda *_args, **_kwargs: {
+            "commitment_rule_id": "rule-1",
+            "start_column_id": "c1",
+            "end_column_id": "c3",
+        },
+    )
+    monkeypatch.setattr(
+        lead_time,
+        "identify_commitment_points_from_rule",
+        lambda *_args, **_kwargs: {
+            "middle_status_ids": ["s_in_progress", "s_code_review"],
+            "end_status_ids": ["s_done"],
+            "commitment_rule_id": "rule-1",
+        },
+    )
+
+    def _read_table(_engine, query, params=None):
+        if "FROM clean_jira.issues i" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["i1"],
+                    "project_id": ["p1"],
+                    "key": ["P1-1"],
+                    "type_name": ["Story"],
+                    "jira_created_at": [datetime(2026, 1, 1)],
+                    "jira_resolved_at": [datetime(2026, 1, 10)],
+                    "project_key": ["P1"],
+                }
+            )
+        if "FROM clean_jira.issue_status_changelog" in query:
+            return pl.DataFrame(
+                {
+                    "issue_id": ["i1", "i1"],
+                    "from_status_id": [None, "s_code_review"],
+                    "to_status_id": ["s_code_review", "s_done"],
+                    "changed_at": [datetime(2026, 1, 4), datetime(2026, 1, 9)],
+                }
+            )
+        if "FROM clean_jira.boards" in query:
+            return pl.DataFrame({"id": ["b1"], "project_id": ["p1"], "name": ["Board"]})
+        if "FROM clean_jira.board_columns bc" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["c1", "c2", "c3"],
+                    "board_id": ["b1", "b1", "b1"],
+                    "name": ["In Progress", "Code Review", "Done"],
+                    "status_id": ["s_in_progress", "s_code_review", "s_done"],
+                    "position": [1, 2, 3],
+                }
+            )
+        raise AssertionError(query)
+
+    monkeypatch.setattr(lead_time, "read_table", _read_table)
+
+    captured = {}
+
+    def _calc_lead_time_per_issue(
+        _issues_df, _status_changelog_df, middle_status_ids, end_status_ids
+    ):
+        captured["middle_status_ids"] = middle_status_ids
+        captured["end_status_ids"] = end_status_ids
+        return pl.DataFrame(
+            {
+                "issue_id": ["i1"],
+                "issue_key": ["P1-1"],
+                "project_id": ["p1"],
+                "lead_time_days": [5.0],
+                "commitment_start_at": [datetime(2026, 1, 4)],
+                "commitment_end_at": [datetime(2026, 1, 9)],
+            }
+        )
+
+    monkeypatch.setattr(
+        lead_time.lead_time_logic,
+        "calculate_lead_time_per_issue",
+        _calc_lead_time_per_issue,
+    )
+    monkeypatch.setattr(
+        lead_time, "get_slice_rules", lambda *_args, **_kwargs: pl.DataFrame()
+    )
+    monkeypatch.setattr(
+        lead_time, "write_fact_values", lambda df, *_args, **_kwargs: df.height
+    )
+
+    out = _asset_fn(lead_time.calculate_lead_time)(
+        _DummyContext(), _DummyDatabase(object())
+    )
+
+    assert out["status"] == "success"
+    assert captured["middle_status_ids"] == ["s_in_progress", "s_code_review"]
+    assert captured["end_status_ids"] == ["s_done"]
+
+
+def test_calculate_lead_time_deduplicates_same_issue_from_multiple_boards(monkeypatch):
+    monkeypatch.setattr(
+        lead_time, "get_definition_id", lambda *_args, **_kwargs: "def-lt"
+    )
+    monkeypatch.setattr(
+        lead_time, "get_calculation_id", lambda *_args, **_kwargs: "lt-id"
+    )
+    monkeypatch.setattr(
+        lead_time, "get_project_agg_id", lambda *_args, **_kwargs: "agg-1"
+    )
+    monkeypatch.setattr(
+        lead_time, "load_commitment_rules_for_calc", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        lead_time,
+        "resolve_commitment_columns",
+        lambda *_args, **_kwargs: {
+            "commitment_rule_id": "rule-1",
+            "start_column_id": "c1",
+            "end_column_id": "c2",
+        },
+    )
+    monkeypatch.setattr(
+        lead_time,
+        "identify_commitment_points_from_rule",
+        lambda *_args, **_kwargs: {
+            "middle_status_ids": ["s1"],
+            "end_status_ids": ["s2"],
+            "commitment_rule_id": "rule-1",
+        },
+    )
+
+    def _read_table(_engine, query, params=None):
+        if "FROM clean_jira.issues i" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["i1"],
+                    "project_id": ["p1"],
+                    "key": ["P1-1"],
+                    "type_name": ["Story"],
+                    "jira_created_at": [datetime(2026, 1, 1)],
+                    "jira_resolved_at": [datetime(2026, 1, 10)],
+                    "project_key": ["P1"],
+                }
+            )
+        if "FROM clean_jira.issue_status_changelog" in query:
+            return pl.DataFrame(
+                {
+                    "issue_id": ["i1", "i1"],
+                    "from_status_id": [None, "s1"],
+                    "to_status_id": ["s1", "s2"],
+                    "changed_at": [datetime(2026, 1, 2), datetime(2026, 1, 5)],
+                }
+            )
+        if "FROM clean_jira.boards" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["b1", "b2"],
+                    "project_id": ["p1", "p1"],
+                    "name": ["Board-1", "Board-2"],
+                }
+            )
+        if "FROM clean_jira.board_columns bc" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["c1", "c2", "c3", "c4"],
+                    "board_id": ["b1", "b1", "b2", "b2"],
+                    "name": ["In Progress", "Done", "In Progress", "Done"],
+                    "status_id": ["s1", "s2", "s1", "s2"],
+                    "position": [1, 2, 1, 2],
+                }
+            )
+        raise AssertionError(query)
+
+    monkeypatch.setattr(lead_time, "read_table", _read_table)
+
+    def _calc_lead_time_per_issue(
+        _issues_df, _status_changelog_df, middle_status_ids, end_status_ids
+    ):
+        assert middle_status_ids == ["s1"]
+        assert end_status_ids == ["s2"]
+        return pl.DataFrame(
+            {
+                "issue_id": ["i1"],
+                "issue_key": ["P1-1"],
+                "project_id": ["p1"],
+                "lead_time_days": [3.0],
+                "commitment_start_at": [datetime(2026, 1, 2)],
+                "commitment_end_at": [datetime(2026, 1, 5)],
+            }
+        )
+
+    monkeypatch.setattr(
+        lead_time.lead_time_logic,
+        "calculate_lead_time_per_issue",
+        _calc_lead_time_per_issue,
+    )
+    monkeypatch.setattr(
+        lead_time, "get_slice_rules", lambda *_args, **_kwargs: pl.DataFrame()
+    )
+
+    captured = {}
+
+    def _write_fact_values(df, *_args, **_kwargs):
+        captured["height"] = df.height
+        return df.height
+
+    monkeypatch.setattr(lead_time, "write_fact_values", _write_fact_values)
+
+    out = _asset_fn(lead_time.calculate_lead_time)(
+        _DummyContext(), _DummyDatabase(object())
+    )
+
+    assert out["status"] == "success"
+    assert out["issues_processed"] == 1
+    assert captured["height"] == 1
 
 
 def test_calculate_throughput_success(monkeypatch):
@@ -1215,7 +1441,7 @@ def test_calculate_backlog_growth_with_slices_and_check(monkeypatch):
                 {"project_id": ["p1"], "position": [1], "status_id": ["s1"]}
             )
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[2]], schema=["count"])
+            return pl.DataFrame({"row_count": [2], "negative_count": [0]})
         raise AssertionError(query)
 
     monkeypatch.setattr(backlog_growth, "read_table", _read_table)
@@ -1302,42 +1528,37 @@ def test_calculate_ttm_success(monkeypatch):
                     "project_id": ["p1"],
                     "key": ["P1-1"],
                     "type_id": ["t1"],
+                    "type_name": ["Epic"],
                     "jira_created_at": [datetime(2026, 1, 1)],
                     "jira_resolved_at": [datetime(2026, 1, 4)],
                 }
             )
+        if "FROM clean_jira.projects p" in query:
+            return pl.DataFrame({"id": ["p1"], "external_key": ["P1"]})
         if "FROM clean_jira.issue_types" in query:
             return pl.DataFrame(
                 {"id": ["t1"], "name": ["Epic"], "hierarchy_level": [1]}
             )
-        if "FROM clean_jira.releases" in query:
-            return pl.DataFrame(
-                {
-                    "id": ["r1"],
-                    "project_id": ["p1"],
-                    "name": ["R1"],
-                    "release_date": [datetime(2026, 1, 10)],
-                    "is_released": [True],
-                }
-            )
-        if "FROM clean_jira.release_issues" in query:
-            return pl.DataFrame({"issue_id": ["i1"], "version_id": ["r1"]})
-        if "FROM clean_jira.issue_status_changelog" in query:
-            return pl.DataFrame(
-                {
-                    "issue_id": ["i1"],
-                    "to_status_id": ["done"],
-                    "changed_at": [datetime(2026, 1, 4)],
-                }
-            )
+        if "FROM clean_jira.boards" in query:
+            return pl.DataFrame({"id": ["b1"], "project_id": ["p1"], "name": ["B1"]})
         if "FROM clean_jira.board_columns bc" in query:
             return pl.DataFrame(
                 {
                     "id": ["c1"],
                     "board_id": ["b1"],
                     "name": ["Done"],
-                    "position": [1],
+                    "position": [1.0],
                     "status_id": ["done"],
+                }
+            )
+        if "FROM metrics.calculation_settings s" in query:
+            return pl.DataFrame()
+        if "FROM clean_jira.issue_status_changelog" in query:
+            return pl.DataFrame(
+                {
+                    "issue_id": ["i1"],
+                    "to_status_id": ["done"],
+                    "changed_at": [datetime(2026, 1, 4)],
                 }
             )
         if "FROM metrics.fact_values" in query:
@@ -1347,14 +1568,25 @@ def test_calculate_ttm_success(monkeypatch):
     monkeypatch.setattr(time_to_market, "read_table", _read_table)
     monkeypatch.setattr(
         time_to_market.ttm_logic,
-        "calculate_time_to_market",
+        "load_issue_type_filter",
+        lambda *_args, **_kwargs: ["Epic"],
+    )
+    monkeypatch.setattr(
+        time_to_market,
+        "load_commitment_rules_for_calc",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        time_to_market.lead_time_logic,
+        "calculate_lead_time_per_issue",
         lambda **_kwargs: pl.DataFrame(
             {
+                "issue_id": ["i1"],
                 "project_id": ["p1"],
-                "released_at": [datetime(2026, 1, 10)],
-                "time_to_market_days": [9.0],
+                "commitment_end_at": [datetime(2026, 1, 10)],
+                "lead_time_days": [9.0],
                 "issue_key": ["P1-1"],
-                "jira_created_at": [datetime(2026, 1, 1)],
+                "commitment_start_at": [datetime(2026, 1, 1)],
             }
         ),
     )
@@ -1399,42 +1631,37 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
                     "project_id": ["p1"],
                     "key": ["P1-1"],
                     "type_id": ["t1"],
+                    "type_name": ["Epic"],
                     "jira_created_at": [datetime(2026, 1, 1)],
                     "jira_resolved_at": [datetime(2026, 1, 4)],
                 }
             )
+        if "FROM clean_jira.projects p" in query:
+            return pl.DataFrame({"id": ["p1"], "external_key": ["P1"]})
         if "FROM clean_jira.issue_types" in query:
             return pl.DataFrame(
                 {"id": ["t1"], "name": ["Epic"], "hierarchy_level": [1]}
             )
-        if "FROM clean_jira.releases" in query:
-            return pl.DataFrame(
-                {
-                    "id": ["r1"],
-                    "project_id": ["p1"],
-                    "name": ["R1"],
-                    "release_date": [datetime(2026, 1, 10)],
-                    "is_released": [True],
-                }
-            )
-        if "FROM clean_jira.release_issues" in query:
-            return pl.DataFrame({"issue_id": ["i1"], "version_id": ["r1"]})
-        if "FROM clean_jira.issue_status_changelog" in query:
-            return pl.DataFrame(
-                {
-                    "issue_id": ["i1"],
-                    "to_status_id": ["done"],
-                    "changed_at": [datetime(2026, 1, 4)],
-                }
-            )
+        if "FROM clean_jira.boards" in query:
+            return pl.DataFrame({"id": ["b1"], "project_id": ["p1"], "name": ["B1"]})
         if "FROM clean_jira.board_columns bc" in query:
             return pl.DataFrame(
                 {
                     "id": ["c1"],
                     "board_id": ["b1"],
                     "name": ["Done"],
-                    "position": [1],
+                    "position": [1.0],
                     "status_id": ["done"],
+                }
+            )
+        if "FROM metrics.calculation_settings s" in query:
+            return pl.DataFrame()
+        if "FROM clean_jira.issue_status_changelog" in query:
+            return pl.DataFrame(
+                {
+                    "issue_id": ["i1"],
+                    "to_status_id": ["done"],
+                    "changed_at": [datetime(2026, 1, 4)],
                 }
             )
         if "FROM metrics.fact_values" in query:
@@ -1444,7 +1671,17 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
     monkeypatch.setattr(time_to_market, "read_table", _read_table)
     monkeypatch.setattr(
         time_to_market.ttm_logic,
-        "calculate_time_to_market",
+        "load_issue_type_filter",
+        lambda *_args, **_kwargs: ["Epic"],
+    )
+    monkeypatch.setattr(
+        time_to_market,
+        "load_commitment_rules_for_calc",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        time_to_market.lead_time_logic,
+        "calculate_lead_time_per_issue",
         lambda **_kwargs: pl.DataFrame(),
     )
     no_data = _asset_fn(time_to_market.calculate_time_to_market)(
@@ -1453,15 +1690,16 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
     assert no_data["status"] == "no_data"
 
     monkeypatch.setattr(
-        time_to_market.ttm_logic,
-        "calculate_time_to_market",
+        time_to_market.lead_time_logic,
+        "calculate_lead_time_per_issue",
         lambda **_kwargs: pl.DataFrame(
             {
+                "issue_id": ["i1"],
                 "project_id": ["p1"],
-                "released_at": [datetime(2026, 1, 10)],
-                "time_to_market_days": [9.0],
+                "commitment_end_at": [datetime(2026, 1, 10)],
+                "lead_time_days": [9.0],
                 "issue_key": ["P1-1"],
-                "jira_created_at": [datetime(2026, 1, 1)],
+                "commitment_start_at": [datetime(2026, 1, 1)],
             }
         ),
     )
@@ -1510,104 +1748,6 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
 
     check = _asset_fn(time_to_market.ttm_data_quality_check)(_DummyDatabase(object()))
     assert check.passed is True
-
-
-def test_calculate_advanced_metrics_success(monkeypatch):
-    monkeypatch.setattr(
-        advanced,
-        "get_calculation_id",
-        lambda _e, code: {
-            "aging_days": "a1",
-            "flow_active_days": "f1",
-            "flow_wait_days": "f2",
-            "flow_efficiency_pct": "f3",
-        }[code],
-    )
-    monkeypatch.setattr(
-        advanced, "get_project_agg_id", lambda *_args, **_kwargs: "agg-1"
-    )
-
-    def _read_table(_engine, query, params=None):
-        if "FROM clean_jira.issues i" in query:
-            return pl.DataFrame(
-                {
-                    "id": ["i1"],
-                    "project_id": ["p1"],
-                    "key": ["P1-1"],
-                    "type_name": ["Story"],
-                    "status_id": ["s1"],
-                    "jira_created_at": [datetime(2026, 1, 1)],
-                }
-            )
-        if "FROM clean_jira.issue_status_changelog" in query:
-            return pl.DataFrame(
-                {
-                    "issue_id": ["i1"],
-                    "from_status_id": ["s0"],
-                    "to_status_id": ["s1"],
-                    "changed_at": [datetime(2026, 1, 2)],
-                }
-            )
-        if "FROM clean_jira.boards" in query:
-            return pl.DataFrame({"id": ["b1"], "project_id": ["p1"], "name": ["Board"]})
-        if "FROM clean_jira.board_columns bc" in query:
-            return pl.DataFrame(
-                {
-                    "id": ["c1"],
-                    "board_id": ["b1"],
-                    "name": ["In Progress"],
-                    "position": [1],
-                    "status_id": ["s1"],
-                }
-            )
-        if "FROM clean_jira.issue_statuses" in query:
-            return pl.DataFrame(
-                {
-                    "id": ["s1", "s2", "s3"],
-                    "name": ["In Progress", "To Do", "Done"],
-                    "category": ["indeterminate", "todo", "done"],
-                }
-            )
-        if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[1]], schema=["count"])
-        raise AssertionError(query)
-
-    monkeypatch.setattr(advanced, "read_table", _read_table)
-    monkeypatch.setattr(
-        advanced.aging_logic,
-        "calculate_work_item_aging_facts",
-        lambda **_kwargs: pl.DataFrame(
-            {
-                "project_id": ["p1"],
-                "issue_key": ["P1-1"],
-                "age_days": [4.0],
-                "commitment_start_at": [datetime(2026, 1, 2)],
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        advanced.flow_logic,
-        "calculate_flow_efficiency_per_issue",
-        lambda **_kwargs: pl.DataFrame(
-            {
-                "project_id": ["p1"],
-                "issue_key": ["P1-1"],
-                "completion_date": [datetime(2026, 1, 5)],
-                "active_days": [2.0],
-                "wait_days": [1.0],
-                "efficiency_pct": [66.67],
-            }
-        ),
-    )
-    monkeypatch.setattr(
-        advanced, "write_fact_values", lambda df, *_args, **_kwargs: df.height
-    )
-
-    out = _asset_fn(advanced.calculate_advanced_metrics)(
-        _DummyContext(), _DummyDatabase(object())
-    )
-    assert out["status"] == "success"
-    assert out["rows_written"] == 4
 
 
 def test_refresh_assets_and_checks():

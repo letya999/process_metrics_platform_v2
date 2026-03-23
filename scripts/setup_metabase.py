@@ -36,7 +36,7 @@ def wait_for_metabase():
         except requests.ConnectionError:
             pass
 
-        logger.info(f"Waiting... ({i+1}/{retries})")
+        logger.info(f"Waiting... ({i + 1}/{retries})")
         time.sleep(5)
 
     logger.error("Metabase did not start in time.")

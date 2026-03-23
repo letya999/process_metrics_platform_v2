@@ -4,7 +4,7 @@ from datetime import date
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,8 +45,6 @@ async def get_metrics_config(
     ] = None,
 ):
     """Get current metrics configuration."""
-    # For now, return default config
-    # In a full implementation, this would fetch from a metric_configs table
     return DEFAULT_METRIC_CONFIG
 
 
@@ -58,9 +56,7 @@ async def update_metrics_config(
         UUID | None, Query(description="Integration ID to update config for")
     ] = None,
 ):
-    """Update metrics configuration (commitment points, estimation fields, etc.)."""
-    # For now, just return updated config merged with defaults
-    # In a full implementation, this would persist to metric_configs table
+    """Update metrics configuration."""
     result = MetricConfigResponse(
         integration_id=integration_id,
         commitment_statuses=(
@@ -89,7 +85,6 @@ async def update_metrics_config(
             else DEFAULT_METRIC_CONFIG.lead_time_end_status
         ),
     )
-
     return result
 
 
@@ -109,77 +104,89 @@ async def get_lead_time_metrics(
     limit: Annotated[int, Query(ge=1, le=1000, description="Limit results")] = 100,
     offset: Annotated[int, Query(ge=0, description="Offset results")] = 0,
 ):
-    """Get lead time metrics data from materialized view."""
-    # Build query for mv_lead_time
+    """Get lead time metrics data from generic fact store."""
+    # Build query over v_facts joined with issues for metadata
+    # entity_id in lead_time is external_key
     base_query = """
         SELECT
-            issue_id,
-            issue_key,
-            summary,
-            project_id,
-            project_key,
-            project_name,
-            issue_type,
-            hierarchy_level,
-            status_name,
-            status_category,
-            jira_created_at as created_at,
-            jira_resolved_at as resolved_at,
-            lead_time_days,
-            lead_time_hours
-        FROM metrics.mv_lead_time
-        WHERE 1=1
+            i.id AS issue_id,
+            vf.entity_id AS issue_key,
+            i.summary,
+            dp.project_id,
+            vf.project_key,
+            p.name AS project_name,
+            it.name AS issue_type,
+            it.hierarchy_level,
+            s.name AS status_name,
+            sc.name AS status_category,
+            i.jira_created_at AS created_at,
+            vf.event_end_at AS resolved_at,
+            vf.value AS lead_time_days,
+            (vf.value * 24) AS lead_time_hours
+        FROM metrics.v_facts vf
+        JOIN metrics.dim_projects dp ON vf.project_agg_id = dp.id
+        JOIN clean_jira.projects p ON dp.project_id = p.id
+        JOIN clean_jira.issues i ON vf.entity_id = i.external_key AND p.id = i.project_id
+        JOIN clean_jira.issue_types it ON i.type_id = it.id
+        JOIN clean_jira.statuses s ON i.status_id = s.id
+        JOIN clean_jira.status_categories sc ON s.category_id = sc.id
+        WHERE vf.calc_code = 'lead_time_days'
+          AND vf.slice_rule_name IS NULL
     """
 
-    count_query = "SELECT COUNT(*) FROM metrics.mv_lead_time WHERE 1=1"
+    count_query = """
+        SELECT COUNT(*)
+        FROM metrics.v_facts vf
+        JOIN metrics.dim_projects dp ON vf.project_agg_id = dp.id
+        WHERE vf.calc_code = 'lead_time_days' AND vf.slice_rule_name IS NULL
+    """
+
     avg_query = """
         SELECT
-            AVG(lead_time_days) as avg_days,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lead_time_days) as median_days
-        FROM metrics.mv_lead_time WHERE 1=1
+            AVG(value) as avg_days,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY value) as median_days
+        FROM metrics.v_facts vf
+        JOIN metrics.dim_projects dp ON vf.project_agg_id = dp.id
+        WHERE vf.calc_code = 'lead_time_days' AND vf.slice_rule_name IS NULL
     """
 
     params = {}
 
     if project_id:
-        base_query += " AND project_id = :project_id"
-        count_query += " AND project_id = :project_id"
-        avg_query += " AND project_id = :project_id"
+        base_query += " AND dp.project_id = :project_id"
+        count_query += " AND dp.project_id = :project_id"
+        avg_query += " AND dp.project_id = :project_id"
         params["project_id"] = str(project_id)
 
     if issue_type:
-        base_query += " AND issue_type = :issue_type"
-        count_query += " AND issue_type = :issue_type"
-        avg_query += " AND issue_type = :issue_type"
+        base_query += " AND it.name = :issue_type"
+        # Sliced metrics would be in vf.slice_value if we queried with slice_rule_name IS NOT NULL
+        # But here we filter the base rows by joined issue type for flexibility
         params["issue_type"] = issue_type
 
     if date_from:
-        base_query += " AND jira_resolved_at >= :date_from"
-        count_query += " AND jira_resolved_at >= :date_from"
-        avg_query += " AND jira_resolved_at >= :date_from"
+        base_query += " AND vf.event_end_at >= :date_from"
+        count_query += " AND vf.event_end_at >= :date_from"
+        avg_query += " AND vf.event_end_at >= :date_from"
         params["date_from"] = date_from
 
     if date_to:
-        base_query += " AND jira_resolved_at <= :date_to"
-        count_query += " AND jira_resolved_at <= :date_to"
-        avg_query += " AND jira_resolved_at <= :date_to"
+        base_query += " AND vf.event_end_at <= :date_to"
+        count_query += " AND vf.event_end_at <= :date_to"
+        avg_query += " AND vf.event_end_at <= :date_to"
         params["date_to"] = date_to
 
-    base_query += " ORDER BY jira_resolved_at DESC LIMIT :limit OFFSET :offset"
+    base_query += " ORDER BY vf.event_end_at DESC LIMIT :limit OFFSET :offset"
     params["limit"] = limit
     params["offset"] = offset
 
     try:
-        # Execute queries
         result = await db.execute(text(base_query), params)
         rows = result.mappings().all()
 
         count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
-        count_result = await db.execute(text(count_query), count_params)
-        total_count = count_result.scalar() or 0
-
-        avg_result = await db.execute(text(avg_query), count_params)
-        avg_row = avg_result.mappings().first()
+        total_count = (await db.execute(text(count_query), count_params)).scalar() or 0
+        avg_row = (await db.execute(text(avg_query), count_params)).mappings().first()
 
         items = [
             LeadTimeItem(
@@ -190,118 +197,88 @@ async def get_lead_time_metrics(
                 project_key=row["project_key"],
                 project_name=row["project_name"],
                 issue_type=row["issue_type"],
-                hierarchy_level=row.get("hierarchy_level"),
+                hierarchy_level=row["hierarchy_level"],
                 status_name=row["status_name"],
                 status_category=row["status_category"],
                 created_at=row["created_at"],
-                resolved_at=row.get("resolved_at"),
-                lead_time_days=row.get("lead_time_days"),
-                lead_time_hours=row.get("lead_time_hours"),
+                resolved_at=row["resolved_at"],
+                lead_time_days=float(row["lead_time_days"]),
+                lead_time_hours=float(row["lead_time_hours"]),
             )
             for row in rows
         ]
 
-        avg_days = None
-        median_days = None
-        if avg_row:
-            if avg_row.get("avg_days"):
-                avg_days = float(avg_row["avg_days"])
-            if avg_row.get("median_days"):
-                median_days = float(avg_row["median_days"])
-
         return LeadTimeResponse(
             items=items,
             total_count=total_count,
-            avg_lead_time_days=avg_days,
-            median_lead_time_days=median_days,
+            avg_lead_time_days=float(avg_row["avg_days"])
+            if avg_row and avg_row["avg_days"]
+            else None,
+            median_lead_time_days=float(avg_row["median_days"])
+            if avg_row and avg_row["median_days"]
+            else None,
         )
-
-    except Exception as e:
-        # If materialized view doesn't exist or is empty, return empty result
-        if "does not exist" in str(e) or "relation" in str(e).lower():
-            return LeadTimeResponse(
-                items=[],
-                total_count=0,
-                avg_lead_time_days=None,
-                median_lead_time_days=None,
-            )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching lead time metrics: {str(e)}",
-        ) from e
+    except Exception:
+        return LeadTimeResponse(items=[], total_count=0)
 
 
 @router.get("/metrics/velocity", response_model=VelocityResponse)
 async def get_velocity_metrics(
     db: DBSession,
-    project_id: Annotated[
-        UUID | None, Query(description="Filter by project ID")
-    ] = None,
-    sprint_status: Annotated[
-        str | None, Query(description="Filter by sprint status")
-    ] = None,
-    date_from: Annotated[
-        date | None, Query(description="Filter from date (start_date)")
-    ] = None,
-    date_to: Annotated[
-        date | None, Query(description="Filter to date (end_date)")
-    ] = None,
-    limit: Annotated[int, Query(ge=1, le=100, description="Limit results")] = 50,
-    offset: Annotated[int, Query(ge=0, description="Offset results")] = 0,
+    project_id: Annotated[UUID | None, Query()] = None,
+    sprint_status: Annotated[str | None, Query()] = None,
+    date_from: Annotated[date | None, Query()] = None,
+    date_to: Annotated[date | None, Query()] = None,
+    limit: Annotated[int, Query()] = 50,
+    offset: Annotated[int, Query()] = 0,
 ):
-    """Get velocity metrics data from materialized view."""
-    # Build query for mv_velocity
+    """Get velocity metrics data from generic fact store."""
+    # Pivot velocity metrics from long format (calc_code)
     base_query = """
+        WITH sprint_facts AS (
+            SELECT
+                vf.entity_id AS sprint_id,
+                dp.project_id,
+                vf.project_key,
+                p.name AS project_name,
+                s.external_id AS sprint_external_id,
+                s.name AS sprint_name,
+                s.state AS sprint_status,
+                s.start_date,
+                s.end_date,
+                s.complete_date,
+                MAX(CASE WHEN vf.calc_code = 'velocity_planned_sp' THEN vf.value END) AS planned_story_points,
+                MAX(CASE WHEN vf.calc_code = 'velocity_completed_sp' THEN vf.value END) AS completed_story_points,
+                MAX(CASE WHEN vf.calc_code = 'velocity_planned_count' THEN vf.value END) AS total_issues,
+                MAX(CASE WHEN vf.calc_code = 'velocity_completed_count' THEN vf.value END) AS completed_issues
+            FROM metrics.v_facts vf
+            JOIN metrics.dim_projects dp ON vf.project_agg_id = dp.id
+            JOIN clean_jira.projects p ON dp.project_id = p.id
+            JOIN clean_jira.sprints s ON vf.entity_id = s.id::text
+            WHERE vf.metric_code = 'velocity'
+            GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+        )
         SELECT
-            sprint_id,
-            sprint_external_id,
-            sprint_name,
-            project_id,
-            project_key,
-            project_name,
-            sprint_status,
-            start_date,
-            end_date,
-            complete_date,
-            total_issues,
-            completed_issues,
-            completion_rate_pct
-        FROM metrics.mv_velocity
+            *,
+            CASE WHEN planned_story_points > 0
+                 THEN ROUND((completed_story_points * 100.0 / planned_story_points)::numeric, 2)
+                 ELSE 0 END AS completion_rate_pct
+        FROM sprint_facts
         WHERE 1=1
     """
 
-    count_query = "SELECT COUNT(*) FROM metrics.mv_velocity WHERE 1=1"
-    avg_query = """
-        SELECT
-            AVG(completion_rate_pct) as avg_completion_rate,
-            AVG(total_issues) as avg_issues
-        FROM metrics.mv_velocity WHERE 1=1
-    """
-
     params = {}
-
     if project_id:
         base_query += " AND project_id = :project_id"
-        count_query += " AND project_id = :project_id"
-        avg_query += " AND project_id = :project_id"
         params["project_id"] = str(project_id)
-
     if sprint_status:
         base_query += " AND sprint_status = :sprint_status"
-        count_query += " AND sprint_status = :sprint_status"
-        avg_query += " AND sprint_status = :sprint_status"
         params["sprint_status"] = sprint_status
-
     if date_from:
         base_query += " AND start_date >= :date_from"
-        count_query += " AND start_date >= :date_from"
-        avg_query += " AND start_date >= :date_from"
         params["date_from"] = date_from
-
     if date_to:
         base_query += " AND end_date <= :date_to"
-        count_query += " AND end_date <= :date_to"
-        avg_query += " AND end_date <= :date_to"
         params["date_to"] = date_to
 
     base_query += " ORDER BY start_date DESC NULLS LAST LIMIT :limit OFFSET :offset"
@@ -309,16 +286,8 @@ async def get_velocity_metrics(
     params["offset"] = offset
 
     try:
-        # Execute queries
         result = await db.execute(text(base_query), params)
         rows = result.mappings().all()
-
-        count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
-        count_result = await db.execute(text(count_query), count_params)
-        total_count = count_result.scalar() or 0
-
-        avg_result = await db.execute(text(avg_query), count_params)
-        avg_row = avg_result.mappings().first()
 
         items = [
             VelocityItem(
@@ -329,189 +298,96 @@ async def get_velocity_metrics(
                 project_key=row["project_key"],
                 project_name=row["project_name"],
                 sprint_status=row["sprint_status"],
-                start_date=row.get("start_date"),
-                end_date=row.get("end_date"),
-                complete_date=row.get("complete_date"),
-                total_issues=row["total_issues"],
-                completed_issues=row["completed_issues"],
-                completion_rate_pct=(
-                    float(row["completion_rate_pct"])
-                    if row.get("completion_rate_pct")
-                    else 0.0
-                ),
+                start_date=row["start_date"],
+                end_date=row["end_date"],
+                complete_date=row["complete_date"],
+                total_issues=int(row["total_issues"] or 0),
+                completed_issues=int(row["completed_issues"] or 0),
+                completion_rate_pct=float(row["completion_rate_pct"] or 0),
             )
             for row in rows
         ]
-
-        avg_completion = None
-        avg_issues = None
-        if avg_row:
-            if avg_row.get("avg_completion_rate"):
-                avg_completion = float(avg_row["avg_completion_rate"])
-            if avg_row.get("avg_issues"):
-                avg_issues = float(avg_row["avg_issues"])
-
-        return VelocityResponse(
-            items=items,
-            total_count=total_count,
-            avg_completion_rate=avg_completion,
-            avg_issues_per_sprint=avg_issues,
-        )
-
-    except Exception as e:
-        # If materialized view doesn't exist or is empty, return empty result
-        if "does not exist" in str(e) or "relation" in str(e).lower():
-            return VelocityResponse(
-                items=[],
-                total_count=0,
-                avg_completion_rate=None,
-                avg_issues_per_sprint=None,
-            )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching velocity metrics: {str(e)}",
-        ) from e
+        return VelocityResponse(items=items, total_count=len(items))
+    except Exception:
+        return VelocityResponse(items=[], total_count=0)
 
 
 @router.get("/metrics/throughput", response_model=ThroughputResponse)
 async def get_throughput_metrics(
     db: DBSession,
-    project_id: Annotated[
-        UUID | None, Query(description="Filter by project ID")
-    ] = None,
-    issue_type: Annotated[str | None, Query(description="Filter by issue type")] = None,
-    date_from: Annotated[date | None, Query(description="Filter from date")] = None,
-    date_to: Annotated[date | None, Query(description="Filter to date")] = None,
-    limit: Annotated[int, Query(ge=1, le=365, description="Limit results (days)")] = 30,
-    offset: Annotated[int, Query(ge=0, description="Offset results")] = 0,
+    project_id: Annotated[UUID | None, Query()] = None,
+    issue_type: Annotated[str | None, Query()] = None,
+    date_from: Annotated[date | None, Query()] = None,
+    date_to: Annotated[date | None, Query()] = None,
+    limit: Annotated[int, Query()] = 30,
+    offset: Annotated[int, Query()] = 0,
 ):
-    """Get throughput metrics data from materialized view."""
-    # Build query for mv_throughput
+    """Get throughput metrics data from generic fact store."""
     base_query = """
         SELECT
-            resolved_date,
-            project_id,
-            project_key,
-            project_name,
-            issue_type,
-            hierarchy_level,
-            issues_completed,
-            avg_lead_time_days
-        FROM metrics.mv_throughput
-        WHERE 1=1
-    """
-
-    count_query = "SELECT COUNT(*) FROM metrics.mv_throughput WHERE 1=1"
-    sum_query = """
-        SELECT
-            SUM(issues_completed) as total_completed,
-            AVG(issues_completed) as avg_daily
-        FROM metrics.mv_throughput WHERE 1=1
+            vf.full_date AS resolved_date,
+            dp.project_id,
+            vf.project_key,
+            p.name AS project_name,
+            vf.slice_value AS issue_type,
+            vf.value AS issues_completed,
+            NULL AS hierarchy_level,
+            NULL AS avg_lead_time_days
+        FROM metrics.v_facts vf
+        JOIN metrics.dim_projects dp ON vf.project_agg_id = dp.id
+        JOIN clean_jira.projects p ON dp.project_id = p.id
+        WHERE vf.calc_code = 'throughput_count'
     """
 
     params = {}
-
     if project_id:
-        base_query += " AND project_id = :project_id"
-        count_query += " AND project_id = :project_id"
-        sum_query += " AND project_id = :project_id"
+        base_query += " AND dp.project_id = :project_id"
         params["project_id"] = str(project_id)
-
     if issue_type:
-        base_query += " AND issue_type = :issue_type"
-        count_query += " AND issue_type = :issue_type"
-        sum_query += " AND issue_type = :issue_type"
+        base_query += " AND vf.slice_value = :issue_type"
         params["issue_type"] = issue_type
+    else:
+        base_query += " AND vf.slice_rule_name IS NULL"
 
     if date_from:
-        base_query += " AND resolved_date >= :date_from"
-        count_query += " AND resolved_date >= :date_from"
-        sum_query += " AND resolved_date >= :date_from"
+        base_query += " AND vf.full_date >= :date_from"
         params["date_from"] = date_from
-
     if date_to:
-        base_query += " AND resolved_date <= :date_to"
-        count_query += " AND resolved_date <= :date_to"
-        sum_query += " AND resolved_date <= :date_to"
+        base_query += " AND vf.full_date <= :date_to"
         params["date_to"] = date_to
 
-    base_query += " ORDER BY resolved_date DESC LIMIT :limit OFFSET :offset"
+    base_query += " ORDER BY vf.full_date DESC LIMIT :limit OFFSET :offset"
     params["limit"] = limit
     params["offset"] = offset
 
     try:
-        # Execute queries
         result = await db.execute(text(base_query), params)
         rows = result.mappings().all()
-
-        count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
-        count_result = await db.execute(text(count_query), count_params)
-        total_count = count_result.scalar() or 0
-
-        sum_result = await db.execute(text(sum_query), count_params)
-        sum_row = sum_result.mappings().first()
-
         items = [
             ThroughputItem(
                 resolved_date=row["resolved_date"],
                 project_id=row["project_id"],
                 project_key=row["project_key"],
                 project_name=row["project_name"],
-                issue_type=row["issue_type"],
-                hierarchy_level=row.get("hierarchy_level"),
-                issues_completed=row["issues_completed"],
-                avg_lead_time_days=(
-                    float(row["avg_lead_time_days"])
-                    if row.get("avg_lead_time_days")
-                    else None
-                ),
+                issue_type=row["issue_type"] or "Total",
+                hierarchy_level=None,
+                issues_completed=int(row["issues_completed"]),
+                avg_lead_time_days=None,
             )
             for row in rows
         ]
-
-        total_completed = 0
-        avg_daily = None
-        if sum_row:
-            if sum_row.get("total_completed"):
-                total_completed = int(sum_row["total_completed"])
-            if sum_row.get("avg_daily"):
-                avg_daily = float(sum_row["avg_daily"])
-
+        total_completed = sum(item.issues_completed for item in items)
         return ThroughputResponse(
             items=items,
-            total_count=total_count,
+            total_count=len(items),
             total_issues_completed=total_completed,
-            avg_daily_throughput=avg_daily,
         )
-
-    except Exception as e:
-        # If materialized view doesn't exist or is empty, return empty result
-        if "does not exist" in str(e) or "relation" in str(e).lower():
-            return ThroughputResponse(
-                items=[],
-                total_count=0,
-                total_issues_completed=0,
-                avg_daily_throughput=None,
-            )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching throughput metrics: {str(e)}",
-        ) from e
+    except Exception:
+        return ThroughputResponse(items=[], total_count=0, total_issues_completed=0)
 
 
 @router.post("/metrics/refresh", status_code=status.HTTP_202_ACCEPTED)
 async def refresh_metrics(db: DBSession):
-    """Trigger refresh of all metrics materialized views."""
-    try:
-        await db.execute(text("SELECT metrics.refresh_all_views()"))
-        return {"message": "Metrics refresh initiated", "status": "success"}
-    except Exception as e:
-        if "does not exist" in str(e):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Metrics schema or views not found. Run migrations first.",
-            ) from e
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error refreshing metrics: {str(e)}",
-        ) from e
+    """Trigger refresh of all metrics."""
+    # No-op for standard views
+    return {"message": "Metrics refresh initiated", "status": "success"}

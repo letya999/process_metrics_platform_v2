@@ -66,6 +66,7 @@ def test_calculate_work_item_aging_facts_with_changelog(monkeypatch):
     changelog = pl.DataFrame(
         {
             "issue_id": ["i1", "i1"],
+            "from_status_id": [None, "s_progress"],
             "to_status_id": ["s_progress", "s_wait"],
             "changed_at": [moved_to_progress, last_status_change],
         }
@@ -73,8 +74,13 @@ def test_calculate_work_item_aging_facts_with_changelog(monkeypatch):
 
     monkeypatch.setattr(
         aging,
-        "identify_commitment_points",
-        lambda *_args, **_kwargs: {"middle_status_ids": ["s_progress"]},
+        "identify_commitment_points_heuristic",
+        lambda *_args, **_kwargs: {
+            "start_status_ids": ["s_progress"],
+            "middle_status_ids": ["s_progress"],
+            "end_status_ids": [],
+            "commitment_rule_id": None,
+        },
     )
 
     result = aging.calculate_work_item_aging_facts(
@@ -116,8 +122,13 @@ def test_calculate_work_item_aging_facts_without_changelog_sets_zero_status_age(
     )
     monkeypatch.setattr(
         aging,
-        "identify_commitment_points",
-        lambda *_args, **_kwargs: {"middle_status_ids": []},
+        "identify_commitment_points_heuristic",
+        lambda *_args, **_kwargs: {
+            "start_status_ids": [],
+            "middle_status_ids": [],
+            "end_status_ids": [],
+            "commitment_rule_id": None,
+        },
     )
 
     result = aging.calculate_work_item_aging_facts(

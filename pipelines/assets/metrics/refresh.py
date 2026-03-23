@@ -48,7 +48,7 @@ def metrics_lead_time(
 
     return {
         "status": "success",
-        "table": "fact_lead_time",
+        "table": "fact_values",
         "calc_code": "lead_time_days",
         "stats": dict(stats) if stats else {},
     }
@@ -98,7 +98,7 @@ def metrics_velocity(
 
     return {
         "status": "success",
-        "table": "fact_velocity",
+        "table": "fact_values",
         "calc_code": "velocity_*",
         "stats": dict(stats) if stats else {},
     }
@@ -134,7 +134,7 @@ def metrics_throughput(
 
     return {
         "status": "success",
-        "source": "fact_lead_time",
+        "source": "fact_values",
         "calc_code": "throughput_count",
         "stats": dict(stats) if stats else {},
     }
@@ -142,7 +142,22 @@ def metrics_throughput(
 
 @asset(
     group_name="metrics",
-    deps=["metrics_lead_time", "metrics_velocity", "metrics_throughput"],
+    deps=[
+        "metrics_lead_time",
+        "metrics_velocity",
+        "metrics_throughput",
+        "calculate_aging",
+        "calculate_flow_efficiency",
+        "calculate_sprint_health",
+        "calculate_flow_dynamics",
+        "calculate_input_flow",
+        "calculate_quality_metrics",
+        "calculate_delivery_metrics",
+        "calculate_cycle_time_extended",
+        "calculate_waste_metrics",
+        "calculate_estimation_metrics",
+        "calculate_aging_extended",
+    ],
     description="Aggregate stats across all metrics",
     compute_kind="sql",
 )

@@ -30,7 +30,17 @@ def calculate_cumulative_flow_diagram(
     days_back: int = 90,
 ) -> pl.DataFrame:
     """
-    Calculate Cumulative Flow Diagram data (daily issue counts per status/column).
+    Calculate Cumulative Flow Diagram data (daily issue counts per board column).
+
+    Behavior matches Jira Metrics browser extension:
+    - Active columns (non-done): snapshot count of issues in that status on each day.
+    - Done columns: INCREMENTAL count - only issues that first reached a "done"
+      category status WITHIN the calculation window (start_date to today).
+      This prevents historical completions from inflating the Done band and makes
+      the chart start at 0 for Done on the first day, just like Jira Metrics.
+
+    Each board column is one row per date (multiple statuses in the same column
+    are summed together, so "Done" + "Canceled" → single "Done" row).
 
     Returns:
         DataFrame: [project_id, date, status_id, status_name, status_category,
@@ -60,6 +70,7 @@ def calculate_cumulative_flow_diagram(
             )
         }
     )
+    cfd_start_date = start_date
 
     # Use board configuration to define/filter statuses and add positions/IDs
     if not board_columns_df.is_empty():
@@ -111,6 +122,60 @@ def calculate_cumulative_flow_diagram(
     else:
         daily_statuses = daily_statuses.with_columns(pl.col("status_id").cast(pl.Utf8))
 
+    # Incremental Done: for "done" category statuses, only count issues that
+    # first reached a done status WITHIN the CFD window (>= cfd_start_date).
+    # Issues already Done before the window start are excluded from Done counts,
+    # matching Jira Metrics extension behavior where Done starts at 0.
+    done_status_ids = (
+        project_statuses.filter(pl.col("status_category") == "done")["status_id"]
+        .unique()
+        .to_list()
+    )
+
+    if done_status_ids:
+        # First done date must come from the full changelog, not just the window.
+        # daily_statuses only covers the window, so its minimum "Done" date is
+        # always the window start for pre-existing Done issues - useless for filtering.
+        first_done_from_changelog = (
+            status_changelog_df.filter(pl.col("to_status_id").is_in(done_status_ids))
+            .group_by("issue_id")
+            .agg(pl.col("changed_at").cast(pl.Date).min().alias("first_done_date"))
+        )
+
+        # Issues created directly in Done (no changelog entry for Done transition)
+        # get first_done_date = their creation date (always before any CFD window).
+        issues_created_in_done = (
+            issues_df.filter(pl.col("status_id").is_in(done_status_ids))
+            .join(
+                first_done_from_changelog,
+                left_on="id",
+                right_on="issue_id",
+                how="left",
+            )
+            .filter(pl.col("first_done_date").is_null())
+            .select(
+                [
+                    pl.col("id").alias("issue_id"),
+                    pl.col("jira_created_at").cast(pl.Date).alias("first_done_date"),
+                ]
+            )
+        )
+
+        first_done_per_issue = pl.concat(
+            [first_done_from_changelog, issues_created_in_done]
+        )
+
+        daily_statuses = (
+            daily_statuses.join(first_done_per_issue, on="issue_id", how="left")
+            .filter(
+                # Keep non-done issues always
+                pl.col("status_id").is_in(done_status_ids).not_()
+                # Keep done issues only if they first entered Done within the CFD window
+                | (pl.col("first_done_date") >= pl.lit(cfd_start_date))
+            )
+            .drop("first_done_date")
+        )
+
     daily_counts = daily_statuses.group_by(["project_id", "date", "status_id"]).agg(
         [pl.len().cast(pl.Int64).alias("issue_count")]
     )
@@ -123,10 +188,13 @@ def calculate_cumulative_flow_diagram(
             coalesce=True,
         )
         .with_columns([pl.col("issue_count").fill_null(0)])
-        # Group by column_id (or status_name if column_id is null)
-        .group_by(["project_id", "date", "column_id", "status_id"])
+        # Aggregate by column (not individual status) so that multiple statuses
+        # mapped to the same board column (e.g. "Done" + "Canceled" → "Done")
+        # produce a single row per date/column instead of duplicate rows.
+        .group_by(["project_id", "date", "column_id"])
         .agg(
             [
+                pl.col("status_id").first(),
                 pl.col("status_name").first(),
                 pl.col("status_category").first(),
                 pl.col("issue_count").sum(),

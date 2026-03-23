@@ -2,6 +2,7 @@
 Lead Time Metrics Dagster Asset (Generic Long Metric Store)
 """
 
+import logging
 from typing import Any
 
 import polars as pl
@@ -11,7 +12,9 @@ from pipelines.calculations import lead_time as lead_time_logic
 from pipelines.calculations.commitment_resolver import (
     identify_commitment_points_from_rule,
     identify_commitment_points_heuristic,
+    load_commitment_rules_for_calc,
     resolve_commitment_columns,
+    resolve_rule_from_cache,
 )
 from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
@@ -22,58 +25,7 @@ from pipelines.utils.metric_registry import (
 )
 from pipelines.utils.polars_db import read_table, write_fact_values
 
-
-def _load_commitment_rules(engine, calc_code: str) -> list[dict[str, Any]]:
-    """Load all commitment rules for a calculation in one query."""
-    try:
-        rules_df = read_table(
-            engine,
-            """
-            SELECT
-                cr.id AS commitment_rule_id,
-                cr.project_id,
-                cr.board_id,
-                cr.start_column_id,
-                cr.end_column_id,
-                cr.start_column_name_snapshot AS start_column_name,
-                cr.end_column_name_snapshot AS end_column_name
-            FROM metrics.commitment_rules cr
-            JOIN metrics.calculations c ON c.id = cr.target_calculation_id
-            WHERE c.calc_code = :calc_code
-            """,
-            params={"calc_code": calc_code},
-        )
-        return rules_df.to_dicts() if not rules_df.is_empty() else []
-    except Exception:
-        # Keep compatibility in tests where this query is not stubbed.
-        return []
-
-
-def _resolve_rule_from_cache(
-    rules: list[dict[str, Any]], project_id: str, board_id: str
-) -> dict[str, Any] | None:
-    """Pick best rule with priority: project+board > project > board > global."""
-    candidates = []
-    for rule in rules:
-        rule_project = str(rule["project_id"]) if rule.get("project_id") else None
-        rule_board = str(rule["board_id"]) if rule.get("board_id") else None
-
-        if rule_project not in (None, str(project_id)):
-            continue
-        if rule_board not in (None, str(board_id)):
-            continue
-
-        score = (
-            int(rule_project is not None),
-            int(rule_board is not None),
-        )
-        candidates.append((score, rule))
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return candidates[0][1]
+logger = logging.getLogger(__name__)
 
 
 @asset(
@@ -133,7 +85,7 @@ def calculate_lead_time(
         LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.board_column_id = bc.id
         """,
     )
-    commitment_rules = _load_commitment_rules(engine, "lead_time_days")
+    commitment_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
 
     # 2. Calculate BASE lead time facts
     # Lead time is board-specific. We need to iterate over boards or projects.
@@ -144,7 +96,7 @@ def calculate_lead_time(
         p_id = board["project_id"]
 
         # Resolve commitment columns for this board (from preloaded rules)
-        rule = _resolve_rule_from_cache(commitment_rules, p_id, b_id)
+        rule = resolve_rule_from_cache(commitment_rules, p_id, b_id)
         if not rule:
             # Fallback path keeps compatibility and still works if cache is empty.
             rule = resolve_commitment_columns(engine, p_id, b_id, "lead_time_days")

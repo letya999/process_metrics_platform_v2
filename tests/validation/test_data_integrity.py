@@ -48,10 +48,10 @@ class TestRawLayerIntegrity:
             )
             table_exists = result.scalar()
 
-            if table_exists:
-                result = conn.execute(text("SELECT count(*) FROM raw_jira.issues"))
-                count = result.scalar()
-                assert count >= 0, "raw_jira.issues should exist"
+            assert table_exists, "raw_jira.issues table must exist"
+            result = conn.execute(text("SELECT count(*) FROM raw_jira.issues"))
+            count = result.scalar()
+            assert count > 0, "raw_jira.issues should contain data"
 
     def test_raw_jira_projects_has_data(self, engine):
         """Test that raw_jira.projects has data after load."""
@@ -68,10 +68,10 @@ class TestRawLayerIntegrity:
             )
             table_exists = result.scalar()
 
-            if table_exists:
-                result = conn.execute(text("SELECT count(*) FROM raw_jira.projects"))
-                count = result.scalar()
-                assert count >= 0, "raw_jira.projects should exist"
+            assert table_exists, "raw_jira.projects table must exist"
+            result = conn.execute(text("SELECT count(*) FROM raw_jira.projects"))
+            count = result.scalar()
+            assert count > 0, "raw_jira.projects should contain data"
 
 
 class TestCleanLayerIntegrity:
@@ -196,7 +196,7 @@ class TestCleanLayerIntegrity:
 
 
 class TestMetricsLayerIntegrity:
-    """Tests for metrics materialized views integrity."""
+    """Tests for metrics integrity via generic fact view."""
 
     @pytest.fixture
     def engine(self):
@@ -204,13 +204,15 @@ class TestMetricsLayerIntegrity:
         return get_db_engine()
 
     def test_mv_lead_time_no_nulls(self, engine):
-        """Test that lead_time_days is populated for all records."""
+        """Test that lead_time_days values are populated in v_facts."""
         with engine.connect() as conn:
             result = conn.execute(
                 text(
                     """
-                SELECT count(*) FROM metrics.mv_lead_time
-                WHERE lead_time_days IS NULL
+                SELECT count(*) FROM metrics.v_facts
+                WHERE calc_code = 'lead_time_days'
+                  AND slice_rule_name IS NULL
+                  AND value IS NULL
             """
                 )
             )
@@ -219,13 +221,15 @@ class TestMetricsLayerIntegrity:
         assert null_count == 0, f"Found {null_count} records with NULL lead_time"
 
     def test_mv_lead_time_positive(self, engine):
-        """Test that lead_time_days is positive."""
+        """Test that lead_time_days values are non-negative in v_facts."""
         with engine.connect() as conn:
             result = conn.execute(
                 text(
                     """
-                SELECT count(*) FROM metrics.mv_lead_time
-                WHERE lead_time_days < 0
+                SELECT count(*) FROM metrics.v_facts
+                WHERE calc_code = 'lead_time_days'
+                  AND slice_rule_name IS NULL
+                  AND value < 0
             """
                 )
             )
@@ -236,13 +240,30 @@ class TestMetricsLayerIntegrity:
         ), f"Found {negative_count} records with negative lead_time"
 
     def test_mv_velocity_completion_rate_valid(self, engine):
-        """Test that completion_rate_pct is between 0 and 100."""
+        """Test that completion rates derived from v_facts are between 0 and 100."""
         with engine.connect() as conn:
             result = conn.execute(
                 text(
                     """
-                SELECT count(*) FROM metrics.mv_velocity
-                WHERE completion_rate_pct < 0 OR completion_rate_pct > 100
+                WITH sprint_metrics AS (
+                    SELECT
+                        project_key,
+                        entity_id AS sprint_id,
+                        full_date,
+                        MAX(CASE WHEN calc_code = 'velocity_planned_count' THEN value END) AS planned_issues,
+                        MAX(CASE WHEN calc_code = 'velocity_completed_count' THEN value END) AS completed_issues
+                    FROM metrics.v_facts
+                    WHERE metric_code = 'velocity'
+                      AND slice_rule_name IS NULL
+                    GROUP BY project_key, entity_id, full_date
+                )
+                SELECT count(*)
+                FROM sprint_metrics
+                WHERE planned_issues > 0
+                  AND (
+                      (completed_issues / planned_issues * 100) < 0
+                      OR (completed_issues / planned_issues * 100) > 100
+                  )
             """
                 )
             )
@@ -253,13 +274,26 @@ class TestMetricsLayerIntegrity:
         ), f"Found {invalid_count} records with invalid completion_rate"
 
     def test_mv_velocity_consistent_counts(self, engine):
-        """Test that completed_issues <= total_issues."""
+        """Test that velocity completed issues do not exceed planned issues."""
         with engine.connect() as conn:
             result = conn.execute(
                 text(
                     """
-                SELECT count(*) FROM metrics.mv_velocity
-                WHERE completed_issues > total_issues
+                WITH sprint_metrics AS (
+                    SELECT
+                        project_key,
+                        entity_id AS sprint_id,
+                        full_date,
+                        MAX(CASE WHEN calc_code = 'velocity_planned_count' THEN value END) AS planned_issues,
+                        MAX(CASE WHEN calc_code = 'velocity_completed_count' THEN value END) AS completed_issues
+                    FROM metrics.v_facts
+                    WHERE metric_code = 'velocity'
+                      AND slice_rule_name IS NULL
+                    GROUP BY project_key, entity_id, full_date
+                )
+                SELECT count(*)
+                FROM sprint_metrics
+                WHERE completed_issues > planned_issues
             """
                 )
             )
@@ -270,13 +304,15 @@ class TestMetricsLayerIntegrity:
         ), f"Found {invalid_count} records where completed > total"
 
     def test_mv_throughput_no_future_dates(self, engine):
-        """Test that no throughput records have future dates."""
+        """Test that throughput records in v_facts don't have future dates."""
         with engine.connect() as conn:
             result = conn.execute(
                 text(
                     """
-                SELECT count(*) FROM metrics.mv_throughput
-                WHERE resolved_date > CURRENT_DATE
+                SELECT count(*) FROM metrics.v_facts
+                WHERE calc_code = 'throughput_count'
+                  AND slice_rule_name IS NULL
+                  AND full_date > CURRENT_DATE
             """
                 )
             )
@@ -285,13 +321,15 @@ class TestMetricsLayerIntegrity:
         assert future_count == 0, f"Found {future_count} records with future dates"
 
     def test_mv_throughput_positive_counts(self, engine):
-        """Test that issues_completed is positive."""
+        """Test that throughput counts in v_facts are positive."""
         with engine.connect() as conn:
             result = conn.execute(
                 text(
                     """
-                SELECT count(*) FROM metrics.mv_throughput
-                WHERE issues_completed <= 0
+                SELECT count(*) FROM metrics.v_facts
+                WHERE calc_code = 'throughput_count'
+                  AND slice_rule_name IS NULL
+                  AND value <= 0
             """
                 )
             )
@@ -309,7 +347,7 @@ class TestCrossLayerConsistency:
         return get_db_engine()
 
     def test_metrics_match_clean_layer(self, engine):
-        """Test that metrics view counts match clean layer."""
+        """Test that lead_time facts count matches resolved issues in clean layer."""
         with engine.connect() as conn:
             # Count resolved issues in clean layer
             clean_result = conn.execute(
@@ -323,22 +361,18 @@ class TestCrossLayerConsistency:
             )
             clean_count = clean_result.scalar() or 0
 
-            # Count in lead time view
+            # Count in lead_time facts
             metrics_result = conn.execute(
-                text("SELECT count(*) FROM metrics.mv_lead_time")
+                text(
+                    """
+                    SELECT count(*) FROM metrics.v_facts
+                    WHERE calc_code = 'lead_time_days'
+                      AND slice_rule_name IS NULL
+                    """
+                )
             )
             metrics_count = metrics_result.scalar() or 0
 
         assert (
             clean_count == metrics_count
         ), f"Mismatch: clean={clean_count}, metrics={metrics_count}"
-
-
-def pytest_addoption(parser):
-    """Add command line option for database tests."""
-    parser.addoption(
-        "--run-db-tests",
-        action="store_true",
-        default=False,
-        help="Run database integration tests",
-    )

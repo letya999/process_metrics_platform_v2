@@ -1,5 +1,6 @@
 """
 Time to Market Metrics Dagster Asset (Generic Long Metric Store)
+TTM is now calculated using the same logic as Lead Time, but filtered by issue type.
 """
 
 from typing import Any
@@ -7,7 +8,14 @@ from typing import Any
 import polars as pl
 from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
 
+from pipelines.calculations import lead_time as lead_time_logic
 from pipelines.calculations import time_to_market as ttm_logic
+from pipelines.calculations.commitment_resolver import (
+    identify_commitment_points_from_rule,
+    identify_commitment_points_heuristic,
+    load_commitment_rules_for_calc,
+    resolve_rule_from_cache,
+)
 from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
 from pipelines.resources.database import DatabaseResource
 from pipelines.utils.metric_registry import (
@@ -23,10 +31,9 @@ from pipelines.utils.polars_db import read_table, write_fact_values
     deps=[
         "clean_jira_issues",
         "clean_jira_issue_types",
-        "clean_jira_releases",
-        "clean_jira_release_issues",
-        "clean_jira_issue_status_changelog",
+        "clean_jira_boards",
         "clean_jira_board_columns",
+        "clean_jira_issue_status_changelog",
     ],
     description="Calculate Time to Market facts and write to generic fact_values",
     compute_kind="python",
@@ -36,48 +43,35 @@ def calculate_time_to_market(
     database: DatabaseResource,
 ) -> dict[str, Any]:
     engine = database.get_engine()
-
-    # 1. Resolve metadata
     def_id = get_definition_id(engine, "ttm")
     calc_id = get_calculation_id(engine, "ttm_days")
 
-    context.log.info("Loading data from clean_jira schema...")
-
+    # 1. Load issues with type info
     issues_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, i.external_key AS key, i.type_id,
+        SELECT i.id, i.project_id, i.external_key AS key, it.name AS type_name,
                i.jira_created_at, i.jira_resolved_at, p.external_key AS project_key
         FROM clean_jira.issues i
         JOIN clean_jira.projects p ON i.project_id = p.id
+        LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
         """,
     )
 
     if issues_df.is_empty():
         return {"status": "skipped", "reason": "No issues found"}
 
-    # Map project_agg_ids
-    project_ids = issues_df["project_id"].unique().to_list()
-    project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
+    project_agg_map = {
+        pid: get_project_agg_id(engine, pid) for pid in issues_df["project_id"].unique()
+    }
 
-    issue_types_df = read_table(
-        engine, "SELECT id, name, hierarchy_level FROM clean_jira.issue_types"
-    )
-
-    releases_df = read_table(
-        engine,
-        "SELECT id, project_id, name, release_date, is_released FROM clean_jira.releases",
-    )
-
-    issue_fix_versions_df = read_table(
-        engine,
-        "SELECT issue_id, release_id AS version_id FROM clean_jira.release_issues WHERE is_active = true",
-    )
-
+    # 2. Load changelog, boards, board_columns
     status_changelog_df = read_table(
         engine,
-        "SELECT issue_id, to_status_id, changed_at FROM clean_jira.issue_status_changelog",
+        "SELECT issue_id, from_status_id, to_status_id, changed_at FROM clean_jira.issue_status_changelog",
     )
+
+    boards_df = read_table(engine, "SELECT id, project_id, name FROM clean_jira.boards")
 
     board_columns_df = read_table(
         engine,
@@ -88,20 +82,72 @@ def calculate_time_to_market(
         """,
     )
 
-    # 2. Calculate BASE TTM facts
-    ttm_wide = ttm_logic.calculate_time_to_market(
-        issues_df=issues_df,
-        issue_types_df=issue_types_df,
-        releases_df=releases_df,
-        issue_fix_versions_df=issue_fix_versions_df,
-        status_changelog_df=status_changelog_df,
-        board_columns_df=board_columns_df,
-    )
+    # 3. Load commitment rules for ttm_days; fall back to lead_time_days rules
+    ttm_rules = load_commitment_rules_for_calc(engine, "ttm_days")
+    if not ttm_rules:
+        ttm_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
 
-    if ttm_wide.is_empty():
+    # 4. For each board, apply type filter and calculate lead time
+    all_ttm = []
+
+    # Cache for issue type filters per project
+    type_filter_cache = {}
+
+    for board in boards_df.to_dicts():
+        b_id = board["id"]
+        p_id = board["project_id"]
+
+        # Project-specific type filter (may differ per project)
+        if p_id not in type_filter_cache:
+            type_filter_cache[p_id] = ttm_logic.load_issue_type_filter(
+                engine, "ttm_days", project_id=p_id
+            )
+
+        type_filter = type_filter_cache[p_id]
+
+        # Resolve commitment points
+        rule = resolve_rule_from_cache(ttm_rules, p_id, b_id)
+        if rule:
+            points = identify_commitment_points_from_rule(
+                rule, board_columns_df.filter(pl.col("board_id") == b_id)
+            )
+        else:
+            points = identify_commitment_points_heuristic(
+                board_columns_df.filter(pl.col("board_id") == b_id)
+            )
+
+        if not points["middle_status_ids"] or not points["end_status_ids"]:
+            continue
+
+        # Filter issues: project AND type
+        project_issues = issues_df.filter(
+            (pl.col("project_id") == p_id) & (pl.col("type_name").is_in(type_filter))
+        )
+        if project_issues.is_empty():
+            continue
+
+        # Calculate using the SAME function as lead_time
+        ttm_df = lead_time_logic.calculate_lead_time_per_issue(
+            project_issues,
+            status_changelog_df,
+            points["middle_status_ids"],
+            points["end_status_ids"],
+        )
+
+        if not ttm_df.is_empty():
+            ttm_df = ttm_df.with_columns(
+                pl.lit(points.get("commitment_rule_id"))
+                .cast(pl.Utf8)
+                .alias("commitment_rule_id")
+            )
+            all_ttm.append(ttm_df)
+
+    if not all_ttm:
         return {"status": "no_data"}
 
-    # 3. Transform to Long Format (fact_values)
+    ttm_wide = pl.concat(all_ttm).unique(subset=["issue_id"])
+
+    # 5. Transform to fact_values
     def transform_to_fact_values(
         df_wide, slice_rule_id=None, slice_value_col=None, slice_value=None
     ):
@@ -112,12 +158,12 @@ def calculate_time_to_market(
             [
                 pl.lit(calc_id).alias("metric_id"),
                 pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
-                # release date -> time_id (YYYYMMDD)
-                pl.col("released_at")
+                # completion_end_at -> time_id (YYYYMMDD)
+                pl.col("commitment_end_at")
                 .dt.strftime("%Y%m%d")
                 .cast(pl.Int32)
                 .alias("time_id"),
-                pl.col("time_to_market_days").alias("value"),
+                pl.col("lead_time_days").alias("value"),
                 pl.lit("issue").alias("entity_type"),
                 pl.col("issue_key").cast(pl.Utf8).alias("entity_id"),
                 pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
@@ -128,11 +174,10 @@ def calculate_time_to_market(
                     if slice_value is not None
                     else pl.lit(None).cast(pl.Utf8).alias("slice_value")
                 ),
-                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
-                pl.col("jira_created_at")
+                pl.col("commitment_start_at")
                 .cast(pl.Datetime("us", "UTC"))
                 .alias("event_start_at"),
-                pl.col("released_at")
+                pl.col("commitment_end_at")
                 .cast(pl.Datetime("us", "UTC"))
                 .alias("event_end_at"),
             ]
@@ -156,23 +201,32 @@ def calculate_time_to_market(
 
     base_facts = transform_to_fact_values(ttm_wide)
 
-    # 4. Calculate Sliced facts
+    # 6. Calculate Sliced facts
     rules_df = get_slice_rules(engine, target_definition_id=def_id)
+
+    # For slicing, we need the original issues attributes (like type_name alias as issue_type)
+    # But since ttm_wide already has it as issue_type (from lead_time_logic), we can reuse it.
+
+    def ttm_slice_calc(df_subset):
+        subset_ids = df_subset["id"].unique().to_list()
+        return ttm_wide.filter(pl.col("issue_id").is_in(subset_ids))
 
     all_facts = [base_facts]
 
     if not rules_df.is_empty():
+        # Slicing source: issues filtered by TTM type filter
+        # (we only slice issues that ARE considered TTM)
+        ttm_issue_ids = ttm_wide["issue_id"].unique().to_list()
+        issues_for_slicing = issues_df.filter(
+            pl.col("id").is_in(ttm_issue_ids)
+        ).with_columns(pl.col("type_name").alias("issue_type"))
+
         for rule in rules_df.to_dicts():
             rule_id = rule["slice_rule_id"]
-
-            # Use ttm_wide as source for slicing (no expensive recalculation needed).
-            def ttm_slice_identity(df_subset):
-                return df_subset
-
             sliced_wide = apply_slicing(
-                ttm_wide,
+                issues_for_slicing,
                 rules_df.filter(pl.col("slice_rule_id") == rule_id),
-                ttm_slice_identity,
+                ttm_slice_calc,
                 engine=engine,
             )
 
@@ -184,7 +238,7 @@ def calculate_time_to_market(
 
     final_df = pl.concat(all_facts)
 
-    # 5. Write to DB
+    # 7. Write to DB
     if final_df.is_empty():
         return {"status": "no_data"}
 
@@ -213,9 +267,13 @@ def calculate_time_to_market(
 def ttm_data_quality_check(database: DatabaseResource) -> AssetCheckResult:
     engine = database.get_engine()
     calc_id = get_calculation_id(engine, "ttm_days")
-
-    query = "SELECT COUNT(*) FROM metrics.fact_values WHERE metric_id = :calc_id"
-    df = read_table(engine, query, params={"calc_id": calc_id})
-    count = df[0, 0]
-
-    return AssetCheckResult(passed=count > 0, metadata={"row_count": count})
+    df = read_table(
+        engine,
+        "SELECT COUNT(*) as cnt FROM metrics.fact_values WHERE metric_id = :calc_id AND value < 0",
+        params={"calc_id": calc_id},
+    )
+    if not df.is_empty() and df[0, "cnt"] > 0:
+        return AssetCheckResult(
+            passed=False, metadata={"error": "Negative values found"}
+        )
+    return AssetCheckResult(passed=True)
