@@ -630,23 +630,23 @@ class TestCleanJiraReleaseChangelog:
 
 
 class TestCleanJiraSprintChangelog:
-    """Tests for task 3.9: sprint_changelog - one row per closed sprint (intentional design)."""
+    """Tests for Phase 5: sprint_changelog upgrade to full snapshot-diff."""
 
-    def test_inserts_one_row_per_closed_sprint(self):
-        # 3 closed sprints should produce 3 changelog entries
+    def test_bootstrap_inserts_all_5_fields_on_first_run(self):
+        # 1 sprint x 5 fields = 5 rows inserted
         conn = _SequencedConnection(
             [
-                _Result(fetchall_data=[("id-1",), ("id-2",), ("id-3",)]),
+                _Result(fetchall_data=[("id",)] * 5),
             ]
         )
         out = _asset_fn(clean.clean_jira_sprint_changelog)(
             _DummyContext(), _DummyDatabase(conn)
         )
         assert out["status"] == "success"
-        assert out["changelog_count"] == 3
+        assert out["changelog_count"] == 5
 
-    def test_inserts_zero_rows_when_all_already_recorded(self):
-        # NOT EXISTS check prevents duplicate entries
+    def test_no_insertion_when_values_unchanged(self):
+        # IS DISTINCT FROM will return nothing if values match last_known
         conn = _SequencedConnection(
             [
                 _Result(fetchall_data=[]),
@@ -658,13 +658,42 @@ class TestCleanJiraSprintChangelog:
         assert out["status"] == "success"
         assert out["changelog_count"] == 0
 
-    def test_only_captures_closed_sprint_status(self):
-        """By design: sprint_changelog only captures closed status events, not name/date changes."""
+    def test_detects_changes(self):
+        # If 2 fields changed (e.g. name and status), expect 2 rows
+        conn = _SequencedConnection(
+            [
+                _Result(fetchall_data=[("id",), ("id",)]),
+            ]
+        )
+        out = _asset_fn(clean.clean_jira_sprint_changelog)(
+            _DummyContext(), _DummyDatabase(conn)
+        )
+        assert out["status"] == "success"
+        assert out["changelog_count"] == 2
+
+    def test_multiple_sprints_multiple_changes(self):
+        # 3 sprints, each having some changes. Suppose total 7 field changes across them.
+        conn = _SequencedConnection(
+            [
+                _Result(fetchall_data=[("id",)] * 7),
+            ]
+        )
+        out = _asset_fn(clean.clean_jira_sprint_changelog)(
+            _DummyContext(), _DummyDatabase(conn)
+        )
+        assert out["status"] == "success"
+        assert out["changelog_count"] == 7
+
+    def test_sql_tracks_five_sprint_fields(self):
+        """Verify the SQL unrolls exactly 5 fields: name, goal, start_date, end_date, status."""
         import inspect
 
         source = inspect.getsource(_asset_fn(clean.clean_jira_sprint_changelog))
-        assert "status = 'closed'" in source or "status='closed'" in source
-        assert "field_name" in source and "'status'" in source
+        expected_fields = {"name", "goal", "start_date", "end_date", "status"}
+        for field in expected_fields:
+            assert (
+                f"'{field}'" in source
+            ), f"Field '{field}' missing from sprint_changelog SQL"
 
 
 class TestJiraDataQuality:

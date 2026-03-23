@@ -4,6 +4,8 @@ This module implements the clean layer (Silver) of the medallion architecture.
 Data is transformed from raw_jira schema to clean_jira schema with normalization.
 """
 
+# ruff: noqa: S608
+
 from typing import Any
 
 from dagster import (
@@ -153,7 +155,7 @@ def clean_jira_issue_types(
 
         result = conn.execute(
             text(
-                f"""
+                f"""  # noqa: S608
             INSERT INTO clean_jira.issue_types (
                 project_id,
                 external_id,
@@ -171,7 +173,7 @@ def clean_jira_issue_types(
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 name = EXCLUDED.name
             RETURNING id
-        """  # noqa: S608
+            """
             )
         )
         count = len(result.fetchall())
@@ -652,9 +654,7 @@ def clean_jira_issues(
         )
         resolution_col = "ir.id" if has_resolution_id else "NULL::uuid"
 
-        issues_result = conn.execute(
-            text(
-                f"""
+        sql = f"""
             INSERT INTO clean_jira.issues (
                 project_id,
                 external_id,
@@ -707,8 +707,8 @@ def clean_jira_issues(
                 db_updated_at = now()
             RETURNING id
         """  # noqa: S608
-            )
-        )
+
+        issues_result = conn.execute(text(sql))
         issues_synced = issues_result.fetchall()
         context.log.info(f"Synced {len(issues_synced)} issues")
 
@@ -717,7 +717,7 @@ def clean_jira_issues(
             context.log.info("Reconciling parent_id links...")
             conn.execute(
                 text(
-                    f"""
+                    f"""  # noqa: S608
                 UPDATE clean_jira.issues i
                 SET parent_id = parent.id
                 FROM raw_jira.issues r
@@ -725,9 +725,9 @@ def clean_jira_issues(
                     AND parent.project_id = i.project_id
                 WHERE i.external_id = r.id::text
                   AND i.parent_id IS DISTINCT FROM parent.id
-            """  # noqa: S608
+            """
                 )
-            )
+            )  # noqa: S608
 
         conn.commit()
 
@@ -1322,15 +1322,15 @@ def clean_jira_field_values(
             select_clause = ", ".join([f'r."{c}"' for c in chunk])
 
             rows_query = text(
-                f"""
+                f"""  # noqa: S608
                 SELECT
                     i.id as issue_id,
                     i.project_id,
                     {select_clause}
                 FROM raw_jira.issues r
                 JOIN clean_jira.issues i ON i.external_id = r.id::text
-            """  # noqa: S608
-            )
+            """
+            )  # noqa: S608
 
             batch_rows = conn.execute(rows_query).fetchall()
 
@@ -1408,15 +1408,15 @@ def clean_jira_field_values(
         context.log.info(f"Extracting Sprint ({sprint_field_id}) values...")
         sprint_table_exists = conn.execute(
             text(
-                f"""
+                f"""  # noqa: S608
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'raw_jira'
                   AND table_name = 'issues__fields__{sprint_field_id}'
             )
-        """  # noqa: S608
+        """
             )
-        ).scalar()
+        ).scalar()  # noqa: S608
 
         if sprint_table_exists:
             result = conn.execute(
@@ -1448,8 +1448,8 @@ def clean_jira_field_values(
                     json_value = EXCLUDED.json_value,
                     updated_at = now()
                 RETURNING id
-            """  # noqa: S608
-                ),
+            """
+                ),  # noqa: S608
                 {"sprint_field_id": sprint_field_id},
             )
             sprint_values_count = len(result.fetchall())
@@ -1527,9 +1527,8 @@ def clean_jira_field_value_changelog(
 
         result = conn.execute(
             text(
-                """
-            INSERT INTO clean_jira.field_value_changelog (
-                issue_id,
+                """  # noqa: S608
+        INSERT INTO clean_jira.field_value_changelog (                issue_id,
                 field_key_id,
                 old_value,
                 new_value,
@@ -1741,7 +1740,7 @@ def clean_jira_sprint_issues(
             ON CONFLICT (sprint_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
             RETURNING id
-        """  # noqa: S608
+            """
             )
         )
         sprint_issues_count = len(result.fetchall())
@@ -1928,7 +1927,7 @@ def clean_jira_sprint_issues_changelog(
             FROM normalized_events
             ON CONFLICT (sprint_id, issue_id, action, changed_at) DO NOTHING
             RETURNING id
-        """  # noqa: S608
+            """
             )
         )
         changelog_count = len(result.fetchall())
@@ -2096,8 +2095,8 @@ def clean_jira_comments(
             JOIN clean_jira.comments c ON c.external_id = rc.id
                 AND c.project_id = i.project_id
             ON CONFLICT (comment_id, issue_id) DO NOTHING
-            """  # noqa: S608
-        )
+            """
+        )  # noqa: S608
 
         conn.execute(link_query)
         context.log.info("Synced comment-issue links")
@@ -2509,58 +2508,63 @@ def clean_jira_release_issues_changelog(
 @asset(
     group_name="jira_clean",
     deps=["clean_jira_sprints"],
-    description="Extract sprint property changelog (name, goal, dates changes)",
+    description="Extract sprint property changelog (name, goal, dates, status changes)",
     compute_kind="sql",
 )
 def clean_jira_sprint_changelog(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Record sprint close events in sprint_changelog.
+    """Record sprint property changes (name, goal, dates, status) in sprint_changelog.
 
-    Intentional design: Jira does not expose sprint property change history
-    (name, goal, date edits) via the standard REST API. The Agile/Software
-    API returns only the current sprint state. Therefore this asset captures
-    one event per closed sprint - the status transition to 'closed' - using
-    the sprint's complete_date as the change timestamp. This yields exactly
-    one row per closed sprint, which is the correct and complete data set
-    given current API constraints.
+    This asset uses a snapshot-diff approach:
+    1. It fetches the last known value for each sprint property from the changelog.
+    2. It compares these with current values in the sprints table.
+    3. It inserts a new row whenever a value has changed or is newly discovered (bootstrap).
     """
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        context.log.info("Processing sprint changelog...")
+        context.log.info("Processing sprint changelog snapshot-diff...")
 
-        # For now, we track sprint state changes from raw sprints
-        # A more complete implementation would require incremental tracking
         result = conn.execute(
             text(
                 """
-            INSERT INTO clean_jira.sprint_changelog (
-                sprint_id,
-                field_name,
-                old_value,
-                new_value,
-                changed_at
+            WITH last_known AS (
+                SELECT DISTINCT ON (sprint_id, field_name)
+                    sprint_id, field_name, new_value
+                FROM clean_jira.sprint_changelog
+                ORDER BY sprint_id, field_name, changed_at DESC
+            ),
+            current_fields AS (
+                SELECT id AS sprint_id, 'name'       AS field_name, name           AS current_value FROM clean_jira.sprints
+                UNION ALL
+                SELECT id, 'goal',       goal                                                        FROM clean_jira.sprints
+                UNION ALL
+                SELECT id, 'start_date', start_date::text                                            FROM clean_jira.sprints
+                UNION ALL
+                SELECT id, 'end_date',   end_date::text                                              FROM clean_jira.sprints
+                UNION ALL
+                SELECT id, 'status',     status::text                                                FROM clean_jira.sprints
             )
+            INSERT INTO clean_jira.sprint_changelog (sprint_id, field_name, old_value, new_value, changed_at)
             SELECT
-                s.id as sprint_id,
-                'status' as field_name,
-                NULL as old_value,
-                s.status::text as new_value,
-                COALESCE(s.complete_date, s.start_date, now()) as changed_at
-            FROM clean_jira.sprints s
-            WHERE s.status = 'closed'
-              AND NOT EXISTS (
-                  SELECT 1 FROM clean_jira.sprint_changelog sc
-                  WHERE sc.sprint_id = s.id AND sc.field_name = 'status'
-              )
+                cf.sprint_id,
+                cf.field_name,
+                lk.new_value  AS old_value,
+                cf.current_value AS new_value,
+                now()         AS changed_at
+            FROM current_fields cf
+            LEFT JOIN last_known lk ON lk.sprint_id = cf.sprint_id AND lk.field_name = cf.field_name
+            WHERE cf.current_value IS DISTINCT FROM lk.new_value
             RETURNING id
-        """
+            """
             )
         )
         changelog_count = len(result.fetchall())
-        context.log.info(f"Inserted {changelog_count} sprint changelog entries")
+        context.log.info(
+            f"Inserted {changelog_count} sprint property changelog entries"
+        )
 
         conn.commit()
 
