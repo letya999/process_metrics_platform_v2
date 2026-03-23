@@ -90,16 +90,30 @@ class _DummyDatabase:
 
 
 def test_clean_jira_basic_sync_assets():
-    for fn in (
-        clean.clean_jira_projects,
-        clean.clean_jira_issue_types,
-        clean.clean_jira_issue_statuses,
-    ):
-        conn = _SequencedConnection([_Result(fetchall_data=[(1,), (2,)])])
-        out = _asset_fn(fn)(_DummyContext(), _DummyDatabase(conn))
-        assert out["status"] == "success"
-        assert out["count"] == 2
-        assert conn.commits == 1
+    # clean_jira_projects
+    conn = _SequencedConnection([_Result(fetchall_data=[(1,), (2,)])])
+    out = _asset_fn(clean.clean_jira_projects)(_DummyContext(), _DummyDatabase(conn))
+    assert out["status"] == "success"
+    assert out["count"] == 2
+    assert conn.commits == 1
+
+    # clean_jira_issue_types
+    conn = _SequencedConnection([_Result(fetchall_data=[(1,), (2,)])])
+    out = _asset_fn(clean.clean_jira_issue_types)(_DummyContext(), _DummyDatabase(conn))
+    assert out["status"] == "success"
+    assert out["count"] == 2
+    assert conn.commits == 1
+
+    # clean_jira_issue_statuses
+    conn = _SequencedConnection(
+        [_Result(scalar_value=False), _Result(fetchall_data=[(1,), (2,)])]
+    )
+    out = _asset_fn(clean.clean_jira_issue_statuses)(
+        _DummyContext(), _DummyDatabase(conn)
+    )
+    assert out["status"] == "success"
+    assert out["count"] == 2
+    assert conn.commits == 1
 
 
 def test_clean_jira_issues_raises_without_system_integration():
@@ -119,9 +133,11 @@ def test_clean_jira_issues_success():
                 fetchall_data=[
                     ("rendered_fields__description",),
                     ("fields__resolutiondate",),
+                    ("fields__parent__id",),
                 ]
             ),
             _Result(fetchall_data=[(1,), (2,), (3,)]),
+            _Result(),  # parent_id reconciliation
         ]
     )
     out = _asset_fn(clean.clean_jira_issues)(_DummyContext(), _DummyDatabase(conn))
@@ -217,7 +233,11 @@ def test_clean_jira_field_value_changelog_skip_and_success():
 
 def test_clean_jira_sprint_assets_success():
     conn_sprint_issues = _SequencedConnection(
-        [_Result(scalar_value=True), _Result(fetchall_data=[(1,), (2,), (3,)])]
+        [
+            _Result(scalar_value=True),
+            _Result(fetchall_data=[(1,), (2,), (3,)]),
+            _Result(),  # Reconciliation update
+        ]
     )
     out_sprint_issues = _asset_fn(clean.clean_jira_sprint_issues)(
         _DummyContext(), _DummyDatabase(conn_sprint_issues)
@@ -234,8 +254,16 @@ def test_clean_jira_sprint_assets_success():
 
 
 def test_clean_jira_comments_skip_and_success():
+    # possible_tables = [rendered_fields..., fields__comment__comments, fields__comment]
     conn_skip = _SequencedConnection(
-        [_Result(scalar_value=False), _Result(scalar_value=False)]
+        [
+            _Result(scalar_value=False),  # 1st loop: rendered exists?
+            _Result(scalar_value=False),  # 1st loop: fields__comment__comments exists?
+            _Result(scalar_value=False),  # 1st loop: fields__comment exists?
+            _Result(scalar_value=False),  # 2nd loop: rendered exists?
+            _Result(scalar_value=False),  # 2nd loop: fields__comment__comments exists?
+            _Result(scalar_value=False),  # 2nd loop: fields__comment exists?
+        ]
     )
     out_skip = _asset_fn(clean.clean_jira_comments)(
         _DummyContext(), _DummyDatabase(conn_skip)
@@ -244,10 +272,11 @@ def test_clean_jira_comments_skip_and_success():
 
     conn_ok = _SequencedConnection(
         [
-            _Result(scalar_value=False),
-            _Result(scalar_value=True),
-            _Result(fetchall_data=[(1,), (2,)]),
-            _Result(),
+            _Result(scalar_value=False),  # 1st loop: rendered exists?
+            _Result(scalar_value=True),  # 1st loop: fields__comment__comments exists?
+            _Result(scalar_value=True),  # 1st loop: fields__comment__comments has body?
+            _Result(fetchall_data=[(1,), (2,)]),  # INSERT INTO clean_jira.comments
+            _Result(),  # INSERT INTO clean_jira.comment_issues
         ]
     )
     out_ok = _asset_fn(clean.clean_jira_comments)(
@@ -310,6 +339,30 @@ def test_clean_jira_release_assets_skip_and_success():
         )["changelog_count"]
         == 2
     )
+
+
+def test_clean_jira_user_issue_roles_success():
+    conn = _SequencedConnection([_Result(fetchall_data=[(1,), (2,)])])
+    out = _asset_fn(clean.clean_jira_user_issue_roles)(
+        _DummyContext(), _DummyDatabase(conn)
+    )
+    assert out["status"] == "success"
+    assert out["count"] == 2
+    assert conn.commits == 1
+
+
+def test_clean_jira_issue_links_success():
+    conn = _SequencedConnection(
+        [
+            _Result(scalar_value=True),  # table exists
+            _Result(),  # insert relation_issue_types
+            _Result(fetchall_data=[(1,), (2,)]),  # insert relation_issue_issues
+        ]
+    )
+    out = _asset_fn(clean.clean_jira_issue_links)(_DummyContext(), _DummyDatabase(conn))
+    assert out["status"] == "success"
+    assert out["count"] == 2
+    assert conn.commits == 1
 
 
 def test_clean_jira_misc_assets_success():

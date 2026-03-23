@@ -26,9 +26,11 @@ from pipelines.assets.jira.clean import (
     clean_jira_board_column_statuses,
     clean_jira_board_columns,
     clean_jira_boards,
+    clean_jira_comments,
     clean_jira_field_keys,
     clean_jira_field_value_changelog,
     clean_jira_field_values,
+    clean_jira_issue_links,
     clean_jira_issue_status_changelog,
     clean_jira_issue_statuses,
     clean_jira_issue_types,
@@ -41,6 +43,7 @@ from pipelines.assets.jira.clean import (
     clean_jira_sprint_issues,
     clean_jira_sprint_issues_changelog,
     clean_jira_sprints,
+    clean_jira_user_issue_roles,
 )
 from pipelines.assets.jira.raw import raw_jira_data
 
@@ -73,6 +76,9 @@ __all__ = [
     "clean_jira_issue_types",
     "clean_jira_issue_statuses",
     "clean_jira_projects",
+    "clean_jira_comments",
+    "clean_jira_user_issue_roles",
+    "clean_jira_issue_links",
     # Asset checks
     "check_no_orphan_issues",
     "check_issues_have_required_fields",

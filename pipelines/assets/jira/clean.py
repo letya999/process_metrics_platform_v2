@@ -466,7 +466,8 @@ def clean_jira_issues(
             WHERE table_schema = 'raw_jira' AND table_name = 'issues'
             AND column_name IN (
                 'rendered_fields__description',
-                'fields__resolutiondate'
+                'fields__resolutiondate',
+                'fields__parent__id'
             )
         """
             )
@@ -475,12 +476,16 @@ def clean_jira_issues(
         column_names = {row[0] for row in columns_result}
         has_description = "rendered_fields__description" in column_names
         has_resolutiondate = "fields__resolutiondate" in column_names
+        has_parent_id = "fields__parent__id" in column_names
 
         description_col = (
             "r.rendered_fields__description" if has_description else "NULL::text"
         )
         resolutiondate_col = (
             "r.fields__resolutiondate" if has_resolutiondate else "NULL::text"
+        )
+        parent_id_raw_col = (
+            "r.fields__parent__id::text" if has_parent_id else "NULL::text"
         )
 
         issues_result = conn.execute(
@@ -534,6 +539,23 @@ def clean_jira_issues(
         )
         issues_synced = issues_result.fetchall()
         context.log.info(f"Synced {len(issues_synced)} issues")
+
+        # Reconcile parent_id links in a second pass
+        if has_parent_id:
+            context.log.info("Reconciling parent_id links...")
+            conn.execute(
+                text(
+                    f"""
+                UPDATE clean_jira.issues i
+                SET parent_id = parent.id
+                FROM raw_jira.issues r
+                JOIN clean_jira.issues parent ON parent.external_id = {parent_id_raw_col}
+                    AND parent.project_id = i.project_id
+                WHERE i.external_id = r.id::text
+                  AND i.parent_id IS DISTINCT FROM parent.id
+            """  # noqa: S608
+                )
+            )
 
         conn.commit()
 
@@ -1374,6 +1396,21 @@ def clean_jira_sprint_issues(
         sprint_issues_count = len(result.fetchall())
         context.log.info(f"Inserted {sprint_issues_count} sprint-issue relationships")
 
+        # Reconciliation: set is_active = FALSE for issues in closed sprints
+        context.log.info("Reconciling is_active for closed sprints...")
+        conn.execute(
+            text(
+                """
+            UPDATE clean_jira.sprint_issues si
+            SET is_active = false
+            FROM clean_jira.sprints s
+            WHERE si.sprint_id = s.id
+              AND s.status = 'closed'
+              AND si.is_active = true
+        """
+            )
+        )
+
         conn.commit()
 
     return {
@@ -1570,7 +1607,9 @@ def clean_jira_comments(
 
         # Identify the table name for comments
         # dlt typically creates issues__fields__comment__comments
+        # prioritize rendered_fields if available as it often contains the full body (TEXT)
         possible_tables = [
+            "issues__rendered_fields__comment__comments",
             "issues__fields__comment__comments",
             "issues__fields__comment",
         ]
@@ -1590,8 +1629,36 @@ def clean_jira_comments(
                 {"table_name": table},
             ).scalar()
             if exists:
-                comment_table = table
-                break
+                # Also check if 'body' column exists in this table
+                has_body = conn.execute(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'raw_jira'
+                              AND table_name = :table_name
+                              AND column_name = 'body'
+                        )
+                    """
+                    ),
+                    {"table_name": table},
+                ).scalar()
+                if has_body:
+                    comment_table = table
+                    break
+
+        if not comment_table:
+            # Last ditch effort: try the first existing table even without 'body' if nothing else found
+            for table in possible_tables:
+                exists = conn.execute(
+                    text(
+                        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'raw_jira' AND table_name = :table_name)"
+                    ),
+                    {"table_name": table},
+                ).scalar()
+                if exists:
+                    comment_table = table
+                    break
 
         if not comment_table:
             context.log.warning(
@@ -2269,6 +2336,151 @@ def clean_jira_board_column_statuses(
             WHERE st.id IS NOT NULL
             ORDER BY bc_col.id, ist.id, bc._dlt_id DESC
             ON CONFLICT (board_column_id, status_id) DO NOTHING
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["clean_jira_issues"],
+    description="Sync Jira user roles in issues (assignee, reporter, creator)",
+    compute_kind="sql",
+)
+def clean_jira_user_issue_roles(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync user roles (assignee, reporter, creator) to clean_jira.jira_user_issue_roles."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        context.log.info("Syncing user issue roles...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.jira_user_issue_roles (
+                user_id,
+                issue_id,
+                role_type
+            )
+            SELECT DISTINCT
+                u.id as user_id,
+                i.id as issue_id,
+                role_data.role_type::clean_jira.user_role_type
+            FROM raw_jira.issues r
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
+            CROSS JOIN LATERAL (
+                SELECT r.fields__assignee__account_id as account_id, 'assignee' as role_type
+                WHERE r.fields__assignee__account_id IS NOT NULL
+                UNION ALL
+                SELECT r.fields__reporter__account_id as account_id, 'reporter' as role_type
+                WHERE r.fields__reporter__account_id IS NOT NULL
+                UNION ALL
+                SELECT r.fields__creator__account_id as account_id, 'creator' as role_type
+                WHERE r.fields__creator__account_id IS NOT NULL
+            ) as role_data
+            JOIN clean_jira.jira_users u ON u.external_id = role_data.account_id AND u.project_id = p.id
+            ON CONFLICT (user_id, issue_id, role_type) DO NOTHING
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["clean_jira_issues"],
+    description="Sync Jira issue links to clean layer",
+    compute_kind="sql",
+)
+def clean_jira_issue_links(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync issue links from raw_jira.issues__fields__issuelinks."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        # Check if issuelinks table exists
+        table_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira'
+                  AND table_name = 'issues__fields__issuelinks'
+            )
+        """
+            )
+        ).scalar()
+
+        if not table_exists:
+            context.log.warning("Table raw_jira.issues__fields__issuelinks not found")
+            return {"status": "skipped", "reason": "no_issuelinks_table"}
+
+        context.log.info("Syncing issue link types...")
+        # First sync relation_issue_types
+        conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.relation_issue_types (
+                project_id,
+                external_id,
+                name
+            )
+            SELECT DISTINCT
+                p.id as project_id,
+                il.type__id as external_id,
+                il.type__name as name
+            FROM raw_jira.issues__fields__issuelinks il
+            JOIN raw_jira.issues r ON il._dlt_parent_id = r._dlt_id
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            WHERE il.type__id IS NOT NULL
+            ON CONFLICT (project_id, external_id) DO UPDATE SET
+                name = EXCLUDED.name
+        """
+            )
+        )
+
+        context.log.info("Syncing issue relationships...")
+        # Then sync relation_issue_issues
+        # We need to handle both outward and inward links
+        result = conn.execute(
+            text(
+                """
+            WITH link_data AS (
+                SELECT
+                    il.type__id as type_external_id,
+                    r.id::text as source_external_id,
+                    COALESCE(il.outward_issue__id, il.inward_issue__id)::text as target_external_id,
+                    r.fields__project__id::text as project_external_id
+                FROM raw_jira.issues__fields__issuelinks il
+                JOIN raw_jira.issues r ON il._dlt_parent_id = r._dlt_id
+                WHERE il.type__id IS NOT NULL
+                  AND (il.outward_issue__id IS NOT NULL OR il.inward_issue__id IS NOT NULL)
+            )
+            INSERT INTO clean_jira.relation_issue_issues (
+                relation_type_id,
+                source_issue_id,
+                target_issue_id
+            )
+            SELECT DISTINCT
+                rt.id as relation_type_id,
+                si.id as source_issue_id,
+                ti.id as target_issue_id
+            FROM link_data ld
+            JOIN clean_jira.projects p ON ld.project_external_id = p.external_id
+            JOIN clean_jira.relation_issue_types rt ON rt.external_id = ld.type_external_id AND rt.project_id = p.id
+            JOIN clean_jira.issues si ON si.external_id = ld.source_external_id AND si.project_id = p.id
+            JOIN clean_jira.issues ti ON ti.external_id = ld.target_external_id AND ti.project_id = p.id
+            ON CONFLICT (relation_type_id, source_issue_id, target_issue_id) DO NOTHING
             RETURNING id
         """
             )
