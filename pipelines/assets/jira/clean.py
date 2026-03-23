@@ -18,6 +18,39 @@ from sqlalchemy import text
 from pipelines.resources.database import DatabaseResource
 
 
+def _get_platform_project_id(conn: Any) -> str:
+    """Get the platform project ID dynamically."""
+    result = conn.execute(text("SELECT id::text FROM platform.projects LIMIT 1"))
+    row = result.first()
+    if not row:
+        raise RuntimeError(
+            "Platform project not found. "
+            "Ensure platform.projects has at least one entry."
+        )
+    return row[0]
+
+
+def _detect_sprint_field_id(conn: Any) -> str:
+    """Auto-detect sprint custom field ID from raw_jira.fields."""
+    try:
+        result = conn.execute(
+            text(
+                """
+            SELECT id FROM raw_jira.fields
+            WHERE schema__custom = 'com.pyxis.greenhopper.jira:gh-sprint'
+            LIMIT 1
+        """
+            )
+        )
+        row = result.first()
+        if row:
+            return row[0]
+    except Exception:  # noqa: S110
+        pass
+    # Fallback to standard customfield_10020
+    return "customfield_10020"
+
+
 @asset(
     group_name="jira_clean",
     deps=["raw_jira_data"],
@@ -31,9 +64,9 @@ def clean_jira_projects(
     """Sync projects from raw to clean."""
     engine = database.get_engine()
     with engine.connect() as conn:
-        # Use a fixed platform_project_id for grouping all Jira projects
-        platform_project_id = "00000000-0000-0000-0000-000000000001"
-        context.log.info("Syncing projects...")
+        # Use a dynamic platform_project_id for grouping all Jira projects
+        platform_project_id = _get_platform_project_id(conn)
+        context.log.info(f"Syncing projects with platform ID {platform_project_id}...")
         result = conn.execute(
             text(
                 """
@@ -82,9 +115,45 @@ def clean_jira_issue_types(
     engine = database.get_engine()
     with engine.connect() as conn:
         context.log.info("Syncing issue types...")
+
+        # 3.2: Check if column 'fields__issuetype__hierarchy_level' exists
+        try:
+            conn.execute(
+                text(
+                    "SELECT fields__issuetype__hierarchy_level FROM raw_jira.issues LIMIT 1"
+                )
+            )
+            has_hierarchy_level = True
+        except Exception:
+            has_hierarchy_level = False
+            context.log.warning(
+                "Column 'fields__issuetype__hierarchy_level' not found in raw_jira.issues, falling back to ILIKE logic"
+            )
+
+        hierarchy_mapping = """
+                CASE
+                    WHEN r.fields__issuetype__name ILIKE '%epic%'
+                        THEN 'epic'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__name ILIKE '%subtask%'
+                        THEN 'subtask'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__name ILIKE '%story%'
+                        THEN 'story'::clean_jira.issue_hierarchy_level
+                    ELSE 'task'::clean_jira.issue_hierarchy_level
+                END
+        """
+        if has_hierarchy_level:
+            hierarchy_mapping = """
+                CASE
+                    WHEN r.fields__issuetype__hierarchy_level > 0 THEN 'epic'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__hierarchy_level = 0 THEN 'story'::clean_jira.issue_hierarchy_level
+                    WHEN r.fields__issuetype__hierarchy_level < 0 THEN 'subtask'::clean_jira.issue_hierarchy_level
+                    ELSE 'task'::clean_jira.issue_hierarchy_level
+                END
+            """
+
         result = conn.execute(
             text(
-                """
+                f"""
             INSERT INTO clean_jira.issue_types (
                 project_id,
                 external_id,
@@ -95,22 +164,14 @@ def clean_jira_issue_types(
                 p.id as project_id,
                 r.fields__issuetype__id as external_id,
                 r.fields__issuetype__name as name,
-                CASE
-                    WHEN r.fields__issuetype__name ILIKE '%epic%'
-                        THEN 'epic'::clean_jira.issue_hierarchy_level
-                    WHEN r.fields__issuetype__name ILIKE '%subtask%'
-                        THEN 'subtask'::clean_jira.issue_hierarchy_level
-                    WHEN r.fields__issuetype__name ILIKE '%story%'
-                        THEN 'story'::clean_jira.issue_hierarchy_level
-                    ELSE 'task'::clean_jira.issue_hierarchy_level
-                END as hierarchy_level
+                {hierarchy_mapping} as hierarchy_level
             FROM raw_jira.issues r
             JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
             WHERE r.fields__issuetype__id IS NOT NULL
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 name = EXCLUDED.name
             RETURNING id
-        """
+        """  # noqa: S608
             )
         )
         count = len(result.fetchall())
@@ -1145,8 +1206,8 @@ def clean_jira_field_keys(
 
         conn.commit()
 
-        # Explicitly ensure 'Sprint' field key exists (customfield_10020)
-        # It is usually a separate table and might be missed by the column scan
+        # Explicitly ensure 'Sprint' field key exists
+        sprint_field_id = _detect_sprint_field_id(conn)
         conn.execute(
             text(
                 """
@@ -1159,7 +1220,7 @@ def clean_jira_field_keys(
             )
             SELECT DISTINCT
                 p.id as project_id,
-                'customfield_10020' as external_key,
+                :sprint_field_id as external_key,
                 'Sprint' as name,
                 true as is_custom,
                 now() as created_at
@@ -1167,7 +1228,8 @@ def clean_jira_field_keys(
             ON CONFLICT (project_id, external_key) DO UPDATE SET
                 name = EXCLUDED.name
         """
-            )
+            ),
+            {"sprint_field_id": sprint_field_id},
         )
         conn.commit()
 
@@ -1341,26 +1403,25 @@ def clean_jira_field_values(
         context.log.info(f"Inserted {field_values_inserted} field values")
         conn.commit()
 
-        # Explicitly extract 'Sprint' values (customfield_10020)
-        # This stores a comma-separated list of sprint names in json_value,
-        # which matches the format expected by clean_jira_sprint_issues logic (parsed by regexp_split_to_table)
-        context.log.info("Extracting Sprint (customfield_10020) values...")
+        # Explicitly extract 'Sprint' values
+        sprint_field_id = _detect_sprint_field_id(conn)
+        context.log.info(f"Extracting Sprint ({sprint_field_id}) values...")
         sprint_table_exists = conn.execute(
             text(
-                """
+                f"""
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
                 WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__fields__customfield_10020'
+                  AND table_name = 'issues__fields__{sprint_field_id}'
             )
-        """
+        """  # noqa: S608
             )
         ).scalar()
 
         if sprint_table_exists:
             result = conn.execute(
                 text(
-                    """
+                    f"""
                 INSERT INTO clean_jira.field_values (
                     issue_id,
                     field_key_id,
@@ -1374,23 +1435,22 @@ def clean_jira_field_values(
                     -- For 'value', we just store the raw aggregation
                     string_agg(s.name, ', ' ORDER BY s.start_date) as value,
                     -- For 'json_value', we store it as a JSON string containing the list
-                    -- This ensures that when retrieved as text, it matches the string format
-                    -- e.g. "Sprint 1, Sprint 2"
                     to_jsonb(string_agg(s.name, ', ' ORDER BY s.start_date)) as json_value,
                     now() as updated_at
-                FROM raw_jira.issues__fields__customfield_10020 s
+                FROM raw_jira.issues__fields__{sprint_field_id} s
                 JOIN raw_jira.issues r ON s._dlt_parent_id = r._dlt_id
                 JOIN clean_jira.issues i ON i.external_id = r.id::text
                 JOIN clean_jira.field_keys fk ON fk.project_id = i.project_id
-                    AND fk.external_key = 'customfield_10020'
+                    AND fk.external_key = :sprint_field_id
                 GROUP BY i.id, fk.id
                 ON CONFLICT (issue_id, field_key_id) DO UPDATE SET
                     value = EXCLUDED.value,
                     json_value = EXCLUDED.json_value,
                     updated_at = now()
                 RETURNING id
-            """
-                )
+            """  # noqa: S608
+                ),
+                {"sprint_field_id": sprint_field_id},
             )
             sprint_values_count = len(result.fetchall())
             context.log.info(f"Inserted {sprint_values_count} Sprint field values")
@@ -1398,7 +1458,7 @@ def clean_jira_field_values(
             conn.commit()
         else:
             context.log.warning(
-                "Sprint table (customfield_10020) not found in raw_jira"
+                f"Sprint table ({sprint_field_id}) not found in raw_jira"
             )
 
     return {
@@ -1559,9 +1619,10 @@ def clean_jira_sprint_issues(
             return {"status": "skipped", "reason": "no_changelog_items_table"}
 
         # Build sprint_issues from changelog final state
+        sprint_field_id = _detect_sprint_field_id(conn)
         result = conn.execute(
             text(
-                """
+                f"""
             WITH changelog_events AS (
                 -- Extract Sprint changes from changelog
                 SELECT
@@ -1575,7 +1636,8 @@ def clean_jira_sprint_issues(
                 JOIN raw_jira.issues__changelog__histories h
                     ON item._dlt_parent_id = h._dlt_id
                 JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
-                WHERE item.field = 'Sprint' OR item.field_id = 'customfield_10020'
+                WHERE (item.field = 'Sprint' AND item.fieldtype = 'jira')
+                   OR item.field_id = :sprint_field_id
             ),
             -- Split comma-separated sprint IDs for 'added' actions
             added_events AS (
@@ -1619,7 +1681,7 @@ def clean_jira_sprint_issues(
                     'added' as action,
                     NULL::text as author_id  -- No author for snapshot events
                 FROM raw_jira.issues i
-                JOIN raw_jira.issues__fields__customfield_10020 s
+                JOIN raw_jira.issues__fields__{sprint_field_id} s
                   ON s._dlt_parent_id = i._dlt_id
                 WHERE s.id IS NOT NULL
                   -- If Sprint changelog exists, it is the source of truth.
@@ -1679,7 +1741,7 @@ def clean_jira_sprint_issues(
             ON CONFLICT (sprint_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
             RETURNING id
-        """
+        """  # noqa: S608
             )
         )
         sprint_issues_count = len(result.fetchall())
@@ -1730,9 +1792,10 @@ def clean_jira_sprint_issues_changelog(
         # This avoids stale/incorrect historical rows lingering across logic fixes.
         conn.execute(text("TRUNCATE TABLE clean_jira.sprint_issues_changelog"))
 
+        sprint_field_id = _detect_sprint_field_id(conn)
         result = conn.execute(
             text(
-                """
+                f"""
             WITH changelog_events AS (
                 SELECT
                     r.id::text as issue_external_id,
@@ -1744,7 +1807,8 @@ def clean_jira_sprint_issues_changelog(
                 JOIN raw_jira.issues__changelog__histories h
                     ON item._dlt_parent_id = h._dlt_id
                 JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
-                WHERE item.field = 'Sprint' OR item.field_id = 'customfield_10020'
+                WHERE (item.field = 'Sprint' AND item.fieldtype = 'jira')
+                   OR item.field_id = :sprint_field_id
             ),
             to_sprints AS (
                 SELECT DISTINCT
@@ -1815,7 +1879,7 @@ def clean_jira_sprint_issues_changelog(
                     'added' as action,
                     NULL::text as author_id
                 FROM raw_jira.issues i
-                JOIN raw_jira.issues__fields__customfield_10020 s
+                JOIN raw_jira.issues__fields__{sprint_field_id} s
                   ON s._dlt_parent_id = i._dlt_id
                 WHERE s.id IS NOT NULL
                   -- Exclude issues that already have Sprint changelog entries
@@ -1864,7 +1928,7 @@ def clean_jira_sprint_issues_changelog(
             FROM normalized_events
             ON CONFLICT (sprint_id, issue_id, action, changed_at) DO NOTHING
             RETURNING id
-        """
+        """  # noqa: S608
             )
         )
         changelog_count = len(result.fetchall())
@@ -2136,6 +2200,82 @@ def clean_jira_releases(
 
 @asset(
     group_name="jira_clean",
+    deps=["clean_jira_releases"],
+    description="Track changes to release properties (name, description, status, release_date) via snapshot diff",
+    compute_kind="sql",
+)
+def clean_jira_release_changelog(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Populate release property change history using snapshot-diff approach.
+
+    Jira does not expose release property history via API. On each run, compares
+    the current state of clean_jira.releases with the last known state stored in
+    release_changelog. Inserts a row for every field that has changed since the
+    previous run. Initial population uses old_value=NULL.
+    """
+    engine = database.get_engine()
+
+    with engine.connect() as conn:
+        context.log.info("Detecting release property changes via snapshot diff...")
+
+        result = conn.execute(
+            text(
+                """
+            WITH current_state AS (
+                SELECT
+                    r.id AS release_id,
+                    unnest(ARRAY['name', 'description', 'status', 'release_date']) AS field_name,
+                    unnest(ARRAY[
+                        r.name,
+                        r.description,
+                        r.status::text,
+                        r.release_date::text
+                    ]) AS current_value
+                FROM clean_jira.releases r
+            ),
+            last_known AS (
+                SELECT DISTINCT ON (release_id, field_name)
+                    release_id,
+                    field_name,
+                    new_value
+                FROM clean_jira.release_changelog
+                ORDER BY release_id, field_name, changed_at DESC
+            ),
+            changes AS (
+                SELECT
+                    cs.release_id,
+                    cs.field_name,
+                    lk.new_value AS old_value,
+                    cs.current_value AS new_value
+                FROM current_state cs
+                LEFT JOIN last_known lk
+                    ON cs.release_id = lk.release_id AND cs.field_name = lk.field_name
+                WHERE cs.current_value IS DISTINCT FROM lk.new_value
+            )
+            INSERT INTO clean_jira.release_changelog (
+                release_id, field_name, old_value, new_value, changed_at
+            )
+            SELECT release_id, field_name, old_value, new_value, now()
+            FROM changes
+            RETURNING id
+        """
+            )
+        )
+        changelog_count = len(result.fetchall())
+        context.log.info(f"Inserted {changelog_count} release changelog entries")
+
+        conn.commit()
+
+    return {
+        "status": "success",
+        "changelog_count": changelog_count,
+    }
+
+
+@asset(
+    group_name="jira_clean",
     deps=["clean_jira_issues", "clean_jira_releases"],
     description="Extract release-issue relationships from changelog",
     compute_kind="sql",
@@ -2176,7 +2316,8 @@ def clean_jira_release_issues(
                 JOIN raw_jira.issues__changelog__histories h
                     ON item._dlt_parent_id = h._dlt_id
                 JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
-                WHERE item.field IN ('Fix Version/s', 'fixVersions', 'Fix Version')
+                WHERE (item.field IN ('Fix Version/s', 'fixVersions', 'Fix Version')
+                   OR item.field_id IN ('fixVersions', 'fixversion'))
             ),
             added_events AS (
                 SELECT
@@ -2292,7 +2433,8 @@ def clean_jira_release_issues_changelog(
                 JOIN raw_jira.issues__changelog__histories h
                     ON item._dlt_parent_id = h._dlt_id
                 JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
-                WHERE item.field IN ('Fix Version/s', 'fixVersions', 'Fix Version')
+                WHERE (item.field IN ('Fix Version/s', 'fixVersions', 'Fix Version')
+                   OR item.field_id IN ('fixVersions', 'fixversion'))
             ),
             added_events AS (
                 SELECT
@@ -2374,11 +2516,15 @@ def clean_jira_sprint_changelog(
     context: AssetExecutionContext,
     database: DatabaseResource,
 ) -> dict[str, Any]:
-    """Extract sprint property change history.
+    """Record sprint close events in sprint_changelog.
 
-    Tracks changes to sprint properties like name, goal, start_date, end_date.
-    Note: Jira doesn't provide direct sprint changelog via API, so this asset
-    captures snapshots by comparing raw sprint data with previous values.
+    Intentional design: Jira does not expose sprint property change history
+    (name, goal, date edits) via the standard REST API. The Agile/Software
+    API returns only the current sprint state. Therefore this asset captures
+    one event per closed sprint - the status transition to 'closed' - using
+    the sprint's complete_date as the change timestamp. This yields exactly
+    one row per closed sprint, which is the correct and complete data set
+    given current API constraints.
     """
     engine = database.get_engine()
 
@@ -2777,6 +2923,114 @@ def clean_jira_issue_links(
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["raw_jira_data"],
+    description="Remove issues from raw layer that no longer exist in Jira API",
+)
+def jira_ghost_cleanup(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Remove ghost issues from raw_jira.issues.
+
+    Fetches all issue IDs from Jira API and deletes those from raw layer
+    that are not in the fetched list.
+    """
+    import os
+
+    import requests
+    from requests.auth import HTTPBasicAuth
+
+    jira_url = os.getenv("JIRA_URL")
+    jira_email = os.getenv("JIRA_EMAIL")
+    jira_api_token = os.getenv("JIRA_API_TOKEN")
+
+    if not all([jira_url, jira_email, jira_api_token]):
+        context.log.warning(
+            "Jira credentials not fully configured (JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN). "
+            "Skipping ghost cleanup."
+        )
+        return {"status": "skipped", "reason": "missing_credentials"}
+
+    context.log.info("Fetching all issue IDs from Jira API...")
+
+    # We only need 'id' field to minimize payload
+    all_issue_ids = set()
+    start_at = 0
+    max_results = 100
+
+    try:
+        auth = HTTPBasicAuth(jira_email, jira_api_token)
+        while True:
+            response = requests.get(
+                f"{jira_url}/rest/api/3/search",
+                params={
+                    "jql": "order by id",
+                    "fields": "id",
+                    "startAt": start_at,
+                    "maxResults": max_results,
+                },
+                auth=auth,
+                timeout=60,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            issues = data.get("issues", [])
+            if not issues:
+                break
+
+            for issue in issues:
+                all_issue_ids.add(issue["id"])
+
+            start_at += len(issues)
+            if start_at >= data.get("total", 0):
+                break
+
+        context.log.info(f"Fetched {len(all_issue_ids)} issue IDs from Jira API")
+
+        if not all_issue_ids:
+            context.log.warning(
+                "No issues fetched from Jira. Skipping deletion to be safe."
+            )
+            return {"status": "skipped", "reason": "no_issues_from_api"}
+
+        engine = database.get_engine()
+        with engine.connect() as conn:
+            # Get current IDs in raw_jira.issues
+            result = conn.execute(text("SELECT id::text FROM raw_jira.issues"))
+            raw_ids = {row[0] for row in result.fetchall()}
+
+            ids_to_delete = raw_ids - all_issue_ids
+
+            if ids_to_delete:
+                context.log.info(f"Found {len(ids_to_delete)} ghost issues to delete")
+                # Delete in batches to avoid huge SQL
+                delete_list = list(ids_to_delete)
+                batch_size = 1000
+                total_deleted = 0
+
+                for i in range(0, len(delete_list), batch_size):
+                    batch = delete_list[i : i + batch_size]
+                    conn.execute(
+                        text("DELETE FROM raw_jira.issues WHERE id::text IN :ids"),
+                        {"ids": tuple(batch)},
+                    )
+                    total_deleted += len(batch)
+
+                conn.commit()
+                context.log.info(f"Successfully deleted {total_deleted} ghost issues")
+                return {"status": "success", "deleted_count": total_deleted}
+            else:
+                context.log.info("No ghost issues found")
+                return {"status": "success", "deleted_count": 0}
+
+    except Exception as e:
+        context.log.error(f"Error during ghost cleanup: {e}")
+        return {"status": "failed", "error": str(e)}
 
 
 # Asset checks for data quality

@@ -119,12 +119,21 @@ def jira_source(
         max_results = 100
         next_page_token = None
 
+        # 3.4: Limit fields whitelist
+        default_fields = (
+            "summary,description,issuetype,status,priority,assignee,reporter,creator,"
+            "created,updated,resolutiondate,resolution,parent,subtasks,issuelinks,"
+            "comment,worklog,labels,fixVersions,customfield_10020,customfield_10016,"
+            "customfield_10028"
+        )
+        fields_to_fetch = os.getenv("JIRA_FIELDS_OVERRIDE", default_fields)
+
         while True:
             params = {
                 "jql": jql,
                 "maxResults": max_results,
                 "expand": "changelog,renderedFields",
-                "fields": "*all",
+                "fields": fields_to_fetch,
             }
             # Add nextPageToken only if we have one (not on first request)
             if next_page_token:

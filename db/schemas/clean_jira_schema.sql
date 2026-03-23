@@ -320,8 +320,7 @@ CREATE TABLE IF NOT EXISTS clean_jira.field_keys (
     name text NOT NULL,                   -- Field name
     is_custom boolean NOT NULL DEFAULT true,
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE(project_id, external_key),
-    UNIQUE(project_id, name)
+    UNIQUE(project_id, external_key)
 );
 
 COMMENT ON TABLE clean_jira.field_keys IS 'Metadata for custom and standard Jira fields';

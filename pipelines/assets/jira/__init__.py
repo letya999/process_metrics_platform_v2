@@ -11,6 +11,7 @@ This module exports all Jira-related Dagster assets:
 - clean_jira_sprint_issues: Extract sprint-issue relationships from changelog
 - clean_jira_sprint_issues_changelog: Extract sprint-issue history
 - clean_jira_releases: Transform raw versions to releases
+- clean_jira_release_changelog: Track release property changes via snapshot diff
 - clean_jira_release_issues: Extract release-issue relationships
 - clean_jira_release_issues_changelog: Extract release-issue history
 - clean_jira_boards: Transform board configurations
@@ -39,6 +40,7 @@ from pipelines.assets.jira.clean import (
     clean_jira_labels,
     clean_jira_priorities,
     clean_jira_projects,
+    clean_jira_release_changelog,
     clean_jira_release_issues,
     clean_jira_release_issues_changelog,
     clean_jira_releases,
@@ -49,6 +51,7 @@ from pipelines.assets.jira.clean import (
     clean_jira_sprints,
     clean_jira_user_issue_roles,
     clean_jira_worklogs,
+    jira_ghost_cleanup,
 )
 from pipelines.assets.jira.raw import raw_jira_data
 
@@ -72,6 +75,7 @@ __all__ = [
     "clean_jira_sprint_issues",
     "clean_jira_sprint_issues_changelog",
     "clean_jira_releases",
+    "clean_jira_release_changelog",
     "clean_jira_release_issues",
     "clean_jira_release_issues_changelog",
     "clean_jira_boards",
@@ -89,6 +93,7 @@ __all__ = [
     "clean_jira_comments",
     "clean_jira_user_issue_roles",
     "clean_jira_issue_links",
+    "jira_ghost_cleanup",
     # Asset checks
     "check_no_orphan_issues",
     "check_issues_have_required_fields",

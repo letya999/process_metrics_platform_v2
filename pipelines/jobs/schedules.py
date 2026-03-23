@@ -165,6 +165,21 @@ aging_extended_recalc_job = define_asset_job(
     description="Recalculate extended aging metrics (blocked time, stale days)",
 )
 
+# Job: Ghost Cleanup (remove deleted issues)
+jira_ghost_cleanup_job = define_asset_job(
+    name="jira_ghost_cleanup_job",
+    selection=AssetSelection.assets("jira_ghost_cleanup"),
+    description="Cleanup issues from raw layer that were deleted in Jira",
+)
+
+# Schedule: Weekly ghost cleanup (Sunday at 2 AM)
+weekly_ghost_cleanup_schedule = ScheduleDefinition(
+    job=jira_ghost_cleanup_job,
+    cron_schedule="0 2 * * 0",  # 2:00 AM UTC every Sunday
+    default_status=DefaultScheduleStatus.STOPPED,
+    execution_timezone="UTC",
+)
+
 
 # Export all jobs and schedules
 jobs = [
@@ -188,9 +203,11 @@ jobs = [
     estimation_recalc_job,
     input_flow_recalc_job,
     aging_extended_recalc_job,
+    jira_ghost_cleanup_job,
 ]
 
 schedules = [
     daily_jira_sync_schedule,
     hourly_metrics_refresh_schedule,
+    weekly_ghost_cleanup_schedule,
 ]
