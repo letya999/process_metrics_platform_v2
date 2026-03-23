@@ -21,6 +21,8 @@ This module exports all Jira-related Dagster assets:
 from pipelines.assets.jira.clean import (
     check_issues_have_required_fields,
     check_no_orphan_issues,
+    check_raw_clean_issue_count,
+    check_raw_clean_sprint_count,
     check_release_issues_integrity,
     check_sprint_dates_valid,
     check_sprint_issues_integrity,
@@ -100,4 +102,6 @@ __all__ = [
     "check_sprint_dates_valid",
     "check_sprint_issues_integrity",
     "check_release_issues_integrity",
+    "check_raw_clean_issue_count",
+    "check_raw_clean_sprint_count",
 ]

@@ -3177,3 +3177,123 @@ def check_release_issues_integrity(
         passed=invalid_count == 0,
         metadata={"invalid_release_issues_count": invalid_count},
     )
+
+
+# Maximum acceptable percentage of clean issues missing vs raw issues.
+# 5% allows for issues legitimately filtered out (no project match, etc.).
+_MAX_ISSUE_LOSS_PCT = 5.0
+
+
+@asset_check(
+    asset=clean_jira_issues,
+    description="Verify raw vs clean issue count delta is within tolerance",
+)
+def check_raw_clean_issue_count(
+    context: AssetCheckExecutionContext,
+    database: DatabaseResource,
+) -> AssetCheckResult:
+    """Compare raw and clean issue counts.
+
+    Detects silent data loss between the Bronze and Silver layers. Allows up
+    to _MAX_ISSUE_LOSS_PCT% discrepancy to account for issues filtered out
+    due to missing project mapping or malformed IDs.
+    """
+    engine = database.get_engine()
+
+    with engine.connect() as conn:
+        raw_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira' AND table_name = 'issues'
+            )
+        """
+            )
+        ).scalar()
+
+        if not raw_exists:
+            return AssetCheckResult(
+                passed=True,
+                metadata={"status": "skipped_no_raw_table"},
+            )
+
+        raw_count = (
+            conn.execute(text("SELECT COUNT(*) FROM raw_jira.issues")).scalar() or 0
+        )
+        clean_count = (
+            conn.execute(text("SELECT COUNT(*) FROM clean_jira.issues")).scalar() or 0
+        )
+
+    if raw_count == 0:
+        return AssetCheckResult(passed=True, metadata={"status": "no_raw_data"})
+
+    loss_pct = ((raw_count - clean_count) / raw_count) * 100
+    passed = loss_pct <= _MAX_ISSUE_LOSS_PCT
+
+    return AssetCheckResult(
+        passed=passed,
+        metadata={
+            "raw_issues_count": raw_count,
+            "clean_issues_count": clean_count,
+            "loss_pct": round(loss_pct, 2),
+            "threshold_pct": _MAX_ISSUE_LOSS_PCT,
+        },
+    )
+
+
+@asset_check(
+    asset=clean_jira_sprints,
+    description="Verify raw vs clean sprint count delta is within tolerance",
+)
+def check_raw_clean_sprint_count(
+    context: AssetCheckExecutionContext,
+    database: DatabaseResource,
+) -> AssetCheckResult:
+    """Compare raw and clean sprint counts.
+
+    Detects silent data loss between Bronze and Silver sprint data.
+    All sprints from raw_jira.sprints should appear in clean_jira.sprints.
+    """
+    engine = database.get_engine()
+
+    with engine.connect() as conn:
+        raw_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira' AND table_name = 'sprints'
+            )
+        """
+            )
+        ).scalar()
+
+        if not raw_exists:
+            return AssetCheckResult(
+                passed=True,
+                metadata={"status": "skipped_no_raw_table"},
+            )
+
+        raw_count = (
+            conn.execute(text("SELECT COUNT(*) FROM raw_jira.sprints")).scalar() or 0
+        )
+        clean_count = (
+            conn.execute(text("SELECT COUNT(*) FROM clean_jira.sprints")).scalar() or 0
+        )
+
+    if raw_count == 0:
+        return AssetCheckResult(passed=True, metadata={"status": "no_raw_data"})
+
+    loss_pct = max(0.0, ((raw_count - clean_count) / raw_count) * 100)
+    passed = loss_pct <= _MAX_ISSUE_LOSS_PCT
+
+    return AssetCheckResult(
+        passed=passed,
+        metadata={
+            "raw_sprints_count": raw_count,
+            "clean_sprints_count": clean_count,
+            "loss_pct": round(loss_pct, 2),
+            "threshold_pct": _MAX_ISSUE_LOSS_PCT,
+        },
+    )

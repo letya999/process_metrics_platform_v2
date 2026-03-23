@@ -665,3 +665,116 @@ class TestCleanJiraSprintChangelog:
         source = inspect.getsource(_asset_fn(clean.clean_jira_sprint_changelog))
         assert "status = 'closed'" in source or "status='closed'" in source
         assert "field_name" in source and "'status'" in source
+
+
+class TestJiraDataQuality:
+    """Tests for task 4.1: raw vs clean row count quality checks."""
+
+    def test_check_fails_when_raw_clean_issue_count_differs(self):
+        # raw=100 issues, clean=50 issues → 50% loss → should fail
+        conn = _SequencedConnection(
+            [
+                _Result(scalar_value=True),  # raw table exists
+                _Result(scalar_value=100),  # raw count
+                _Result(scalar_value=50),  # clean count
+            ]
+        )
+        result = _asset_fn(clean.check_raw_clean_issue_count)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is False
+        assert result.metadata["loss_pct"].value == 50.0
+
+    def test_check_passes_when_counts_match(self):
+        # raw=100, clean=100 → 0% loss → pass
+        conn = _SequencedConnection(
+            [
+                _Result(scalar_value=True),
+                _Result(scalar_value=100),
+                _Result(scalar_value=100),
+            ]
+        )
+        result = _asset_fn(clean.check_raw_clean_issue_count)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is True
+        assert result.metadata["loss_pct"].value == 0.0
+
+    def test_check_passes_within_threshold(self):
+        # raw=100, clean=96 → 4% loss → within 5% threshold → pass
+        conn = _SequencedConnection(
+            [
+                _Result(scalar_value=True),
+                _Result(scalar_value=100),
+                _Result(scalar_value=96),
+            ]
+        )
+        result = _asset_fn(clean.check_raw_clean_issue_count)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is True
+        assert result.metadata["loss_pct"].value == 4.0
+
+    def test_check_skips_when_no_raw_table(self):
+        conn = _SequencedConnection([_Result(scalar_value=False)])
+        result = _asset_fn(clean.check_raw_clean_issue_count)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is True
+        assert result.metadata["status"].text == "skipped_no_raw_table"
+
+    def test_sprint_check_fails_when_count_differs(self):
+        conn = _SequencedConnection(
+            [
+                _Result(scalar_value=True),
+                _Result(scalar_value=161),
+                _Result(scalar_value=100),
+            ]
+        )
+        result = _asset_fn(clean.check_raw_clean_sprint_count)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is False
+
+    def test_sprint_check_passes_when_counts_match(self):
+        conn = _SequencedConnection(
+            [
+                _Result(scalar_value=True),
+                _Result(scalar_value=161),
+                _Result(scalar_value=161),
+            ]
+        )
+        result = _asset_fn(clean.check_raw_clean_sprint_count)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is True
+
+
+class TestSecretsLeak:
+    """Tests for task 4.3: verify no API tokens/passwords are logged."""
+
+    def test_no_api_token_logged(self):
+        """raw.py must not log the actual token value."""
+        import inspect
+
+        from pipelines.assets.jira import raw
+
+        source = inspect.getsource(raw)
+        # Ensure no pattern like log.info(f"...{api_token}...") or similar
+        import re
+
+        # Look for log calls that embed environment variable values directly
+        secret_log_patterns = [
+            r"log\.(info|warning|error|debug)\([^)]*JIRA_API_TOKEN[^)]*\)",
+            r"log\.(info|warning|error|debug)\([^)]*api_token[^)]*\)",
+            r"log\.(info|warning|error|debug)\([^)]*password[^)]*\)",
+        ]
+        for pattern in secret_log_patterns:
+            matches = re.findall(pattern, source, re.IGNORECASE)
+            assert not matches, f"Potential secret in log: {matches}"
+
+    def test_env_not_tracked_in_git(self):
+        """Verify .env is listed in .gitignore."""
+        with open(".gitignore") as f:
+            gitignore = f.read()
+        assert ".env" in gitignore
