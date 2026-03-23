@@ -78,6 +78,35 @@ CREATE TABLE IF NOT EXISTS clean_jira.issue_statuses (
 COMMENT ON TABLE clean_jira.issue_statuses IS 'Possible statuses for Jira issues';
 COMMENT ON COLUMN clean_jira.issue_statuses.category IS 'Broad category of the status (to_do, in_progress, done)';
 
+-- Issue Priorities
+-- Defines possible priorities for issues
+CREATE TABLE IF NOT EXISTS clean_jira.issue_priorities (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id uuid NOT NULL REFERENCES clean_jira.projects(id) ON DELETE CASCADE,
+    external_id text NOT NULL,                                -- Jira priority ID
+    name text NOT NULL,                                       -- Priority name (e.g., High, Medium, Low)
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(project_id, external_id),
+    UNIQUE(project_id, name)
+);
+
+COMMENT ON TABLE clean_jira.issue_priorities IS 'Possible priorities for Jira issues';
+
+-- Issue Resolutions
+-- Defines possible resolutions for issues
+CREATE TABLE IF NOT EXISTS clean_jira.issue_resolutions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id uuid NOT NULL REFERENCES clean_jira.projects(id) ON DELETE CASCADE,
+    external_id text NOT NULL,                                -- Jira resolution ID
+    name text NOT NULL,                                       -- Resolution name (e.g., Done, Canceled)
+    description text,                                         -- Resolution description
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(project_id, external_id),
+    UNIQUE(project_id, name)
+);
+
+COMMENT ON TABLE clean_jira.issue_resolutions IS 'Possible resolutions for Jira issues';
+
 -- ----------------------------------------------------------------------------
 -- JIRA USERS
 -- ----------------------------------------------------------------------------
@@ -112,6 +141,7 @@ CREATE TABLE IF NOT EXISTS clean_jira.issues (
     description text,                                        -- Issue description
     type_id uuid NOT NULL REFERENCES clean_jira.issue_types(id),
     status_id uuid NOT NULL REFERENCES clean_jira.issue_statuses(id),
+    priority_id uuid REFERENCES clean_jira.issue_priorities(id),
     parent_id uuid REFERENCES clean_jira.issues(id),         -- Parent issue (for subtasks)
     jira_created_at timestamptz NOT NULL,                    -- When issue was created in Jira
     jira_updated_at timestamptz NOT NULL,                    -- When issue was last updated in Jira
@@ -329,6 +359,33 @@ CREATE TABLE IF NOT EXISTS clean_jira.field_value_changelog (
 COMMENT ON TABLE clean_jira.field_value_changelog IS 'History of changes to custom field values';
 
 -- ----------------------------------------------------------------------------
+-- LABELS
+-- ----------------------------------------------------------------------------
+
+-- Labels
+-- Stores unique labels used in Jira projects
+CREATE TABLE IF NOT EXISTS clean_jira.labels (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id uuid NOT NULL REFERENCES clean_jira.projects(id) ON DELETE CASCADE,
+    name text NOT NULL,                   -- Label name
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(project_id, name)
+);
+
+COMMENT ON TABLE clean_jira.labels IS 'Unique labels used in Jira projects';
+
+-- Issue Labels
+-- Links issues to labels
+CREATE TABLE IF NOT EXISTS clean_jira.issue_labels (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    issue_id uuid NOT NULL REFERENCES clean_jira.issues(id) ON DELETE CASCADE,
+    label_id uuid NOT NULL REFERENCES clean_jira.labels(id) ON DELETE CASCADE,
+    UNIQUE(issue_id, label_id)
+);
+
+COMMENT ON TABLE clean_jira.issue_labels IS 'Links issues to labels';
+
+-- ----------------------------------------------------------------------------
 -- BOARDS
 -- ----------------------------------------------------------------------------
 
@@ -401,6 +458,25 @@ CREATE TABLE IF NOT EXISTS clean_jira.comment_issues (
 COMMENT ON TABLE clean_jira.comment_issues IS 'Links comments to issues';
 
 -- ----------------------------------------------------------------------------
+-- WORKLOGS
+-- ----------------------------------------------------------------------------
+
+-- Worklogs
+-- Stores work logs/time entries for issues
+CREATE TABLE IF NOT EXISTS clean_jira.worklogs (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    issue_id uuid NOT NULL REFERENCES clean_jira.issues(id) ON DELETE CASCADE,
+    external_id text NOT NULL,            -- Jira worklog ID
+    author_id uuid REFERENCES clean_jira.jira_users(id),
+    time_spent_seconds int NOT NULL,      -- Time spent in seconds
+    started_at timestamptz NOT NULL,      -- When work started
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(issue_id, external_id)
+);
+
+COMMENT ON TABLE clean_jira.worklogs IS 'Work logs/time entries for issues';
+
+-- ----------------------------------------------------------------------------
 -- ISSUE RELATIONS
 -- ----------------------------------------------------------------------------
 
@@ -449,6 +525,25 @@ CREATE TABLE IF NOT EXISTS clean_jira.issue_comment_blockings (
 
 COMMENT ON TABLE clean_jira.issue_comment_blockings IS 'Tracks blocking issues mentioned in comments';
 COMMENT ON COLUMN clean_jira.issue_comment_blockings.is_resolved IS 'Whether the blocking issue has been resolved';
+
+-- ----------------------------------------------------------------------------
+-- VIEWS
+-- ----------------------------------------------------------------------------
+
+-- Unique Users View
+-- Provides a list of unique Jira users across all projects
+CREATE OR REPLACE VIEW clean_jira.v_unique_users AS
+SELECT DISTINCT ON (external_id)
+    id,
+    project_id,
+    external_id,
+    display_name,
+    created_at,
+    updated_at
+FROM clean_jira.jira_users
+ORDER BY external_id, updated_at DESC;
+
+COMMENT ON VIEW clean_jira.v_unique_users IS 'Unique Jira users across all projects, deduplicated by external_id';
 
 -- ============================================================================
 -- INDEXES

@@ -120,6 +120,89 @@ def clean_jira_issue_types(
 
 @asset(
     group_name="jira_clean",
+    deps=["raw_jira_data", "clean_jira_projects"],
+    description="Sync Jira issue priorities to clean layer",
+    compute_kind="sql",
+)
+def clean_jira_priorities(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync issue priorities from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        context.log.info("Syncing issue priorities...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.issue_priorities (
+                project_id,
+                external_id,
+                name
+            )
+            SELECT DISTINCT
+                p.id as project_id,
+                r.fields__priority__id as external_id,
+                r.fields__priority__name as name
+            FROM raw_jira.issues r
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            WHERE r.fields__priority__id IS NOT NULL
+            ON CONFLICT (project_id, external_id) DO UPDATE SET
+                name = EXCLUDED.name
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["raw_jira_data", "clean_jira_projects"],
+    description="Sync Jira issue resolutions to clean layer",
+    compute_kind="sql",
+)
+def clean_jira_resolutions(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync issue resolutions from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        context.log.info("Syncing issue resolutions...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.issue_resolutions (
+                project_id,
+                external_id,
+                name,
+                description
+            )
+            SELECT DISTINCT
+                p.id as project_id,
+                r.fields__resolution__id as external_id,
+                r.fields__resolution__name as name,
+                r.fields__resolution__description as description
+            FROM raw_jira.issues r
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            WHERE r.fields__resolution__id IS NOT NULL
+            ON CONFLICT (project_id, external_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                description = EXCLUDED.description
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
     deps=["raw_jira_data"],
     description="Sync Jira issue statuses to clean layer",
     compute_kind="sql",
@@ -282,6 +365,8 @@ def clean_jira_issue_statuses(
         "clean_jira_projects",
         "clean_jira_issue_types",
         "clean_jira_issue_statuses",
+        "clean_jira_priorities",
+        "clean_jira_resolutions",
     ],
     description="Transform raw Jira issues to clean normalized format",
     compute_kind="sql",
@@ -467,7 +552,9 @@ def clean_jira_issues(
             AND column_name IN (
                 'rendered_fields__description',
                 'fields__resolutiondate',
-                'fields__parent__id'
+                'fields__parent__id',
+                'fields__priority__id',
+                'fields__resolution__id'
             )
         """
             )
@@ -477,6 +564,8 @@ def clean_jira_issues(
         has_description = "rendered_fields__description" in column_names
         has_resolutiondate = "fields__resolutiondate" in column_names
         has_parent_id = "fields__parent__id" in column_names
+        has_priority_id = "fields__priority__id" in column_names
+        has_resolution_id = "fields__resolution__id" in column_names
 
         description_col = (
             "r.rendered_fields__description" if has_description else "NULL::text"
@@ -487,6 +576,20 @@ def clean_jira_issues(
         parent_id_raw_col = (
             "r.fields__parent__id::text" if has_parent_id else "NULL::text"
         )
+
+        priority_join = (
+            "LEFT JOIN clean_jira.issue_priorities ip ON ip.project_id = p.id AND ip.external_id = r.fields__priority__id"
+            if has_priority_id
+            else ""
+        )
+        priority_col = "ip.id" if has_priority_id else "NULL::uuid"
+
+        resolution_join = (
+            "LEFT JOIN clean_jira.issue_resolutions ir ON ir.project_id = p.id AND ir.external_id = r.fields__resolution__id"
+            if has_resolution_id
+            else ""
+        )
+        resolution_col = "ir.id" if has_resolution_id else "NULL::uuid"
 
         issues_result = conn.execute(
             text(
@@ -499,6 +602,8 @@ def clean_jira_issues(
                 description,
                 type_id,
                 status_id,
+                priority_id,
+                resolution_id,
                 jira_created_at,
                 jira_updated_at,
                 jira_resolved_at,
@@ -513,6 +618,8 @@ def clean_jira_issues(
                 {description_col} as description,
                 it.id as type_id,
                 ist.id as status_id,
+                {priority_col} as priority_id,
+                {resolution_col} as resolution_id,
                 r.fields__created::timestamptz as jira_created_at,
                 r.fields__updated::timestamptz as jira_updated_at,
                 {resolutiondate_col}::timestamptz as jira_resolved_at,
@@ -524,12 +631,16 @@ def clean_jira_issues(
                 AND it.external_id = r.fields__issuetype__id
             JOIN clean_jira.issue_statuses ist ON ist.project_id = p.id
                 AND ist.external_id = r.fields__status__id
+            {priority_join}
+            {resolution_join}
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 external_key = EXCLUDED.external_key,
                 summary = EXCLUDED.summary,
                 description = EXCLUDED.description,
                 type_id = EXCLUDED.type_id,
                 status_id = EXCLUDED.status_id,
+                priority_id = EXCLUDED.priority_id,
+                resolution_id = EXCLUDED.resolution_id,
                 jira_updated_at = EXCLUDED.jira_updated_at,
                 jira_resolved_at = EXCLUDED.jira_resolved_at,
                 db_updated_at = now()
@@ -563,6 +674,184 @@ def clean_jira_issues(
         "status": "success",
         "issues_synced": len(issues_synced),
     }
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["raw_jira_data", "clean_jira_projects", "clean_jira_issues"],
+    description="Extract labels from raw Jira issues",
+    compute_kind="sql",
+)
+def clean_jira_labels(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync unique labels from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        # Check if labels table exists in raw
+        table_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira'
+                  AND table_name = 'issues__fields__labels'
+            )
+        """
+            )
+        ).scalar()
+
+        if not table_exists:
+            context.log.warning("Table raw_jira.issues__fields__labels not found")
+            return {"status": "skipped", "reason": "no_labels_table"}
+
+        context.log.info("Syncing unique labels...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.labels (
+                project_id,
+                name
+            )
+            SELECT DISTINCT
+                p.id as project_id,
+                rl.value as name
+            FROM raw_jira.issues__fields__labels rl
+            JOIN raw_jira.issues r ON rl._dlt_parent_id = r._dlt_id
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            WHERE rl.value IS NOT NULL
+            ON CONFLICT (project_id, name) DO NOTHING
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["clean_jira_labels", "clean_jira_issues"],
+    description="Link issues to labels",
+    compute_kind="sql",
+)
+def clean_jira_issue_labels(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync issue-label relationships."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        # Check if raw labels table exists
+        table_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira'
+                  AND table_name = 'issues__fields__labels'
+            )
+        """
+            )
+        ).scalar()
+
+        if not table_exists:
+            return {"status": "skipped", "reason": "no_labels_table"}
+
+        context.log.info("Syncing issue labels...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.issue_labels (
+                issue_id,
+                label_id
+            )
+            SELECT DISTINCT
+                i.id as issue_id,
+                l.id as label_id
+            FROM raw_jira.issues__fields__labels rl
+            JOIN raw_jira.issues r ON rl._dlt_parent_id = r._dlt_id
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
+            JOIN clean_jira.labels l ON l.project_id = p.id AND l.name = rl.value
+            ON CONFLICT (issue_id, label_id) DO NOTHING
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
+
+
+@asset(
+    group_name="jira_clean",
+    deps=["raw_jira_data", "clean_jira_issues"],
+    description="Extract worklogs from raw Jira issues",
+    compute_kind="sql",
+)
+def clean_jira_worklogs(
+    context: AssetExecutionContext,
+    database: DatabaseResource,
+) -> dict[str, Any]:
+    """Sync worklogs from raw to clean."""
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        # Check if worklogs table exists
+        table_exists = conn.execute(
+            text(
+                """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'raw_jira'
+                  AND table_name = 'issues__fields__worklog__worklogs'
+            )
+        """
+            )
+        ).scalar()
+
+        if not table_exists:
+            context.log.warning(
+                "Table raw_jira.issues__fields__worklog__worklogs not found"
+            )
+            return {"status": "skipped", "reason": "no_worklogs_table"}
+
+        context.log.info("Syncing worklogs...")
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.worklogs (
+                issue_id,
+                external_id,
+                author_id,
+                time_spent_seconds,
+                started_at
+            )
+            SELECT DISTINCT
+                i.id as issue_id,
+                rw.id as external_id,
+                u.id as author_id,
+                rw.time_spent_seconds::int,
+                rw.started::timestamptz as started_at
+            FROM raw_jira.issues__fields__worklog__worklogs rw
+            JOIN raw_jira.issues r ON rw._dlt_parent_id = r._dlt_id
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
+            LEFT JOIN clean_jira.jira_users u ON u.project_id = p.id AND u.external_id = rw.author__account_id
+            WHERE rw.id IS NOT NULL
+            ON CONFLICT (issue_id, external_id) DO UPDATE SET
+                author_id = EXCLUDED.author_id,
+                time_spent_seconds = EXCLUDED.time_spent_seconds,
+                started_at = EXCLUDED.started_at
+            RETURNING id
+        """
+            )
+        )
+        count = len(result.fetchall())
+        conn.commit()
+    return {"status": "success", "count": count}
 
 
 @asset(

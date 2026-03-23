@@ -373,6 +373,7 @@ def calculate_activation_velocity(
     # 2. Daily activations (moving FROM initial status)
     # BUG-1: Slim changelog to avoid 'id' collision in cross-join
     status_slim = issue_status_changelog_df.select(
+        # Note: from_status_id may be NULL (e.g. 30% of Jira changelog for initial status)
         ["issue_id", "from_status_id", "to_status_id", "changed_at"]
     )
     cl_with_dates = status_slim.join(

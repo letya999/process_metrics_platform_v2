@@ -54,6 +54,7 @@ def calculate_lead_time_per_issue(
     Args:
         issues_df: Issue details (id, project_id, key, jira_created_at, jira_resolved_at)
         status_changelog_df: Status change history (issue_id, from_status_id, to_status_id, changed_at)
+    # Note: from_status_id may be NULL (e.g. 30% of Jira changelog for initial status)
         middle_status_ids: List of ALL status IDs between "In Progress" and "Done" (inclusive start, exclusive end)
         end_status_ids: List of "Done" status IDs
 

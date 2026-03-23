@@ -205,6 +205,7 @@ def calculate_backlog_growth(
         changelog_with_cat = (
             changelog_df.join(
                 issue_statuses_df.select(["id", "category"]),
+                # Note: from_status_id may be NULL (e.g. 30% of Jira changelog for initial status)
                 left_on="from_status_id",
                 right_on="id",
                 how="left",

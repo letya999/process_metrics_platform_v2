@@ -134,6 +134,8 @@ def test_clean_jira_issues_success():
                     ("rendered_fields__description",),
                     ("fields__resolutiondate",),
                     ("fields__parent__id",),
+                    ("fields__priority__id",),
+                    ("fields__resolution__id",),
                 ]
             ),
             _Result(fetchall_data=[(1,), (2,), (3,)]),
@@ -143,6 +145,63 @@ def test_clean_jira_issues_success():
     out = _asset_fn(clean.clean_jira_issues)(_DummyContext(), _DummyDatabase(conn))
     assert out == {"status": "success", "issues_synced": 3}
     assert conn.commits == 1
+
+
+def test_clean_jira_labels_success():
+    # clean_jira_labels
+    conn = _SequencedConnection(
+        [
+            _Result(scalar_value=True),  # table exists
+            _Result(fetchall_data=[(1,), (2,)]),  # INSERT
+        ]
+    )
+    out = _asset_fn(clean.clean_jira_labels)(_DummyContext(), _DummyDatabase(conn))
+    assert out["status"] == "success"
+    assert out["count"] == 2
+    assert conn.commits == 1
+
+    # clean_jira_issue_labels
+    conn = _SequencedConnection(
+        [
+            _Result(scalar_value=True),  # table exists
+            _Result(fetchall_data=[(1,), (2,), (3,)]),  # INSERT
+        ]
+    )
+    out = _asset_fn(clean.clean_jira_issue_labels)(
+        _DummyContext(), _DummyDatabase(conn)
+    )
+    assert out["status"] == "success"
+    assert out["count"] == 3
+    assert conn.commits == 1
+
+
+def test_clean_jira_worklogs_success():
+    conn = _SequencedConnection(
+        [
+            _Result(scalar_value=True),  # table exists
+            _Result(fetchall_data=[(1,), (2,)]),  # INSERT
+        ]
+    )
+    out = _asset_fn(clean.clean_jira_worklogs)(_DummyContext(), _DummyDatabase(conn))
+    assert out["status"] == "success"
+    assert out["count"] == 2
+    assert conn.commits == 1
+
+
+def test_clean_jira_priorities_resolutions_success():
+    # priorities
+    conn_p = _SequencedConnection([_Result(fetchall_data=[(1,)])])
+    out_p = _asset_fn(clean.clean_jira_priorities)(
+        _DummyContext(), _DummyDatabase(conn_p)
+    )
+    assert out_p["count"] == 1
+
+    # resolutions
+    conn_r = _SequencedConnection([_Result(fetchall_data=[(1,), (2,)])])
+    out_r = _asset_fn(clean.clean_jira_resolutions)(
+        _DummyContext(), _DummyDatabase(conn_r)
+    )
+    assert out_r["count"] == 2
 
 
 def test_clean_jira_sprints_success_and_fallback():

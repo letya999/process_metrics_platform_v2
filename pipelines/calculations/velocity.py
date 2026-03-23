@@ -591,6 +591,7 @@ def identify_completed_issues(
                     future_changes.sort("changed_at", descending=False)  # Ascending
                     .unique(subset=["issue_id", "sprint_id"], keep="first")
                     .select(
+                        # Note: from_status_id may be NULL (e.g. 30% of Jira changelog for initial status)
                         ["issue_id", "sprint_id", "from_status_id"]
                     )  # status BEFORE the change
                 )
