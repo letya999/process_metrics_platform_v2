@@ -59,7 +59,7 @@ def calculate_aging_extended(
         engine,
         """
         SELECT i.id, i.project_id, i.external_key as key, it.name as type_name,
-               i.status_id, i.updated_at
+               i.status_id, i.jira_updated_at as updated_at
         FROM clean_jira.issues i
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
         """,
