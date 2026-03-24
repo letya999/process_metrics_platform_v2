@@ -159,6 +159,178 @@ def test_calculate_sprint_burndown_basic():
     )
 
 
+def test_calculate_sprint_burndown_duplicate_done_transitions():
+    """Regression: issue going Canceled -> Done (both done statuses) within seconds
+    must not be double-counted. Old code multiplied SP via Cartesian product."""
+    sprints = pl.DataFrame(
+        {
+            "id": ["S1"],
+            "project_id": ["P1"],
+            "name": ["Sprint 1"],
+            "start_date": [datetime(2024, 1, 1)],
+            "end_date": [datetime(2024, 1, 3)],
+            "complete_date": [datetime(2024, 1, 3)],
+        }
+    )
+    sprint_issues = pl.DataFrame({"issue_id": ["I1", "I2"], "sprint_id": ["S1", "S1"]})
+    sprint_changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I2"],
+            "sprint_id": ["S1", "S1"],
+            "action": ["added", "added"],
+            "changed_at": [datetime(2023, 12, 31), datetime(2023, 12, 31)],
+        }
+    )
+    # I1 transitions: Canceled at 10:00, then Done at 10:01 (both are done statuses)
+    status_changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I1"],
+            "to_status_id": ["CANCELED", "DONE"],
+            "changed_at": [
+                datetime(2024, 1, 2, 10, 0),
+                datetime(2024, 1, 2, 10, 1),
+            ],
+        }
+    )
+    issues = pl.DataFrame(
+        {
+            "id": ["I1", "I2"],
+            "project_id": ["P1", "P1"],
+            "type_name": ["Task", "Task"],
+            "jira_created_at": [datetime(2023, 12, 1), datetime(2023, 12, 1)],
+        }
+    )
+    field_values = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I2"],
+            "field_key_id": ["SP", "SP"],
+            "json_value": ["5", "3"],
+        }
+    )
+    field_keys = pl.DataFrame(
+        {"id": ["SP"], "external_key": ["customfield_10036"], "name": ["Story Points"]}
+    )
+    field_value_changelog = pl.DataFrame(
+        schema={
+            "issue_id": pl.Utf8,
+            "field_key_id": pl.Utf8,
+            "old_value": pl.Utf8,
+            "new_value": pl.Utf8,
+            "change_time": pl.Datetime,
+        }
+    )
+
+    result = logic.calculate_sprint_burndown(
+        sprints,
+        sprint_issues,
+        sprint_changelog,
+        status_changelog,
+        ["CANCELED", "DONE"],
+        issues,
+        field_values,
+        field_keys,
+        field_value_changelog,
+    )
+
+    # Day 1: 8 remaining (both issues in scope, neither done)
+    # Day 2: I1 done (last status = DONE) -> 3 remaining
+    # Day 3: 3 remaining
+    assert (
+        result.filter(pl.col("time_date") == date(2024, 1, 1))[0, "remaining_sp"] == 8.0
+    )
+    assert (
+        result.filter(pl.col("time_date") == date(2024, 1, 2))[0, "remaining_sp"] == 3.0
+    )
+    assert (
+        result.filter(pl.col("time_date") == date(2024, 1, 3))[0, "remaining_sp"] == 3.0
+    )
+
+
+def test_calculate_sprint_burndown_scope_changes():
+    """Regression: issue removed mid-sprint must reduce remaining SP on removal day."""
+    sprints = pl.DataFrame(
+        {
+            "id": ["S1"],
+            "project_id": ["P1"],
+            "name": ["Sprint 1"],
+            "start_date": [datetime(2024, 1, 1)],
+            "end_date": [datetime(2024, 1, 4)],
+            "complete_date": [datetime(2024, 1, 4)],
+        }
+    )
+    sprint_issues = pl.DataFrame({"issue_id": ["I1", "I2"], "sprint_id": ["S1", "S1"]})
+    # I1 added at sprint start, removed on day 2; I2 added at sprint start
+    sprint_changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I1", "I2"],
+            "sprint_id": ["S1", "S1", "S1"],
+            "action": ["added", "removed", "added"],
+            "changed_at": [
+                datetime(2024, 1, 1, 0, 0),
+                datetime(2024, 1, 2, 12, 0),
+                datetime(2024, 1, 1, 0, 0),
+            ],
+        }
+    )
+    status_changelog = pl.DataFrame(
+        schema={"issue_id": pl.Utf8, "to_status_id": pl.Utf8, "changed_at": pl.Datetime}
+    )
+    issues = pl.DataFrame(
+        {
+            "id": ["I1", "I2"],
+            "project_id": ["P1", "P1"],
+            "type_name": ["Task", "Task"],
+            "jira_created_at": [datetime(2023, 12, 1), datetime(2023, 12, 1)],
+        }
+    )
+    field_values = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I2"],
+            "field_key_id": ["SP", "SP"],
+            "json_value": ["8", "3"],
+        }
+    )
+    field_keys = pl.DataFrame(
+        {"id": ["SP"], "external_key": ["customfield_10036"], "name": ["Story Points"]}
+    )
+    field_value_changelog = pl.DataFrame(
+        schema={
+            "issue_id": pl.Utf8,
+            "field_key_id": pl.Utf8,
+            "old_value": pl.Utf8,
+            "new_value": pl.Utf8,
+            "change_time": pl.Datetime,
+        }
+    )
+
+    result = logic.calculate_sprint_burndown(
+        sprints,
+        sprint_issues,
+        sprint_changelog,
+        status_changelog,
+        ["DONE"],
+        issues,
+        field_values,
+        field_keys,
+        field_value_changelog,
+    )
+
+    # Day 1: I1(8) + I2(3) = 11 remaining
+    # Day 2: I1 removed -> only I2(3) = 3 remaining
+    # Day 3: 3 remaining
+    # Day 4: 3 remaining
+    assert (
+        result.filter(pl.col("time_date") == date(2024, 1, 1))[0, "remaining_sp"]
+        == 11.0
+    )
+    assert (
+        result.filter(pl.col("time_date") == date(2024, 1, 2))[0, "remaining_sp"] == 3.0
+    )
+    assert (
+        result.filter(pl.col("time_date") == date(2024, 1, 3))[0, "remaining_sp"] == 3.0
+    )
+
+
 def test_calculate_activation_velocity_basic():
     sprints = pl.DataFrame(
         {

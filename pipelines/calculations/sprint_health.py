@@ -214,112 +214,121 @@ def calculate_sprint_burndown(
 ) -> pl.DataFrame:
     """
     Calculate remaining SP per day for each sprint.
+
+    Algorithm: daily snapshot approach matching Jira burndown behavior.
+    For each day D:
+      - scope(D) = issues whose last sprint changelog action <= D is "added"
+      - done(D)  = issues in scope(D) whose last status transition <= D is a done status
+      - remaining(D) = sum(SP of scope(D) issues not in done(D))
+
+    This correctly handles scope changes (mid-sprint adds/removes) and avoids
+    the Cartesian product bug that occurs when an issue has multiple done-status
+    transitions (e.g., Canceled -> Done within seconds).
     """
     current_sp_df = extract_story_points(issues_df, field_values_df, field_keys_df)
 
-    # 1. Total planned SP (commitment)
-    commitment_df = identify_sprint_commitment(
-        sprint_changelog_df, sprints_df, issues_df, sprint_issues_df
-    )
-    commitment_with_sp = determine_story_points_at_date(
-        commitment_df,
-        sprints_df,
-        current_sp_df,
-        field_value_changelog_df,
-        field_keys_df,
-        date_col="start_date",
+    # Non-sub-task issue IDs
+    non_sub_ids = set(
+        issues_df.filter(
+            ~pl.col("type_name").cast(pl.Utf8).str.to_lowercase().str.contains("sub")
+        )["id"].to_list()
     )
 
-    total_planned_sp = commitment_with_sp.group_by("sprint_id").agg(
-        pl.col("story_points").sum().alias("total_sp")
-    )
+    done_status_lower = {s.lower() for s in done_status_ids}
 
-    # 2. Daily completions
-    # We need issues that transitioned to done status DURING the sprint
-    # BUG-1: Slim changelog to avoid 'id' collision in cross-join
-    status_slim = issue_status_changelog_df.select(
-        ["issue_id", "to_status_id", "changed_at"]
-    )
-    cl_with_dates = status_slim.join(
-        sprints_df.select(["id", "start_date", "end_date"]),
-        how="cross",  # Note: small optimization could be done here but cross join is simple for logic
-    ).filter(
-        (pl.col("changed_at") > pl.col("start_date"))
-        & (pl.col("changed_at") <= pl.col("end_date"))
-        & (
-            pl.col("to_status_id")
-            .cast(pl.Utf8)
-            .str.to_lowercase()
-            .is_in([s.lower() for s in done_status_ids])
-        )
-    )
+    # Build SP lookup: issue_id -> story_points
+    sp_lookup: dict = {}
+    for row in current_sp_df.to_dicts():
+        sp_lookup[row["issue_id"]] = float(row.get("story_points") or 0.0)
 
-    # Ensure issues were in the sprint
-    cl_with_dates = cl_with_dates.join(
-        sprint_issues_df,
-        left_on=["issue_id", "id"],
-        right_on=["issue_id", "sprint_id"],
-        how="inner",
-    )
-
-    # Get SP for these issues at end of sprint
-    # BUG-2: Ensure complete_date exists
-    sprints_safe = _ensure_complete_date(sprints_df)
-    completions_with_sp = determine_story_points_at_date(
-        cl_with_dates.select(["issue_id", "id"]).rename({"id": "sprint_id"}),
-        sprints_safe.with_columns(
-            pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date")
-        ),
-        current_sp_df,
-        field_value_changelog_df,
-        field_keys_df,
-        date_col="effective_end_date",
-    )
-
-    # Add change_time to completions
-    completions_with_sp = completions_with_sp.join(
-        cl_with_dates.select(["issue_id", "id", "changed_at"]).rename(
-            {"id": "sprint_id"}
-        ),
-        on=["issue_id", "sprint_id"],
-        how="inner",
-    )
-
-    completions_with_sp = completions_with_sp.with_columns(
-        pl.col("changed_at").dt.date().alias("completion_date")
-    )
-
-    # 3. Generate daily rows
     all_rows = []
     for sprint in sprints_df.to_dicts():
         sprint_id = sprint["id"]
         start_date = _to_date(sprint["start_date"])
         end_date = _to_date(sprint.get("complete_date") or sprint.get("end_date"))
 
-        sprint_total_sp = total_planned_sp.filter(pl.col("sprint_id") == sprint_id)[
-            "total_sp"
-        ]
-        sprint_total_sp = sprint_total_sp[0] if not sprint_total_sp.is_empty() else 0.0
+        # Sprint scope changelog for this sprint only
+        s_cl = sprint_changelog_df.filter(pl.col("sprint_id") == sprint_id)
 
-        sprint_completions = completions_with_sp.filter(
-            pl.col("sprint_id") == sprint_id
+        # All issue IDs ever mentioned for this sprint (scope + sprint_issues fallback)
+        all_sprint_issue_ids = set(
+            sprint_issues_df.filter(pl.col("sprint_id") == sprint_id)[
+                "issue_id"
+            ].to_list()
+        )
+        if not s_cl.is_empty():
+            all_sprint_issue_ids |= set(s_cl["issue_id"].to_list())
+        all_sprint_issue_ids &= non_sub_ids
+
+        if not all_sprint_issue_ids:
+            continue
+
+        # Status changelog for these issues only
+        s_status = issue_status_changelog_df.filter(
+            pl.col("issue_id").is_in(list(all_sprint_issue_ids))
         )
 
         current_date = start_date
-        cumulative_done = 0.0
         while current_date <= end_date:
-            done_today = sprint_completions.filter(
-                pl.col("completion_date") == current_date
-            )["story_points"].sum()
-            cumulative_done += done_today or 0.0
-            remaining = max(0.0, sprint_total_sp - cumulative_done)
+            # Scope: last sprint action per issue up to end of this day is "added"
+            if not s_cl.is_empty():
+                scope_ids = (
+                    set(
+                        s_cl.filter(pl.col("changed_at").dt.date() <= current_date)
+                        .sort("changed_at", descending=True)
+                        .unique(subset=["issue_id"], keep="first")
+                        .filter(pl.col("action") == "added")["issue_id"]
+                        .to_list()
+                    )
+                    & non_sub_ids
+                )
+            else:
+                # No changelog: all sprint_issues are in scope for every day
+                scope_ids = all_sprint_issue_ids
+
+            if not scope_ids:
+                all_rows.append(
+                    {
+                        "project_id": sprint["project_id"],
+                        "iteration_id": sprint_id,
+                        "time_date": current_date,
+                        "remaining_sp": 0.0,
+                    }
+                )
+                current_date += timedelta(days=1)
+                continue
+
+            # Done: last status per in-scope issue up to end of this day is a done status
+            done_ids: set = set()
+            if not s_status.is_empty():
+                last_status = (
+                    s_status.filter(
+                        pl.col("issue_id").is_in(list(scope_ids))
+                        & (pl.col("changed_at").dt.date() <= current_date)
+                    )
+                    .sort("changed_at", descending=True)
+                    .unique(subset=["issue_id"], keep="first")
+                )
+                if not last_status.is_empty():
+                    done_ids = set(
+                        last_status.filter(
+                            pl.col("to_status_id")
+                            .cast(pl.Utf8)
+                            .str.to_lowercase()
+                            .is_in(list(done_status_lower))
+                        )["issue_id"].to_list()
+                    )
+
+            remaining = sum(
+                sp_lookup.get(iid, 0.0) for iid in scope_ids if iid not in done_ids
+            )
 
             all_rows.append(
                 {
                     "project_id": sprint["project_id"],
-                    "iteration_id": sprint["id"],
+                    "iteration_id": sprint_id,
                     "time_date": current_date,
-                    "remaining_sp": remaining,
+                    "remaining_sp": float(remaining),
                 }
             )
             current_date += timedelta(days=1)
