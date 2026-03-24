@@ -13,14 +13,26 @@ class _DummyDatabase:
         return self._engine
 
 
+class _DummyLog:
+    def info(self, *_args, **_kwargs):
+        return None
+
+
+class _DummyContext:
+    def __init__(self):
+        self.log = _DummyLog()
+
+
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
 
 
 def test_calculate_sprint_health_skipped_no_sprints(monkeypatch):
+    monkeypatch.setattr(sprint_health, "get_definition_id", lambda *_a, **_k: "d1")
+    monkeypatch.setattr(sprint_health, "get_calculation_id", lambda *_a, **_k: "m1")
     monkeypatch.setattr(sprint_health, "read_table", lambda *_a, **_k: pl.DataFrame())
     out = _asset_fn(sprint_health.calculate_sprint_health)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "skipped"
 
@@ -37,6 +49,7 @@ def test_calculate_sprint_health_success(monkeypatch):
         "unestimated_closed_count": "m8",
         "field_value_sprint_pct": "m9",
     }
+    monkeypatch.setattr(sprint_health, "get_definition_id", lambda *_a, **_k: "d1")
     monkeypatch.setattr(
         sprint_health, "get_calculation_id", lambda _e, code: calc_ids[code]
     )
@@ -130,7 +143,7 @@ def test_calculate_sprint_health_success(monkeypatch):
             return pl.DataFrame(
                 {
                     "id": ["SET1"],
-                    "target_calculation_id": [params["calc_id"]],
+                    "target_calculation_id": [params["cid"]],
                     "project_id": [None],
                     "enabled": [True],
                     "settings_json": [
@@ -161,7 +174,7 @@ def test_calculate_sprint_health_success(monkeypatch):
         lambda *_a, **_k: pl.DataFrame(
             {
                 "project_id": ["P1"],
-                "start_date": [datetime(2026, 1, 1)],
+                "time_date": [datetime(2026, 1, 1)],
                 "iteration_id": ["S1"],
                 "added_count": [1],
                 "added_sp": [3.0],
@@ -232,7 +245,7 @@ def test_calculate_sprint_health_success(monkeypatch):
     )
 
     out = _asset_fn(sprint_health.calculate_sprint_health)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "success"
     assert out["rows_written"] > 0

@@ -126,10 +126,17 @@ def calculate_sprint_health(
     sp_field_key_id = sp_fields["id"][0] if not sp_fields.is_empty() else None
 
     lead_time_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
-    activation_rules = (
-        load_commitment_rules_for_calc(engine, "activation_velocity_pct")
-        or lead_time_rules
+    activation_rules_raw = load_commitment_rules_for_calc(
+        engine, "activation_velocity_pct"
     )
+    if isinstance(activation_rules_raw, pl.DataFrame):
+        activation_rules = (
+            activation_rules_raw
+            if not activation_rules_raw.is_empty()
+            else lead_time_rules
+        )
+    else:
+        activation_rules = activation_rules_raw or lead_time_rules
 
     # 2. Calculation functions
     def calculate_base_facts(
@@ -166,7 +173,7 @@ def calculate_sprint_health(
                     scope_changes.select(
                         [
                             "project_id",
-                            pl.col("start_date").alias("time_date"),
+                            pl.col("time_date"),
                             pl.col(col).alias("value"),
                             pl.lit("sprint").alias("entity_type"),
                             pl.col("iteration_id").alias("entity_id"),
@@ -251,7 +258,7 @@ def calculate_sprint_health(
                         sub_field_values,
                         field_keys_df,
                         sub_field_changelog,
-                        act_pts["start_status_ids"][0],
+                        act_pts["start_status_ids"],
                     )
                     if not activation.is_empty():
                         results.append(

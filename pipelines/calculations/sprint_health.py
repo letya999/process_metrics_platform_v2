@@ -31,6 +31,87 @@ def _ensure_complete_date(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 
+def _determine_story_points_at_event_time(
+    events_df: pl.DataFrame,
+    current_sp_df: pl.DataFrame,
+    field_value_changelog_df: pl.DataFrame,
+    field_keys_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """Determine Story Points at exact event timestamp (`changed_at`) for each row."""
+    if events_df.is_empty():
+        return events_df.select(["issue_id", "sprint_id", "changed_at"]).with_columns(
+            pl.lit(0.0).alias("story_points")
+        )
+
+    sp_fields = field_keys_df.filter(
+        (
+            pl.col("external_key").is_in(
+                ["customfield_10036", "customfield_10016", "story_points"]
+            )
+        )
+        | (pl.col("name").str.to_lowercase().str.contains("story point"))
+    )
+
+    base = events_df.select(["issue_id", "sprint_id", "changed_at"]).join(
+        current_sp_df, on="issue_id", how="left"
+    )
+
+    if sp_fields.is_empty() or field_value_changelog_df.is_empty():
+        return base.with_columns(pl.col("story_points").fill_null(0.0))
+
+    sp_field_ids = sp_fields["id"].to_list()
+    changes = field_value_changelog_df.filter(
+        pl.col("field_key_id").is_in(sp_field_ids)
+    )
+    if changes.is_empty():
+        return base.with_columns(pl.col("story_points").fill_null(0.0))
+
+    relevant_issues = events_df.select("issue_id").unique()
+    changes_filtered = changes.join(relevant_issues, on="issue_id", how="inner")
+
+    joined = events_df.select(["issue_id", "sprint_id", "changed_at"]).join(
+        changes_filtered, on="issue_id", how="left", suffix="_sp"
+    )
+
+    corrections = (
+        joined.filter(
+            pl.col("changed_at_sp").is_not_null()
+            & (pl.col("changed_at_sp") > pl.col("changed_at"))
+        )
+        .sort("changed_at_sp", descending=False)
+        .unique(subset=["issue_id", "sprint_id", "changed_at"], keep="first")
+        .select(["issue_id", "sprint_id", "changed_at", "old_value"])
+        .with_columns(
+            pl.when(
+                pl.col("old_value").is_not_null()
+                & pl.col("old_value")
+                .cast(pl.Utf8)
+                .str.strip_chars()
+                .str.contains(r"^-?[0-9]+\.?[0-9]*$")
+            )
+            .then(
+                pl.col("old_value")
+                .cast(pl.Utf8)
+                .str.strip_chars()
+                .cast(pl.Float64, strict=False)
+            )
+            .otherwise(0.0)
+            .alias("historic_sp")
+        )
+        .select(["issue_id", "sprint_id", "changed_at", "historic_sp"])
+    )
+
+    return (
+        base.join(corrections, on=["issue_id", "sprint_id", "changed_at"], how="left")
+        .with_columns(
+            pl.coalesce(["historic_sp", "story_points"])
+            .fill_null(0.0)
+            .alias("story_points")
+        )
+        .select(["issue_id", "sprint_id", "changed_at", "story_points"])
+    )
+
+
 def calculate_sprint_scope_changes(
     sprints_df: pl.DataFrame,
     sprint_changelog_df: pl.DataFrame,
@@ -39,16 +120,14 @@ def calculate_sprint_scope_changes(
     field_keys_df: pl.DataFrame,
     field_value_changelog_df: pl.DataFrame,
 ) -> pl.DataFrame:
-    """
-    Calculate issues added and removed during the sprint.
-    """
+    """Calculate daily added/removed scope events during the sprint."""
     if sprint_changelog_df.is_empty():
         return pl.DataFrame(
             schema={
                 "project_id": pl.Utf8,
                 "iteration_id": pl.Utf8,
                 "iteration_name": pl.Utf8,
-                "start_date": pl.Datetime,
+                "time_date": pl.Date,
                 "added_count": pl.Int64,
                 "added_sp": pl.Float64,
                 "removed_count": pl.Int64,
@@ -56,102 +135,131 @@ def calculate_sprint_scope_changes(
             }
         )
 
-    # Join changelog with sprint dates
+    sprints_safe = _ensure_complete_date(sprints_df).with_columns(
+        pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date")
+    )
+
     cl_with_dates = sprint_changelog_df.join(
-        sprints_df.select(["id", "start_date", "end_date"]),
+        sprints_safe.select(["id", "start_date", "effective_end_date"]),
         left_on="sprint_id",
         right_on="id",
         how="inner",
     )
 
-    # Added issues: action='added' AND change_time > sprint.start_date AND change_time <= sprint.end_date
     added_cl = cl_with_dates.filter(
         (pl.col("action") == "added")
         & (pl.col("changed_at") > pl.col("start_date"))
-        & (pl.col("changed_at") <= pl.col("end_date"))
+        & (pl.col("changed_at") <= pl.col("effective_end_date"))
     ).select(["issue_id", "sprint_id", "changed_at"])
 
-    # Removed issues: action='removed' AND change_time > sprint.start_date AND change_time <= sprint.end_date
     removed_cl = cl_with_dates.filter(
         (pl.col("action") == "removed")
         & (pl.col("changed_at") > pl.col("start_date"))
-        & (pl.col("changed_at") <= pl.col("end_date"))
+        & (pl.col("changed_at") <= pl.col("effective_end_date"))
     ).select(["issue_id", "sprint_id", "changed_at"])
 
-    # Calculate SP for added issues at the time they were added (or end of sprint as proxy)
-
-    # We need current_sp_df for determine_story_points_at_date
     current_sp_df = extract_story_points(issues_df, field_values_df, field_keys_df)
 
-    # For added issues, we use SP at the time of addition if possible,
-    # but determine_story_points_at_date works per sprint.
-    # Let's use the sprint end date as a proxy for SP value of scope creep.
-    sprints_safe = _ensure_complete_date(sprints_df)
-    sprints_with_eff_end = sprints_safe.with_columns(
-        pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date")
-    )
-
-    added_with_sp = determine_story_points_at_date(
-        added_cl.select(["issue_id", "sprint_id"]),
-        sprints_with_eff_end,
+    added_with_sp = _determine_story_points_at_event_time(
+        added_cl,
         current_sp_df,
         field_value_changelog_df,
         field_keys_df,
-        date_col="effective_end_date",
     )
 
-    removed_with_sp = determine_story_points_at_date(
-        removed_cl.select(["issue_id", "sprint_id"]),
-        sprints_with_eff_end,
+    removed_with_sp = _determine_story_points_at_event_time(
+        removed_cl,
         current_sp_df,
         field_value_changelog_df,
         field_keys_df,
-        date_col="effective_end_date",
     )
 
-    added_agg = added_with_sp.group_by("sprint_id").agg(
-        [
-            pl.col("issue_id").count().alias("added_count"),
-            pl.col("story_points").sum().alias("added_sp"),
-        ]
-    )
-
-    removed_agg = removed_with_sp.group_by("sprint_id").agg(
-        [
-            pl.col("issue_id").count().alias("removed_count"),
-            pl.col("story_points").sum().alias("removed_sp"),
-        ]
-    )
-
-    result = (
-        sprints_df.select(
+    added_agg = (
+        added_with_sp.with_columns(pl.col("changed_at").dt.date().alias("time_date"))
+        .group_by(["sprint_id", "time_date"])
+        .agg(
             [
-                "project_id",
-                pl.col("id").alias("iteration_id"),
-                pl.col("name").alias("iteration_name"),
-                "start_date",
-            ]
-        )
-        .join(added_agg, left_on="iteration_id", right_on="sprint_id", how="left")
-        .join(removed_agg, left_on="iteration_id", right_on="sprint_id", how="left")
-        .with_columns(
-            [
-                pl.col("added_count").fill_null(0),
-                pl.col("added_sp").fill_null(0.0),
-                pl.col("removed_count").fill_null(0),
-                pl.col("removed_sp").fill_null(0.0),
+                pl.col("issue_id").count().alias("added_count"),
+                pl.col("story_points").sum().alias("added_sp"),
             ]
         )
     )
 
-    return result
+    removed_agg = (
+        removed_with_sp.with_columns(pl.col("changed_at").dt.date().alias("time_date"))
+        .group_by(["sprint_id", "time_date"])
+        .agg(
+            [
+                pl.col("issue_id").count().alias("removed_count"),
+                pl.col("story_points").sum().alias("removed_sp"),
+            ]
+        )
+    )
+
+    added_daily = added_agg.with_columns(
+        [
+            pl.lit(0).alias("removed_count"),
+            pl.lit(0.0).alias("removed_sp"),
+        ]
+    ).select(
+        [
+            "sprint_id",
+            "time_date",
+            "added_count",
+            "added_sp",
+            "removed_count",
+            "removed_sp",
+        ]
+    )
+
+    removed_daily = removed_agg.with_columns(
+        [
+            pl.lit(0).alias("added_count"),
+            pl.lit(0.0).alias("added_sp"),
+        ]
+    ).select(
+        [
+            "sprint_id",
+            "time_date",
+            "added_count",
+            "added_sp",
+            "removed_count",
+            "removed_sp",
+        ]
+    )
+
+    per_day = (
+        pl.concat([added_daily, removed_daily], how="diagonal_relaxed")
+        .group_by(["sprint_id", "time_date"])
+        .agg(
+            [
+                pl.col("added_count").sum().alias("added_count"),
+                pl.col("added_sp").sum().alias("added_sp"),
+                pl.col("removed_count").sum().alias("removed_count"),
+                pl.col("removed_sp").sum().alias("removed_sp"),
+            ]
+        )
+    )
+
+    return sprints_df.select(
+        [
+            "project_id",
+            pl.col("id").alias("iteration_id"),
+            pl.col("name").alias("iteration_name"),
+        ]
+    ).join(per_day, left_on="iteration_id", right_on="sprint_id", how="inner")
 
 
 def calculate_sprint_spillover(
     sprints_df: pl.DataFrame, sprint_issues_df: pl.DataFrame
 ) -> pl.DataFrame:
     """
-    Count issues that appear in more than one sprint.
+    Count spillover issues per sprint.
+
+    An issue is counted in sprint S if it is also present in another sprint of the
+    same project that starts earlier or at the same time. This reflects:
+      - carry-over from previous sprint(s), and
+      - issues simultaneously present in multiple sprints.
     """
     if sprint_issues_df.is_empty():
         return sprints_df.select(
@@ -163,21 +271,41 @@ def calculate_sprint_spillover(
             ]
         ).with_columns(pl.lit(0).alias("spillover_count"))
 
-    # Group by issue_id, count distinct sprint_ids
-    issue_sprint_counts = sprint_issues_df.group_by("issue_id").agg(
-        pl.col("sprint_id").n_unique().alias("sprint_count")
+    sprint_meta = sprints_df.select(
+        [
+            pl.col("id").alias("sprint_id"),
+            "project_id",
+            "start_date",
+        ]
+    )
+    issue_sprints = sprint_issues_df.join(sprint_meta, on="sprint_id", how="inner")
+
+    # For each (issue, sprint), find another sprint of same project that starts
+    # earlier or at the same time (simultaneous membership).
+    spillover_issue_sprints = (
+        issue_sprints.join(
+            issue_sprints.select(
+                [
+                    pl.col("issue_id").alias("issue_id_prev"),
+                    pl.col("sprint_id").alias("sprint_id_prev"),
+                    pl.col("project_id").alias("project_id_prev"),
+                    pl.col("start_date").alias("start_date_prev"),
+                ]
+            ),
+            left_on=["issue_id", "project_id"],
+            right_on=["issue_id_prev", "project_id_prev"],
+            how="inner",
+        )
+        .filter(
+            (pl.col("sprint_id") != pl.col("sprint_id_prev"))
+            & (pl.col("start_date_prev") <= pl.col("start_date"))
+        )
+        .select(["sprint_id", "issue_id"])
+        .unique()
     )
 
-    # Issues with count > 1 are spillover candidates
-    spillover_issues = issue_sprint_counts.filter(pl.col("sprint_count") > 1).select(
-        "issue_id"
-    )
-
-    # Join back to sprint context to see which sprints these issues belong to
-    spillover_by_sprint = (
-        sprint_issues_df.join(spillover_issues, on="issue_id", how="inner")
-        .group_by("sprint_id")
-        .agg(pl.col("issue_id").count().alias("spillover_count"))
+    spillover_by_sprint = spillover_issue_sprints.group_by("sprint_id").agg(
+        pl.col("issue_id").n_unique().alias("spillover_count")
     )
 
     result = (
@@ -355,7 +483,7 @@ def calculate_activation_velocity(
     field_values_df: pl.DataFrame,
     field_keys_df: pl.DataFrame,
     field_value_changelog_df: pl.DataFrame,
-    initial_status_id: str,
+    initial_status_id: str | List[str],
 ) -> pl.DataFrame:
     """
     Calculate activation velocity percentage per day.
@@ -379,52 +507,62 @@ def calculate_activation_velocity(
         pl.col("story_points").sum().alias("total_sp")
     )
 
-    # 2. Daily activations (moving FROM initial status)
-    # BUG-1: Slim changelog to avoid 'id' collision in cross-join
+    # 2. Daily activations (moving FROM initial status), only for commitment issues.
+    # Accept both legacy single initial status and full list of start statuses.
+    if isinstance(initial_status_id, str):
+        initial_status_ids = [initial_status_id]
+    else:
+        initial_status_ids = initial_status_id
+    initial_status_ids_lower = [s.lower() for s in initial_status_ids if s is not None]
+
+    sprints_safe = _ensure_complete_date(sprints_df).with_columns(
+        pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date")
+    )
+    sprint_windows = sprints_safe.select(
+        [
+            pl.col("id").alias("sprint_id"),
+            "start_date",
+            "effective_end_date",
+        ]
+    )
+
     status_slim = issue_status_changelog_df.select(
-        # Note: from_status_id may be NULL (e.g. 30% of Jira changelog for initial status)
+        # Note: from_status_id may be NULL in Jira changelog for initial moves.
         ["issue_id", "from_status_id", "to_status_id", "changed_at"]
     )
-    cl_with_dates = status_slim.join(
-        sprints_df.select(["id", "start_date", "end_date"]), how="cross"
-    ).filter(
-        (pl.col("changed_at") > pl.col("start_date"))
-        & (pl.col("changed_at") <= pl.col("end_date"))
-        & (
-            pl.col("from_status_id").cast(pl.Utf8).str.to_lowercase()
-            == initial_status_id.lower()
+    status_in_sprint = (
+        sprint_issues_df.join(sprint_windows, on="sprint_id", how="inner")
+        .join(status_slim, on="issue_id", how="inner")
+        .filter(
+            (pl.col("changed_at") >= pl.col("start_date"))
+            & (pl.col("changed_at") <= pl.col("effective_end_date"))
         )
     )
 
-    cl_with_dates = cl_with_dates.join(
-        sprint_issues_df,
-        left_on=["issue_id", "id"],
-        right_on=["issue_id", "sprint_id"],
-        how="inner",
+    moved_from_initial = status_in_sprint.filter(
+        pl.col("from_status_id").is_null()
+        | pl.col("from_status_id")
+        .cast(pl.Utf8)
+        .str.to_lowercase()
+        .is_in(initial_status_ids_lower)
     )
 
-    # BUG-2: Ensure complete_date exists
-    sprints_safe = _ensure_complete_date(sprints_df)
-    activations_with_sp = (
-        determine_story_points_at_date(
-            cl_with_dates.select(["issue_id", "id"]).rename({"id": "sprint_id"}),
-            sprints_safe.with_columns(
-                pl.coalesce(["complete_date", "end_date"]).alias("effective_end_date")
-            ),
-            current_sp_df,
-            field_value_changelog_df,
-            field_keys_df,
-            date_col="effective_end_date",
+    # Use only commitment issues and only the FIRST activation per issue in sprint.
+    first_activations = (
+        moved_from_initial.join(
+            commitment_df, on=["issue_id", "sprint_id"], how="inner"
         )
-        .join(
-            cl_with_dates.select(["issue_id", "id", "changed_at"]).rename(
-                {"id": "sprint_id"}
-            ),
-            on=["issue_id", "sprint_id"],
-            how="inner",
-        )
-        .with_columns(pl.col("changed_at").dt.date().alias("activation_date"))
+        .sort("changed_at", descending=False)
+        .unique(subset=["issue_id", "sprint_id"], keep="first")
+        .select(["issue_id", "sprint_id", "changed_at"])
     )
+
+    activations_with_sp = _determine_story_points_at_event_time(
+        first_activations,
+        current_sp_df,
+        field_value_changelog_df,
+        field_keys_df,
+    ).with_columns(pl.col("changed_at").dt.date().alias("activation_date"))
 
     # 3. Generate daily rows
     all_rows = []
