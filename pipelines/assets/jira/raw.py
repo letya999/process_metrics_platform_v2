@@ -11,6 +11,25 @@ from typing import Any, Iterator
 import dlt
 from dagster import AssetExecutionContext, asset
 from dlt.sources.helpers import requests
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(requests.HTTPError),
+    reraise=True,
+)
+def _get_with_retry(url: str, **kwargs):
+    """Execute GET request with exponential backoff retry."""
+    response = requests.get(url, **kwargs)
+    response.raise_for_status()
+    return response
 
 
 @dlt.source(name="jira")
@@ -100,18 +119,27 @@ def jira_source(
         max_results = 100
         next_page_token = None
 
+        # 3.4: Limit fields whitelist
+        default_fields = (
+            "summary,description,issuetype,status,priority,assignee,reporter,creator,"
+            "created,updated,resolutiondate,resolution,parent,subtasks,issuelinks,"
+            "comment,worklog,labels,fixVersions,customfield_10020,customfield_10016,"
+            "customfield_10028"
+        )
+        fields_to_fetch = os.getenv("JIRA_FIELDS_OVERRIDE", default_fields)
+
         while True:
             params = {
                 "jql": jql,
                 "maxResults": max_results,
                 "expand": "changelog,renderedFields",
-                "fields": "*all",
+                "fields": fields_to_fetch,
             }
             # Add nextPageToken only if we have one (not on first request)
             if next_page_token:
                 params["nextPageToken"] = next_page_token
 
-            response = requests.get(
+            response = _get_with_retry(
                 f"{base_url}/rest/api/3/search/jql",
                 auth=(email, api_token),
                 params=params,
@@ -140,7 +168,7 @@ def jira_source(
         max_results = 50
 
         while True:
-            response = requests.get(
+            response = _get_with_retry(
                 f"{base_url}/rest/api/3/project/search",
                 auth=(email, api_token),
                 params={
@@ -166,7 +194,7 @@ def jira_source(
     def get_sprints() -> Iterator[dict[str, Any]]:
         """Fetch sprints from all boards in specified projects."""
         # First get all boards
-        boards_response = requests.get(
+        boards_response = _get_with_retry(
             f"{base_url}/rest/agile/1.0/board",
             auth=(email, api_token),
             params={"maxResults": 100},
@@ -186,7 +214,7 @@ def jira_source(
             start_at = 0
             while True:
                 try:
-                    sprints_response = requests.get(
+                    sprints_response = _get_with_retry(
                         f"{base_url}/rest/agile/1.0/board/{board_id}/sprint",
                         auth=(email, api_token),
                         params={"startAt": start_at, "maxResults": 50},
@@ -213,7 +241,7 @@ def jira_source(
         for project_key in projects or []:
             start_at = 0
             while True:
-                response = requests.get(
+                response = _get_with_retry(
                     f"{base_url}/rest/api/3/user/assignable/search",
                     auth=(email, api_token),
                     params={
@@ -242,7 +270,7 @@ def jira_source(
         For each project: GET /rest/api/3/project/{projectKey}/versions
         """
         # First get all projects
-        projects_response = requests.get(
+        projects_response = _get_with_retry(
             f"{base_url}/rest/api/3/project/search",
             auth=(email, api_token),
             params={"maxResults": 100},
@@ -260,7 +288,7 @@ def jira_source(
 
             try:
                 # Get versions for this project
-                versions_response = requests.get(
+                versions_response = _get_with_retry(
                     f"{base_url}/rest/api/3/project/{project_key}/versions",
                     auth=(email, api_token),
                 )
@@ -287,7 +315,7 @@ def jira_source(
         For each board: GET /rest/agile/1.0/board/{boardId}/configuration
         """
         # First get all boards
-        boards_response = requests.get(
+        boards_response = _get_with_retry(
             f"{base_url}/rest/agile/1.0/board",
             auth=(email, api_token),
             params={"maxResults": 100},
@@ -305,7 +333,7 @@ def jira_source(
 
             try:
                 # Get configuration for this board
-                config_response = requests.get(
+                config_response = _get_with_retry(
                     f"{base_url}/rest/agile/1.0/board/{board_id}/configuration",
                     auth=(email, api_token),
                 )
@@ -336,7 +364,7 @@ def jira_source(
 
         GET /rest/api/3/field
         """
-        response = requests.get(
+        response = _get_with_retry(
             f"{base_url}/rest/api/3/field",
             auth=(email, api_token),
         )

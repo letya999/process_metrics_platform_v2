@@ -59,7 +59,7 @@ def calculate_aging_extended(
         engine,
         """
         SELECT i.id, i.project_id, i.external_key as key, it.name as type_name,
-               i.status_id, i.updated_at
+               i.status_id, i.jira_updated_at as updated_at
         FROM clean_jira.issues i
         LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
         """,
@@ -225,9 +225,9 @@ def calculate_aging_extended(
             return pl.DataFrame()
 
         # Prepare for concat by renaming value columns
-        for df in res_list:
+        for i, df in enumerate(res_list):
             vcol = "blocked_hours" if "blocked_hours" in df.columns else "stale_days"
-            df.rename({vcol: "value"}, in_place=True)
+            res_list[i] = df.rename({vcol: "value"})
 
         return pl.concat(res_list)
 

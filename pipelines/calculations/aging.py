@@ -73,6 +73,7 @@ def calculate_work_item_aging_facts(
     # 4. Find commitment start for each active issue
     if not status_changelog_df.is_empty() and middle_status_ids:
         # a. Find LAST time issue LEFT the "Done" column (to handle Done -> In Progress)
+        # Note: from_status_id may be NULL (e.g. 30% of Jira changelog for initial status)
         last_left_done = (
             status_changelog_df.filter(
                 pl.col("from_status_id").is_in(end_status_ids)

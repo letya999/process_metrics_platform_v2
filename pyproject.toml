@@ -36,6 +36,7 @@ dependencies = [
     # Configuration
     "pyyaml>=6.0.0,<7.0.0",  # YAML config file parsing
     "adbc-driver-postgresql>=1.10.0",
+    "tenacity>=8.5.0",
 ]
 
 [project.optional-dependencies]

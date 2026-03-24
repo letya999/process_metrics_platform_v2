@@ -262,7 +262,7 @@ def calculate_cycle_time_extended(
             return pl.DataFrame()
 
         # Unify columns for apply_slicing
-        for df in res_list:
+        for i, df in enumerate(res_list):
             cid = df["calc_id"][0]
             val_col = (
                 "lifetime_days"
@@ -275,13 +275,12 @@ def calculate_cycle_time_extended(
                 else ("end_at" if cid == calc_id_custom else "epic_end")
             )
             ent_id_col = "epic_id" if cid == calc_id_epic else "id"
-            df.rename(
+            res_list[i] = df.rename(
                 {
                     val_col: "value",
                     time_col: "time_id_src",
                     ent_id_col: "entity_id_src",
-                },
-                in_place=True,
+                }
             )
         return pl.concat(res_list)
 
