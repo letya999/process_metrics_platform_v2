@@ -846,6 +846,26 @@ class TestDetectSprintFieldId:
         result = clean._detect_sprint_field_id(_BrokenConn())
         assert result == "customfield_10020"
 
+    def test_logs_warning_on_exception_fallback(self, caplog):
+        """Fallback path must be observable in logs (no silent exception swallowing)."""
+
+        class _BrokenConn:
+            def execute(self, *_a, **_kw):
+                raise RuntimeError("boom")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        with caplog.at_level("WARNING"):
+            result = clean._detect_sprint_field_id(_BrokenConn())
+
+        assert result == "customfield_10020"
+        assert "Failed to auto-detect sprint field id" in caplog.text
+        assert "customfield_10020" in caplog.text
+
     def test_default_value_is_correct_field_id(self):
         """The default sprint field ID must be exactly 'customfield_10020'."""
         # This is a regression guard - changing the default breaks sprint sync
@@ -877,6 +897,55 @@ class TestGetPlatformProjectId:
             clean._get_platform_project_id(conn)
         except RuntimeError as e:
             assert "platform.projects" in str(e)
+
+
+class TestSupplementaryIssueJoinScoping:
+    """Ensure supplementary assets scope issue joins by project to avoid cross-project matches."""
+
+    def test_comments_and_links_are_project_scoped(self):
+        import inspect
+
+        source = inspect.getsource(_asset_fn(clean.clean_jira_comments))
+        assert (
+            source.count(
+                "JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id"
+            )
+            >= 2
+        )
+        assert (
+            source.count(
+                "JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id"
+            )
+            >= 2
+        )
+
+    def test_field_values_and_changelog_are_project_scoped(self):
+        import inspect
+
+        field_values_source = inspect.getsource(
+            _asset_fn(clean.clean_jira_field_values)
+        )
+        changelog_source = inspect.getsource(
+            _asset_fn(clean.clean_jira_field_value_changelog)
+        )
+
+        assert (
+            "JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id"
+            in field_values_source
+        )
+        assert (
+            "JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id"
+            in field_values_source
+        )
+
+        assert (
+            "JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id"
+            in changelog_source
+        )
+        assert (
+            "JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id"
+            in changelog_source
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1136,6 +1205,36 @@ class TestGhostCleanupEdgeCases:
         out = _asset_fn(clean.jira_ghost_cleanup)(_DummyContext(), _DummyDatabase(conn))
         assert out["status"] == "success"
         assert out["deleted_count"] == 0
+
+    @patch("requests.get")
+    @patch.dict(
+        "os.environ",
+        {"JIRA_URL": "http://jira", "JIRA_EMAIL": "a@b.c", "JIRA_API_TOKEN": "tok"},
+    )
+    def test_ghost_cleanup_uses_expanding_in_clause(self, mock_get):
+        """DELETE must use SQLAlchemy expanding bind params for batched IN lists."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "issues": [{"id": "1"}],
+            "total": 1,
+        }
+        mock_get.return_value = mock_response
+
+        conn = _SequencedConnection(
+            [
+                _Result(fetchall_data=[("1",), ("2",), ("3",)]),
+                _Result(),
+            ]
+        )
+        out = _asset_fn(clean.jira_ghost_cleanup)(_DummyContext(), _DummyDatabase(conn))
+
+        assert out["status"] == "success"
+        assert out["deleted_count"] == 2
+        delete_sql, delete_params = conn.executed[1]
+        assert "DELETE FROM raw_jira.issues WHERE id::text IN" in delete_sql
+        assert "POSTCOMPILE_ids" in delete_sql
+        assert isinstance(delete_params["ids"], tuple)
+        assert set(delete_params["ids"]) == {"2", "3"}
 
 
 # ---------------------------------------------------------------------------

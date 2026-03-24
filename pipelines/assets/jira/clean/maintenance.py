@@ -9,7 +9,7 @@ from typing import Any
 import requests
 from dagster import AssetExecutionContext, asset
 from requests.auth import HTTPBasicAuth
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from pipelines.resources.database import DatabaseResource
 
@@ -97,12 +97,13 @@ def jira_ghost_cleanup(
                 batch_size = 1000
                 total_deleted = 0
 
+                delete_stmt = text(
+                    "DELETE FROM raw_jira.issues WHERE id::text IN :ids"
+                ).bindparams(bindparam("ids", expanding=True))
+
                 for i in range(0, len(delete_list), batch_size):
                     batch = delete_list[i : i + batch_size]
-                    conn.execute(
-                        text("DELETE FROM raw_jira.issues WHERE id::text IN :ids"),
-                        {"ids": tuple(batch)},
-                    )
+                    conn.execute(delete_stmt, {"ids": tuple(batch)})
                     total_deleted += len(batch)
 
                 conn.commit()

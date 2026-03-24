@@ -1,8 +1,11 @@
 """Shared utilities for the Jira clean layer assets."""
 
+import logging
 from typing import Any
 
 from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
 
 
 def _get_platform_project_id(conn: Any) -> str:
@@ -32,7 +35,11 @@ def _detect_sprint_field_id(conn: Any) -> str:
         row = result.first()
         if row:
             return row[0]
-    except Exception:  # noqa: S110
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to auto-detect sprint field id from raw_jira.fields, "
+            "falling back to customfield_10020: %s",
+            exc,
+        )
     # Fallback to standard customfield_10020
     return "customfield_10020"

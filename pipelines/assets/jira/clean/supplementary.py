@@ -208,7 +208,8 @@ def clean_jira_comments(
                 COALESCE(pg_temp.safe_timestamptz(c.updated), now()) as updated_at
             FROM raw_jira.{table} c
             JOIN raw_jira.issues r ON c._dlt_root_id = r._dlt_id
-            JOIN clean_jira.issues i ON i.external_id = r.id::text
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
             LEFT JOIN clean_jira.jira_users u ON u.project_id = i.project_id
                 AND u.external_id = c.author__account_id
             WHERE c.id IS NOT NULL
@@ -242,7 +243,8 @@ def clean_jira_comments(
                 i.id as issue_id
             FROM raw_jira.{comment_table} rc
             JOIN raw_jira.issues r ON rc._dlt_root_id = r._dlt_id
-            JOIN clean_jira.issues i ON i.external_id = r.id::text
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
             JOIN clean_jira.comments c ON c.external_id = rc.id
                 AND c.project_id = i.project_id
             ON CONFLICT (comment_id, issue_id) DO NOTHING
@@ -343,7 +345,8 @@ def clean_jira_field_values(
                     i.project_id,
                     {select_clause}
                 FROM raw_jira.issues r
-                JOIN clean_jira.issues i ON i.external_id = r.id::text
+                JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+                JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
             """
             )  # noqa: S608
 
@@ -454,7 +457,8 @@ def clean_jira_field_values(
                     now() as updated_at
                 FROM raw_jira.issues__fields__{sprint_field_id} s
                 JOIN raw_jira.issues r ON s._dlt_parent_id = r._dlt_id
-                JOIN clean_jira.issues i ON i.external_id = r.id::text
+                JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+                JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
                 JOIN clean_jira.field_keys fk ON fk.project_id = i.project_id
                     AND fk.external_key = :sprint_field_id
                 GROUP BY i.id, fk.id
@@ -561,7 +565,8 @@ def clean_jira_field_value_changelog(
             JOIN raw_jira.issues__changelog__histories h
                 ON item._dlt_parent_id = h._dlt_id
             JOIN raw_jira.issues r ON h._dlt_parent_id = r._dlt_id
-            JOIN clean_jira.issues i ON i.external_id = r.id::text
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
             JOIN clean_jira.field_keys fk ON fk.project_id = i.project_id
                 AND (
                     fk.external_key = item.field_id
