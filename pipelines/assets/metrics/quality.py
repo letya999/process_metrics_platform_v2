@@ -212,8 +212,7 @@ def calculate_quality_metrics(
         for i, df in enumerate(res_list):
             cid = df["calc_id"][0]
             val_col = "density_ratio" if cid == calc_id_density else "backflow_pct"
-            df.rename({val_col: "value"}, in_place=True)
-            res_list[i] = df
+            res_list[i] = df.rename({val_col: "value"})
         return pl.concat(res_list, how="diagonal_relaxed")
 
     if not rules_df.is_empty():

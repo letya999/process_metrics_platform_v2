@@ -225,9 +225,9 @@ def calculate_aging_extended(
             return pl.DataFrame()
 
         # Prepare for concat by renaming value columns
-        for df in res_list:
+        for i, df in enumerate(res_list):
             vcol = "blocked_hours" if "blocked_hours" in df.columns else "stale_days"
-            df.rename({vcol: "value"}, in_place=True)
+            res_list[i] = df.rename({vcol: "value"})
 
         return pl.concat(res_list)
 

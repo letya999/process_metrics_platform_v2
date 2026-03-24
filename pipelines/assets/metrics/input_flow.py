@@ -181,11 +181,9 @@ def calculate_input_flow(
             return pl.DataFrame()
 
         for i, df in enumerate(res_list):
-            df.rename(
+            res_list[i] = df.rename(
                 {"flow_count": "value", "iso_week_start_date": "time_id_src"},
-                in_place=True,
             )
-            res_list[i] = df
         return pl.concat(res_list)
 
     if not rules_df.is_empty():

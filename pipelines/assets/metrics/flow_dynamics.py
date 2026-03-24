@@ -236,8 +236,7 @@ def calculate_flow_dynamics(
             cid = df["calc_id"][0]
             val_col = "entry_count" if cid == calc_id_status_entry else "change_count"
             time_col = "time_date" if cid == calc_id_status_entry else "start_date"
-            df.rename({val_col: "value", time_col: "time_id_src"}, in_place=True)
-            res_list[i] = df
+            res_list[i] = df.rename({val_col: "value", time_col: "time_id_src"})
         return pl.concat(res_list, how="diagonal_relaxed")
 
     if not rules_df.is_empty():
