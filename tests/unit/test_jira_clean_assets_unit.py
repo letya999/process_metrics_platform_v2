@@ -41,6 +41,17 @@ class _Result:
     def first(self):
         return self._first_value
 
+    def fetchone(self):
+        if self._first_value is not None:
+            return self._first_value
+        if self._fetchall_data:
+            return self._fetchall_data[0]
+        return None
+
+    def yield_per(self, _batch_size):
+        for row in self._fetchall_data:
+            yield row
+
 
 class _Row:
     def __init__(self, values, **attrs):
@@ -57,6 +68,11 @@ class _SequencedConnection:
         self._responses = list(responses)
         self.commits = 0
         self.executed = []
+        self._query_map = {}
+
+    def with_query_map(self, query_map):
+        self._query_map = query_map
+        return self
 
     def __enter__(self):
         return self
@@ -65,13 +81,25 @@ class _SequencedConnection:
         return False
 
     def execute(self, stmt, params=None):
-        self.executed.append((str(stmt), params))
+        stmt_str = str(stmt)
+        self.executed.append((stmt_str, params))
+
+        for pattern, resp in self._query_map.items():
+            if pattern in stmt_str:
+                return resp
+
         if not self._responses:
             raise AssertionError(f"Unexpected SQL execute call: {stmt}")
         return self._responses.pop(0)
 
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        pass
+
+    def execution_options(self, **_kwargs):
+        return self
 
 
 class _Engine:
@@ -139,9 +167,9 @@ def test_clean_jira_issues_success():
     conn = _SequencedConnection(
         [
             _Result(first_value=("integration-id",)),
-            _Result(),
-            _Result(scalar_value=False),
-            _Result(),
+            _Result(),  # sync users from raw_jira.users
+            _Result(),  # sync users from changelog
+            _Result(),  # sync assignee/reporter/creator users
             _Result(
                 fetchall_data=[
                     ("rendered_fields__description",),
@@ -151,10 +179,12 @@ def test_clean_jira_issues_success():
                     ("fields__resolution__id",),
                 ]
             ),
+            _Result(scalar_value=0),  # drop_count due to missing it.id/ist.id
+            _Result(scalar_value=0),  # null_date_count
             _Result(fetchall_data=[(1,), (2,), (3,)]),
             _Result(),  # parent_id reconciliation
         ]
-    )
+    ).with_query_map({"information_schema.tables": _Result(scalar_value=True)})
     out = _asset_fn(clean.clean_jira_issues)(_DummyContext(), _DummyDatabase(conn))
     assert out == {"status": "success", "issues_synced": 3}
     assert conn.commits == 1
@@ -164,9 +194,12 @@ def test_clean_jira_labels_success():
     # clean_jira_labels
     conn = _SequencedConnection(
         [
-            _Result(scalar_value=True),  # table exists
             _Result(fetchall_data=[(1,), (2,)]),  # INSERT
         ]
+    ).with_query_map(
+        {
+            "information_schema.tables": _Result(scalar_value=True),
+        }
     )
     out = _asset_fn(clean.clean_jira_labels)(_DummyContext(), _DummyDatabase(conn))
     assert out["status"] == "success"
@@ -176,7 +209,6 @@ def test_clean_jira_labels_success():
     # clean_jira_issue_labels
     conn = _SequencedConnection(
         [
-            _Result(scalar_value=True),  # table exists
             _Result(fetchall_data=[(1,), (2,), (3,)]),  # INSERT
         ]
     )
@@ -256,10 +288,16 @@ def test_clean_jira_field_keys_success():
             _Result(),  # _detect_sprint_field_id
             _Result(),  # Sprint INSERT
         ]
+    ).with_query_map(
+        {
+            "SELECT id FROM clean_jira.projects": _Result(
+                fetchall_data=[("proj-id-1",), ("proj-id-2",)]
+            )
+        }
     )
     out = _asset_fn(clean.clean_jira_field_keys)(_DummyContext(), _DummyDatabase(conn))
     assert out["status"] == "success"
-    assert out["field_keys_inserted"] == 2
+    assert out["field_keys_inserted"] == 4
     assert conn.commits == 2
 
 
@@ -292,11 +330,14 @@ def test_clean_jira_field_values_success():
 
 
 def test_clean_jira_field_value_changelog_skip_and_success():
+    from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
+
     conn_skip = _SequencedConnection([_Result(scalar_value=False)])
     out_skip = _asset_fn(clean.clean_jira_field_value_changelog)(
         _DummyContext(), _DummyDatabase(conn_skip)
     )
     assert out_skip["status"] == "skipped"
+    _TABLE_EXISTS_CACHE.clear()
 
     conn_ok = _SequencedConnection(
         [_Result(scalar_value=True), _Result(), _Result(fetchall_data=[(1,), (2,)])]
@@ -324,10 +365,10 @@ def test_clean_jira_sprint_assets_success():
     assert out_sprint_issues["sprint_issues_count"] == 3
 
     # clean_jira_sprint_issues_changelog
-    # 1. TRUNCATE, 2. _detect_sprint_field_id (inherited from previous logic if called?), wait, it's a separate call
+    # 1. DELETE, 2. _detect_sprint_field_id, 3. INSERT
     conn_sprint_issues_changelog = _SequencedConnection(
         [
-            _Result(),  # TRUNCATE
+            _Result(),  # DELETE
             _Result(first_value=("customfield_10020",)),  # _detect_sprint_field_id
             _Result(fetchall_data=[(1,)]),  # INSERT
         ]
@@ -339,6 +380,8 @@ def test_clean_jira_sprint_assets_success():
 
 
 def test_clean_jira_comments_skip_and_success():
+    from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
+
     # possible_tables = [rendered_fields..., fields__comment__comments, fields__comment]
     conn_skip = _SequencedConnection(
         [
@@ -354,6 +397,7 @@ def test_clean_jira_comments_skip_and_success():
         _DummyContext(), _DummyDatabase(conn_skip)
     )
     assert out_skip["status"] == "skipped"
+    _TABLE_EXISTS_CACHE.clear()
 
     conn_ok = _SequencedConnection(
         [
@@ -372,6 +416,8 @@ def test_clean_jira_comments_skip_and_success():
 
 
 def test_clean_jira_release_assets_skip_and_success():
+    from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
+
     conn_rel_skip = _SequencedConnection([_Result(scalar_value=False)])
     assert (
         _asset_fn(clean.clean_jira_releases)(
@@ -379,6 +425,7 @@ def test_clean_jira_release_assets_skip_and_success():
         )["status"]
         == "skipped"
     )
+    _TABLE_EXISTS_CACHE.clear()
 
     conn_rel_ok = _SequencedConnection(
         [_Result(scalar_value=True), _Result(fetchall_data=[(1,), (2,), (3,)])]
@@ -452,6 +499,8 @@ def test_clean_jira_issue_links_success():
 
 
 def test_clean_jira_misc_assets_success():
+    from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
+
     conn_sc = _SequencedConnection([_Result(fetchall_data=[(1,), (2,)])])
     assert (
         _asset_fn(clean.clean_jira_sprint_changelog)(
@@ -467,6 +516,7 @@ def test_clean_jira_misc_assets_success():
         )["status"]
         == "skipped"
     )
+    _TABLE_EXISTS_CACHE.clear()
 
     conn_is_ok = _SequencedConnection(
         [_Result(scalar_value=True), _Result(fetchall_data=[(1,)])]
@@ -539,28 +589,36 @@ def test_clean_jira_asset_checks():
 )
 def test_jira_ghost_cleanup_success(mock_get):
     # Mock Jira API response
+    # Return 100 IDs
+    api_ids = [{"id": str(10000 + i)} for i in range(100)]
     mock_response = MagicMock()
     mock_response.json.return_value = {
-        "issues": [{"id": "10001"}, {"id": "10002"}],
-        "total": 2,
+        "issues": api_ids,
+        "total": 100,
     }
     mock_get.return_value = mock_response
 
     # Mock DB responses
-    # 1. SELECT current IDs, 2. DELETE
+    # Return 101 IDs (100 from API + 1 ghost)
+    db_ids = [(str(10000 + i),) for i in range(100)] + [("19999",)]
+
     conn = _SequencedConnection(
         [
-            _Result(fetchall_data=[("10001",), ("10002",), ("10003",)]),
             _Result(),  # DELETE
         ]
+    ).with_query_map(
+        {
+            "SELECT COUNT(*)": _Result(scalar_value=100),
+            "SELECT id::text": _Result(fetchall_data=db_ids),
+        }
     )
 
     out = _asset_fn(clean.jira_ghost_cleanup)(_DummyContext(), _DummyDatabase(conn))
     assert out["status"] == "success"
     assert out["deleted_count"] == 1
     assert conn.commits == 1
-    # Verify DELETE was called for 10003
-    assert "DELETE FROM raw_jira.issues" in conn.executed[1][0]
+    # Verify DELETE was called for 19999
+    assert "DELETE FROM raw_jira.issues" in conn.executed[-1][0]
 
 
 class TestCleanJiraReleaseChangelog:
@@ -703,80 +761,78 @@ class TestJiraDataQuality:
     def test_check_fails_when_raw_clean_issue_count_differs(self):
         # raw=100 issues, clean=50 issues → 50% loss → should fail
         conn = _SequencedConnection(
-            [
-                _Result(scalar_value=True),  # raw table exists
-                _Result(scalar_value=100),  # raw count
-                _Result(scalar_value=50),  # clean count
-            ]
+            [_Result(scalar_value=100), _Result(scalar_value=50)]
         )
-        result = _asset_fn(clean.check_raw_clean_issue_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_issue_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is False
         assert result.metadata["loss_pct"].value == 50.0
 
     def test_check_passes_when_counts_match(self):
         # raw=100, clean=100 → 0% loss → pass
         conn = _SequencedConnection(
-            [
-                _Result(scalar_value=True),
-                _Result(scalar_value=100),
-                _Result(scalar_value=100),
-            ]
+            [_Result(scalar_value=100), _Result(scalar_value=100)]
         )
-        result = _asset_fn(clean.check_raw_clean_issue_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_issue_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is True
         assert result.metadata["loss_pct"].value == 0.0
 
     def test_check_passes_within_threshold(self):
         # raw=100, clean=96 → 4% loss → within 5% threshold → pass
         conn = _SequencedConnection(
-            [
-                _Result(scalar_value=True),
-                _Result(scalar_value=100),
-                _Result(scalar_value=96),
-            ]
+            [_Result(scalar_value=100), _Result(scalar_value=96)]
         )
-        result = _asset_fn(clean.check_raw_clean_issue_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_issue_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is True
         assert result.metadata["loss_pct"].value == 4.0
 
     def test_check_skips_when_no_raw_table(self):
-        conn = _SequencedConnection([_Result(scalar_value=False)])
-        result = _asset_fn(clean.check_raw_clean_issue_count)(
-            None, _DummyDatabase(conn)
-        )
+        conn = _SequencedConnection([])
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=False
+        ):
+            result = _asset_fn(clean.check_raw_clean_issue_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is True
         assert result.metadata["status"].text == "skipped_no_raw_table"
 
     def test_sprint_check_fails_when_count_differs(self):
         conn = _SequencedConnection(
-            [
-                _Result(scalar_value=True),
-                _Result(scalar_value=161),
-                _Result(scalar_value=100),
-            ]
+            [_Result(scalar_value=161), _Result(scalar_value=100)]
         )
-        result = _asset_fn(clean.check_raw_clean_sprint_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_sprint_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is False
 
     def test_sprint_check_passes_when_counts_match(self):
         conn = _SequencedConnection(
-            [
-                _Result(scalar_value=True),
-                _Result(scalar_value=161),
-                _Result(scalar_value=161),
-            ]
+            [_Result(scalar_value=161), _Result(scalar_value=161)]
         )
-        result = _asset_fn(clean.check_raw_clean_sprint_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_sprint_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is True
 
 
@@ -864,7 +920,7 @@ class TestDetectSprintFieldId:
 
         assert result == "customfield_10020"
         assert "Failed to auto-detect sprint field id" in caplog.text
-        assert "customfield_10020" in caplog.text
+        assert "falling back to candidate list" in caplog.text
 
     def test_default_value_is_correct_field_id(self):
         """The default sprint field ID must be exactly 'customfield_10020'."""
@@ -1012,17 +1068,22 @@ class TestFieldKeyFiltering:
                         ("_dlt_id",),  # skipped - not fields__
                     ]
                 ),
-                _Result(),  # INSERT customfield_10001
-                _Result(),  # INSERT status__name
+                _Result(),  # INSERT field_data
                 _Result(scalar_value=False),  # fields table exists?
                 _Result(),  # _detect_sprint_field_id
                 _Result(),  # Sprint INSERT
             ]
+        ).with_query_map(
+            {
+                "SELECT id FROM clean_jira.projects": _Result(
+                    fetchall_data=[("proj-id-1",), ("proj-id-2",)]
+                )
+            }
         )
         out = _asset_fn(clean.clean_jira_field_keys)(
             _DummyContext(), _DummyDatabase(conn)
         )
-        assert out["field_keys_inserted"] == 2
+        assert out["field_keys_inserted"] == 4
 
 
 # ---------------------------------------------------------------------------
@@ -1180,7 +1241,10 @@ class TestGhostCleanupEdgeCases:
         mock_response.json.return_value = {"issues": [], "total": 0}
         mock_get.return_value = mock_response
 
-        conn = _SequencedConnection([])
+        # total_raw_issues=0 to avoid aborted_incomplete_api_response
+        conn = _SequencedConnection([]).with_query_map(
+            {"SELECT COUNT(*)": _Result(scalar_value=0)}
+        )
         out = _asset_fn(clean.jira_ghost_cleanup)(_DummyContext(), _DummyDatabase(conn))
         assert out["status"] == "skipped"
         assert out["reason"] == "no_issues_from_api"
@@ -1199,8 +1263,11 @@ class TestGhostCleanupEdgeCases:
         }
         mock_get.return_value = mock_response
 
-        conn = _SequencedConnection(
-            [_Result(fetchall_data=[("1",), ("2",)])]  # SELECT ids from raw
+        conn = _SequencedConnection([]).with_query_map(
+            {
+                "SELECT COUNT(*)": _Result(scalar_value=2),
+                "SELECT id::text": _Result(fetchall_data=[("1",), ("2",)]),
+            }
         )
         out = _asset_fn(clean.jira_ghost_cleanup)(_DummyContext(), _DummyDatabase(conn))
         assert out["status"] == "success"
@@ -1213,28 +1280,58 @@ class TestGhostCleanupEdgeCases:
     )
     def test_ghost_cleanup_uses_expanding_in_clause(self, mock_get):
         """DELETE must use SQLAlchemy expanding bind params for batched IN lists."""
+        api_ids = [{"id": str(i)} for i in range(100)]
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "issues": [{"id": "1"}],
-            "total": 1,
+            "issues": api_ids,
+            "total": 100,
         }
         mock_get.return_value = mock_response
 
+        db_ids = [(str(i),) for i in range(100)] + [("101",), ("102",)]
+
         conn = _SequencedConnection(
             [
-                _Result(fetchall_data=[("1",), ("2",), ("3",)]),
                 _Result(),
             ]
+        ).with_query_map(
+            {
+                "SELECT COUNT(*)": _Result(scalar_value=102),
+                "SELECT id::text": _Result(fetchall_data=db_ids),
+            }
         )
         out = _asset_fn(clean.jira_ghost_cleanup)(_DummyContext(), _DummyDatabase(conn))
 
         assert out["status"] == "success"
         assert out["deleted_count"] == 2
-        delete_sql, delete_params = conn.executed[1]
+        delete_sql, delete_params = conn.executed[-1]
         assert "DELETE FROM raw_jira.issues WHERE id::text IN" in delete_sql
         assert "POSTCOMPILE_ids" in delete_sql
         assert isinstance(delete_params["ids"], tuple)
-        assert set(delete_params["ids"]) == {"2", "3"}
+        assert set(delete_params["ids"]) == {"101", "102"}
+
+
+@patch("requests.get")
+@patch.dict(
+    "os.environ",
+    {"JIRA_URL": "http://jira", "JIRA_EMAIL": "a@b.c", "JIRA_API_TOKEN": "tok"},
+)
+def test_ghost_cleanup_aborts_when_api_returns_partial_list(mock_get):
+    """Abort ghost cleanup when Jira API looks incomplete vs DB size."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "issues": [{"id": str(i)} for i in range(50)],
+        "total": 50,
+    }
+    mock_get.return_value = mock_response
+
+    conn = _SequencedConnection([]).with_query_map(
+        {"SELECT COUNT(*) FROM raw_jira.issues": _Result(scalar_value=1000)}
+    )
+    out = _asset_fn(clean.jira_ghost_cleanup)(_DummyContext(), _DummyDatabase(conn))
+    assert out["status"] == "aborted_incomplete_api_response"
+    assert out["jira_ids"] == 50
+    assert out["db_count"] == 1000
 
 
 # ---------------------------------------------------------------------------
@@ -1242,14 +1339,14 @@ class TestGhostCleanupEdgeCases:
 # ---------------------------------------------------------------------------
 
 
-class TestTruncateBeforeRebuild:
-    """Verify TRUNCATE is the first SQL call in sprint_issues_changelog."""
+class TestDeleteBeforeRebuild:
+    """Verify DELETE is the first SQL call in sprint_issues_changelog."""
 
-    def test_truncate_is_first_executed_statement(self):
-        """TRUNCATE must precede INSERT in the execution sequence."""
+    def test_delete_is_first_executed_statement(self):
+        """DELETE must precede INSERT in the execution sequence (M-3 Fix)."""
         conn = _SequencedConnection(
             [
-                _Result(),  # TRUNCATE
+                _Result(),  # DELETE
                 _Result(first_value=("customfield_10020",)),  # _detect_sprint_field_id
                 _Result(fetchall_data=[(1,)]),  # INSERT
             ]
@@ -1257,17 +1354,17 @@ class TestTruncateBeforeRebuild:
         _asset_fn(clean.clean_jira_sprint_issues_changelog)(
             _DummyContext(), _DummyDatabase(conn)
         )
-        # First executed statement must be the TRUNCATE
+        # First executed statement must be the DELETE
         first_sql = conn.executed[0][0].upper()
         assert (
-            "TRUNCATE" in first_sql
-        ), f"Expected TRUNCATE as first SQL, got: {first_sql[:80]}"
+            "DELETE" in first_sql
+        ), f"Expected DELETE as first SQL, got: {first_sql[:80]}"
 
-    def test_insert_follows_truncate(self):
-        """INSERT must be executed after TRUNCATE (not before)."""
+    def test_insert_follows_delete(self):
+        """INSERT must be executed after DELETE (not before)."""
         conn = _SequencedConnection(
             [
-                _Result(),  # TRUNCATE
+                _Result(),  # DELETE
                 _Result(first_value=("customfield_10020",)),  # _detect_sprint_field_id
                 _Result(fetchall_data=[(1,), (2,)]),  # INSERT
             ]
@@ -1276,9 +1373,9 @@ class TestTruncateBeforeRebuild:
             _DummyContext(), _DummyDatabase(conn)
         )
         sqls = [sql.upper() for sql, _ in conn.executed]
-        truncate_idx = next(i for i, s in enumerate(sqls) if "TRUNCATE" in s)
+        delete_idx = next(i for i, s in enumerate(sqls) if "DELETE" in s)
         insert_idx = next(i for i, s in enumerate(sqls) if "INSERT" in s)
-        assert truncate_idx < insert_idx, "TRUNCATE must come before INSERT"
+        assert delete_idx < insert_idx, "DELETE must come before INSERT"
 
 
 # ---------------------------------------------------------------------------
@@ -1293,14 +1390,16 @@ class TestLossPercentageBoundary:
         """Exactly _MAX_ISSUE_LOSS_PCT% (5.0%) loss must pass."""
         conn = _SequencedConnection(
             [
-                _Result(scalar_value=True),
                 _Result(scalar_value=100),
                 _Result(scalar_value=95),  # 5% loss
             ]
         )
-        result = _asset_fn(clean.check_raw_clean_issue_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_issue_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is True
         assert result.metadata["loss_pct"].value == 5.0
 
@@ -1308,28 +1407,32 @@ class TestLossPercentageBoundary:
         """Any loss above 5% must fail."""
         conn = _SequencedConnection(
             [
-                _Result(scalar_value=True),
                 _Result(scalar_value=1000),
                 _Result(scalar_value=949),  # 5.1% loss
             ]
         )
-        result = _asset_fn(clean.check_raw_clean_issue_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_issue_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is False
 
     def test_zero_clean_is_100_percent_loss(self):
         """When clean layer is empty but raw has data, this is 100% loss - must fail."""
         conn = _SequencedConnection(
             [
-                _Result(scalar_value=True),
                 _Result(scalar_value=50),
                 _Result(scalar_value=0),
             ]
         )
-        result = _asset_fn(clean.check_raw_clean_issue_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_issue_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is False
         assert result.metadata["loss_pct"].value == 100.0
 
@@ -1337,14 +1440,16 @@ class TestLossPercentageBoundary:
         """If clean > raw (e.g. from manual inserts), loss_pct is negative - must pass."""
         conn = _SequencedConnection(
             [
-                _Result(scalar_value=True),
                 _Result(scalar_value=100),
                 _Result(scalar_value=110),  # more clean than raw
             ]
         )
-        result = _asset_fn(clean.check_raw_clean_issue_count)(
-            None, _DummyDatabase(conn)
-        )
+        with patch(
+            "pipelines.assets.jira.clean._utils._table_exists", return_value=True
+        ):
+            result = _asset_fn(clean.check_raw_clean_issue_count)(
+                None, _DummyDatabase(conn)
+            )
         assert result.passed is True
 
 
@@ -1460,6 +1565,9 @@ class TestHierarchyLevelMapping:
 
             def commit(self):
                 self.commits += 1
+
+            def rollback(self):
+                pass
 
         conn2 = _ExceptionOnFirst()
         out = _asset_fn(clean.clean_jira_issue_types)(
@@ -1627,6 +1735,41 @@ class TestNewAssetChecks:
         result = self._run_check(clean.check_jira_users_have_external_id, 7)
         assert result.passed is False
         assert result.metadata["users_with_null_external_id"].value == 7
+
+
+class TestFlowEfficiencyNonzeroCheck:
+    """Behavioral coverage for check_flow_efficiency_nonzero."""
+
+    def test_all_zero_values_fails(self):
+        from pipelines.assets.jira.clean import checks as checks_mod
+
+        conn = _SequencedConnection([_Result(first_value=(10, 0))])
+        result = _asset_fn(checks_mod.check_flow_efficiency_nonzero)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is False
+        assert result.metadata["total_rows"].value == 10
+        assert result.metadata["nonzero_rows"].value == 0
+
+    def test_some_nonzero_values_passes(self):
+        from pipelines.assets.jira.clean import checks as checks_mod
+
+        conn = _SequencedConnection([_Result(first_value=(100, 20))])
+        result = _asset_fn(checks_mod.check_flow_efficiency_nonzero)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is True
+        assert result.metadata["nonzero_pct"].value == 20.0
+
+    def test_no_data_passes(self):
+        from pipelines.assets.jira.clean import checks as checks_mod
+
+        conn = _SequencedConnection([_Result(first_value=(0, 0))])
+        result = _asset_fn(checks_mod.check_flow_efficiency_nonzero)(
+            None, _DummyDatabase(conn)
+        )
+        assert result.passed is True
+        assert result.metadata["status"].text == "no_data"
 
 
 # ---------------------------------------------------------------------------

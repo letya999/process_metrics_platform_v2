@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from pipelines.resources.database import DatabaseResource
 
-from ._utils import _detect_sprint_field_id
+from ._utils import _detect_sprint_field_id, _table_exists
 
 
 @asset(
@@ -35,17 +35,7 @@ def clean_jira_sprints(
         # First, get board_id -> project_key mapping from raw_jira.sprints
 
         # Check if board_configurations table exists to link sprints to projects
-        board_config_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'board_configurations'
-            )
-        """
-            )
-        ).scalar()
+        board_config_exists = _table_exists(conn, "raw_jira", "board_configurations")
 
         if board_config_exists:
             # Use UPSERT strategy instead of TRUNCATE to avoid cascading deletes
@@ -107,21 +97,39 @@ def clean_jira_sprints(
             if "project_key" in cols:
                 insert_query = text(
                     """
-                INSERT INTO clean_jira.sprints (...)
+                INSERT INTO clean_jira.sprints (
+                    project_id, external_id, name, goal, status,
+                    start_date, end_date, complete_date, updated_at
+                )
                 SELECT DISTINCT ON (p.id, s.id::text)
                     p.id as project_id,
-                    ...
+                    s.id::text as external_id,
+                    s.name,
+                    s.goal,
+                    CASE s.state
+                        WHEN 'future' THEN 'future'::clean_jira.sprint_status
+                        WHEN 'active' THEN 'active'::clean_jira.sprint_status
+                        WHEN 'closed' THEN 'closed'::clean_jira.sprint_status
+                        ELSE 'future'::clean_jira.sprint_status
+                    END as status,
+                    s.start_date::timestamptz as start_date,
+                    s.end_date::timestamptz as end_date,
+                    s.complete_date::timestamptz as complete_date,
+                    now() as updated_at
                 FROM raw_jira.sprints s
                 JOIN clean_jira.projects p ON s.project_key = p.external_key
-                ...
+                ON CONFLICT (project_id, external_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    goal = EXCLUDED.goal,
+                    status = EXCLUDED.status,
+                    start_date = EXCLUDED.start_date,
+                    end_date = EXCLUDED.end_date,
+                    complete_date = EXCLUDED.complete_date,
+                    updated_at = now()
+                RETURNING id
                 """
                 )
-                # (Simplified for brevity in fallback, but sticking to safe path)
-                # If we don't have board configs, we log warning and skip or try best effort
-                context.log.warning(
-                    "raw_jira.board_configurations not found. Sprints might be skipped."
-                )
-                result = None
+                result = conn.execute(insert_query)
             else:
                 context.log.warning(
                     "raw_jira.board_configurations not found and no project_key in sprints. "
@@ -170,17 +178,9 @@ def clean_jira_sprint_issues(
         context.log.info("Extracting sprint-issue relationships from changelog...")
 
         # Check if changelog exists
-        changelog_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__changelog__histories__items'
-            )
-        """
-            )
-        ).scalar()
+        changelog_exists = _table_exists(
+            conn, "raw_jira", "issues__changelog__histories__items"
+        )
 
         if not changelog_exists:
             context.log.warning("No changelog items table found in raw_jira")
@@ -237,8 +237,11 @@ def clean_jira_sprint_issues(
                 ) as sprint_id
                 WHERE from_value IS NOT NULL AND from_value != ''
             ),
-            -- Extract sprint data from current issue fields (Snapshot/Backfill)
-            -- This captures issues created directly in a sprint (no changelog entry)
+            -- H-14: Extract sprint data from current issue fields (Snapshot/Backfill)
+            -- This captures issues created directly in a sprint (no changelog entry).
+            -- LIMITATION: If an issue was created in Sprint A but currently shows Sprint B,
+            -- and no changelog for the move exists (e.g. historical data loss),
+            -- this fallback will incorrectly attribute the issue to Sprint B from its creation time.
             snapshot_events AS (
                 SELECT
                     i.id::text as issue_external_id,
@@ -359,7 +362,8 @@ def clean_jira_sprint_issues_changelog(
         context.log.info("Extracting sprint-issue changelog...")
         # Rebuild changelog deterministically from raw data.
         # This avoids stale/incorrect historical rows lingering across logic fixes.
-        conn.execute(text("TRUNCATE TABLE clean_jira.sprint_issues_changelog"))
+        # C-3: DELETE is transactional and holds a lock until commit, preventing a zero-row window.
+        conn.execute(text("DELETE FROM clean_jira.sprint_issues_changelog"))
 
         sprint_field_id = _detect_sprint_field_id(conn)
         result = conn.execute(
@@ -437,8 +441,11 @@ def clean_jira_sprint_issues_changelog(
                  AND t.sprint_external_id = f.sprint_external_id
                 WHERE t.sprint_external_id IS NULL
             ),
-            -- Snapshot events: issues created directly in a sprint (no changelog entry)
-            -- These are issues where Sprint was set at creation time, not via changelog
+            -- H-14: Extract sprint data from current issue fields (Snapshot/Backfill)
+            -- This captures issues created directly in a sprint (no changelog entry).
+            -- LIMITATION: If an issue was created in Sprint A but currently shows Sprint B,
+            -- and no changelog for the move exists (e.g. historical data loss),
+            -- this fallback will incorrectly attribute the issue to Sprint B from its creation time.
             snapshot_events AS (
                 SELECT
                     i.id::text as issue_external_id,

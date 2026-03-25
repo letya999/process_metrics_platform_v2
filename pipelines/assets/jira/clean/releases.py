@@ -10,6 +10,8 @@ from sqlalchemy import text
 
 from pipelines.resources.database import DatabaseResource
 
+from ._utils import _table_exists
+
 
 @asset(
     group_name="jira_clean",
@@ -28,16 +30,7 @@ def clean_jira_releases(
         context.log.info("Syncing releases from versions...")
 
         # Check if versions table exists
-        versions_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira' AND table_name = 'versions'
-            )
-        """
-            )
-        ).scalar()
+        versions_exists = _table_exists(conn, "raw_jira", "versions")
 
         if not versions_exists:
             context.log.warning("No versions table found in raw_jira")
@@ -272,12 +265,12 @@ def clean_jira_release_issues(
             SELECT
                 rel.id as release_id,
                 i.id as issue_id,
-                true as is_active
+                CASE WHEN la.action = 'added' THEN true ELSE false END as is_active
             FROM latest_action la
             JOIN clean_jira.issues i ON i.external_id = la.issue_external_id
             JOIN clean_jira.releases rel ON rel.project_id = i.project_id
                 AND rel.external_id = la.version_external_id
-            WHERE la.action = 'added'
+            WHERE la.action IN ('added', 'removed')
             ON CONFLICT (release_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
             RETURNING id

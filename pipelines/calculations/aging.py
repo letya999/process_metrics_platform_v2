@@ -345,7 +345,8 @@ def calculate_stale_days(
     result = (
         open_issues.with_columns(
             pl.col("updated_at")
-            .map_elements(_to_utc_datetime, return_dtype=pl.Datetime("us", "UTC"))
+            .map_elements(_to_utc_datetime, return_dtype=pl.Datetime("us", None))
+            .cast(pl.Datetime("us", "UTC"))
             .alias("updated_at_utc")
         )
         .with_columns(

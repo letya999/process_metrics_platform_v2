@@ -73,31 +73,65 @@ def calculate_flow_efficiency(
     )
 
     issue_statuses_df = read_table(
-        engine, "SELECT id, name, category FROM clean_jira.issue_statuses"
+        engine, "SELECT id, project_id, name, category FROM clean_jira.issue_statuses"
     )
 
-    # Resolve status types
-    active_statuses = issue_statuses_df.filter(pl.col("category") == "indeterminate")[
-        "id"
-    ].to_list()
-    wait_statuses = issue_statuses_df.filter(pl.col("category") == "todo")[
-        "id"
-    ].to_list()
-    end_statuses = issue_statuses_df.filter(pl.col("category") == "done")[
-        "id"
-    ].to_list()
-
-    # 2. Calculate BASE Flow Efficiency facts
-    flow_wide = flow_logic.calculate_flow_efficiency_per_issue(
-        issues_df=issues_df,
-        status_changelog_df=status_changelog_df,
-        active_status_ids=active_statuses,
-        wait_status_ids=wait_statuses,
-        end_status_ids=end_statuses,
+    # Load per-project flow status category settings — no hardcode, no fallback
+    flow_settings_df = read_table(
+        engine,
+        "SELECT project_id, settings_json FROM metrics.calculation_settings"
+        " WHERE target_calculation_id = :def_id AND settings_type = 'flow_status_categories' AND enabled = true",
+        params={"def_id": def_id},
     )
 
-    if flow_wide.is_empty():
+    # 2. Calculate BASE Flow Efficiency facts — per project
+    project_ids = issues_df["project_id"].unique().to_list()
+    # Build per-project status maps for use in base calc and slice calc
+    project_status_maps: dict = {}
+    all_flow_wide = []
+
+    for p_id in project_ids:
+        p_settings = flow_settings_df.filter(pl.col("project_id") == p_id)
+        if p_settings.is_empty():
+            context.log.warning(
+                f"No flow_status_categories settings for project {p_id} — skipping"
+            )
+            continue
+
+        cfg = p_settings[0, "settings_json"]
+        active_cats = cfg.get("active_categories", [])
+        passive_cats = cfg.get("passive_categories", [])
+        done_cats = cfg.get("done_categories", [])
+
+        p_statuses = issue_statuses_df.filter(pl.col("project_id") == p_id)
+        active_ids = p_statuses.filter(pl.col("category").is_in(active_cats))[
+            "id"
+        ].to_list()
+        wait_ids = p_statuses.filter(pl.col("category").is_in(passive_cats))[
+            "id"
+        ].to_list()
+        end_ids = p_statuses.filter(pl.col("category").is_in(done_cats))["id"].to_list()
+        project_status_maps[p_id] = (active_ids, wait_ids, end_ids)
+
+        p_issues = issues_df.filter(pl.col("project_id") == p_id)
+        p_changelog = status_changelog_df.filter(
+            pl.col("issue_id").is_in(p_issues["id"].to_list())
+        )
+
+        p_flow = flow_logic.calculate_flow_efficiency_per_issue(
+            issues_df=p_issues,
+            status_changelog_df=p_changelog,
+            active_status_ids=active_ids,
+            wait_status_ids=wait_ids,
+            end_status_ids=end_ids,
+        )
+        if not p_flow.is_empty():
+            all_flow_wide.append(p_flow)
+
+    if not all_flow_wide:
         return {"status": "no_data"}
+
+    flow_wide = pl.concat(all_flow_wide)
 
     # 3. Transform to Long Format (fact_values)
     def transform_to_fact_values(
@@ -166,17 +200,27 @@ def calculate_flow_efficiency(
     issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
 
     def flow_slice_calc(df_subset):
-        # Filter status_changelog for only these issues
+        # Sliced subsets may span multiple projects — loop per project and concat
         subset_ids = df_subset["id"].unique().to_list()
         sub_changelog = status_changelog_df.filter(pl.col("issue_id").is_in(subset_ids))
-
-        return flow_logic.calculate_flow_efficiency_per_issue(
-            issues_df=df_subset,
-            status_changelog_df=sub_changelog,
-            active_status_ids=active_statuses,
-            wait_status_ids=wait_statuses,
-            end_status_ids=end_statuses,
-        )
+        sub_results = []
+        for p_id, (active_ids, wait_ids, end_ids) in project_status_maps.items():
+            p_subset = df_subset.filter(pl.col("project_id") == p_id)
+            if p_subset.is_empty():
+                continue
+            p_sub_changelog = sub_changelog.filter(
+                pl.col("issue_id").is_in(p_subset["id"].to_list())
+            )
+            r = flow_logic.calculate_flow_efficiency_per_issue(
+                issues_df=p_subset,
+                status_changelog_df=p_sub_changelog,
+                active_status_ids=active_ids,
+                wait_status_ids=wait_ids,
+                end_status_ids=end_ids,
+            )
+            if not r.is_empty():
+                sub_results.append(r)
+        return pl.concat(sub_results) if sub_results else pl.DataFrame()
 
     all_facts = [base_facts]
 

@@ -86,7 +86,9 @@ def test_calculate_work_item_aging_facts_with_changelog(monkeypatch):
     result = aging.calculate_work_item_aging_facts(
         issues_df=issues,
         status_changelog_df=changelog,
-        boards_df=pl.DataFrame(),
+        boards_df=pl.DataFrame(
+            schema={"id": pl.Utf8, "project_id": pl.Utf8, "name": pl.Utf8}
+        ),
         board_columns_df=pl.DataFrame(),
         issue_statuses_df=statuses,
     )

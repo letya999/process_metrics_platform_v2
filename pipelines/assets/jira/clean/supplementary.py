@@ -13,7 +13,7 @@ from sqlalchemy import text
 
 from pipelines.resources.database import DatabaseResource
 
-from ._utils import _detect_sprint_field_id
+from ._utils import _detect_sprint_field_id, _table_exists
 
 
 @asset(
@@ -30,17 +30,9 @@ def clean_jira_worklogs(
     engine = database.get_engine()
     with engine.connect() as conn:
         # Check if worklogs table exists
-        table_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__fields__worklog__worklogs'
-            )
-        """
-            )
-        ).scalar()
+        table_exists = _table_exists(
+            conn, "raw_jira", "issues__fields__worklog__worklogs"
+        )
 
         if not table_exists:
             context.log.warning(
@@ -101,8 +93,6 @@ def clean_jira_comments(
         context.log.info("Extracting comments...")
 
         # Identify the table name for comments
-        # dlt typically creates issues__fields__comment__comments
-        # prioritize rendered_fields if available as it often contains the full body (TEXT)
         possible_tables = [
             "issues__rendered_fields__comment__comments",
             "issues__fields__comment__comments",
@@ -111,18 +101,7 @@ def clean_jira_comments(
 
         comment_table = None
         for table in possible_tables:
-            exists = conn.execute(
-                text(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_schema = 'raw_jira'
-                          AND table_name = :table_name
-                    )
-                    """
-                ),
-                {"table_name": table},
-            ).scalar()
+            exists = _table_exists(conn, "raw_jira", table)
             if exists:
                 # Also check if 'body' column exists in this table
                 has_body = conn.execute(
@@ -143,15 +122,9 @@ def clean_jira_comments(
                     break
 
         if not comment_table:
-            # Last ditch effort: try the first existing table even without 'body' if nothing else found
+            # Last ditch effort: try the first existing table
             for table in possible_tables:
-                exists = conn.execute(
-                    text(
-                        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'raw_jira' AND table_name = :table_name)"
-                    ),
-                    {"table_name": table},
-                ).scalar()
-                if exists:
+                if _table_exists(conn, "raw_jira", table):
                     comment_table = table
                     break
 
@@ -163,8 +136,7 @@ def clean_jira_comments(
 
         context.log.info(f"Using raw comment table: {comment_table}")
 
-        # Create safe_timestamptz to handle Jira display formats like "11/Feb/26 9:47 PM"
-        # and relative strings like "Tuesday 3:16 PM" that can't be cast directly.
+        # Create safe_timestamptz - M-8: Always create at start of block
         conn.execute(
             text(
                 """
@@ -187,9 +159,6 @@ def clean_jira_comments(
         )
 
         # Insert comments
-        # dlt hierarchy: issues -> issues__rendered_fields__comment__comments
-        # Join back to issues via _dlt_root_id (top-level _dlt_id).
-
         insert_sql_template = """
             INSERT INTO clean_jira.comments (
                 project_id,
@@ -228,10 +197,6 @@ def clean_jira_comments(
         context.log.info(f"Synced {len(comments_synced)} comments")
 
         # Sync comment-issue linkage
-        # In this model, comments are strictly 1:1 with issues (owned by issue).
-        # But we have a separate table clean_jira.comment_issues.
-        # So we populate it now.
-
         link_query = text(
             f"""
             INSERT INTO clean_jira.comment_issues (
@@ -328,6 +293,28 @@ def clean_jira_field_values(
 
         # Process in batches of columns
         batch_size = 20
+        insert_stmt = text(
+            """
+            INSERT INTO clean_jira.field_values (
+                issue_id,
+                field_key_id,
+                value,
+                json_value,
+                updated_at
+            )
+            VALUES (
+                :issue_id,
+                :field_key_id,
+                :value,
+                CAST(:json_value AS jsonb),
+                now()
+            )
+            ON CONFLICT (issue_id, field_key_id) DO UPDATE SET
+                value = EXCLUDED.value,
+                json_value = EXCLUDED.json_value,
+                updated_at = now()
+        """
+        )
 
         for i in range(0, len(target_columns), batch_size):
             chunk = target_columns[i : i + batch_size]
@@ -350,16 +337,22 @@ def clean_jira_field_values(
             """
             )  # noqa: S608
 
-            batch_rows = conn.execute(rows_query).fetchall()
+            # M-1: Use streaming to avoid OOM
+            result = conn.execution_options(stream_results=True).execute(rows_query)
 
             insert_data = []
-            for row in batch_rows:
+            for row in result.yield_per(1000):
                 issue_id = row.issue_id
                 project_id = row.project_id
 
                 for idx, col_name in enumerate(chunk):
                     val = row[2 + idx]
+
+                    # M-11: Filter out None and junk values
                     if val is None:
+                        continue
+                    val_str = str(val)
+                    if val_str in ("None", "nan", "NaN", "NULL", "null", ""):
                         continue
 
                     field_key = col_name.replace("fields__", "", 1)
@@ -367,9 +360,8 @@ def clean_jira_field_values(
                     if not fk_id:
                         continue
 
-                    val_str = str(val)
                     json_val = None
-
+                    # Basic heuristics to skip non-JSON strings
                     if (
                         val_str.startswith("0|")
                         or "|i" in val_str
@@ -392,30 +384,14 @@ def clean_jira_field_values(
                         }
                     )
 
+                    # Batch insert to keep memory footprint low
+                    if len(insert_data) >= 5000:
+                        conn.execute(insert_stmt, insert_data)
+                        field_values_inserted += len(insert_data)
+                        insert_data = []
+
             if insert_data:
-                stmt = text(
-                    """
-                    INSERT INTO clean_jira.field_values (
-                        issue_id,
-                        field_key_id,
-                        value,
-                        json_value,
-                        updated_at
-                    )
-                    VALUES (
-                        :issue_id,
-                        :field_key_id,
-                        :value,
-                        CAST(:json_value AS jsonb),
-                        now()
-                    )
-                    ON CONFLICT (issue_id, field_key_id) DO UPDATE SET
-                        value = EXCLUDED.value,
-                        json_value = EXCLUDED.json_value,
-                        updated_at = now()
-                """
-                )
-                conn.execute(stmt, insert_data)
+                conn.execute(insert_stmt, insert_data)
                 field_values_inserted += len(insert_data)
 
         context.log.info(f"Inserted {field_values_inserted} field values")
@@ -424,17 +400,9 @@ def clean_jira_field_values(
         # Explicitly extract 'Sprint' values
         sprint_field_id = _detect_sprint_field_id(conn)
         context.log.info(f"Extracting Sprint ({sprint_field_id}) values...")
-        sprint_table_exists = conn.execute(
-            text(
-                f"""
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__fields__{sprint_field_id}'
-            )
-        """
-            )
-        ).scalar()  # noqa: S608
+        sprint_table_exists = _table_exists(
+            conn, "raw_jira", f"issues__fields__{sprint_field_id}"
+        )
 
         if sprint_table_exists:
             result = conn.execute(
@@ -507,26 +475,15 @@ def clean_jira_field_value_changelog(
         context.log.info("Extracting field value changelog...")
 
         # Check if changelog table exists
-        changelog_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__changelog__histories__items'
-            )
-        """
-            )
-        ).scalar()
+        changelog_exists = _table_exists(
+            conn, "raw_jira", "issues__changelog__histories__items"
+        )
 
         if not changelog_exists:
             context.log.warning("No changelog items table found in raw_jira")
             return {"status": "skipped", "reason": "no_changelog_items_table"}
 
         # Use a temporary function to safely cast to JSONB
-        # If text is valid JSON, returns JSONB.
-        # If text is invalid JSON (e.g. truncated or bad format),
-        # returns text as JSONB string.
         conn.execute(
             text(
                 """
@@ -547,7 +504,8 @@ def clean_jira_field_value_changelog(
         result = conn.execute(
             text(
                 """
-        INSERT INTO clean_jira.field_value_changelog (                issue_id,
+            INSERT INTO clean_jira.field_value_changelog (
+                issue_id,
                 field_key_id,
                 old_value,
                 new_value,
@@ -588,7 +546,4 @@ def clean_jira_field_value_changelog(
 
         conn.commit()
 
-    return {
-        "status": "success",
-        "changes_count": changes_count,
-    }
+    return {"status": "success", "changes_count": changes_count}

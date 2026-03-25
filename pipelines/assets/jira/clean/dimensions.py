@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from pipelines.resources.database import DatabaseResource
 
-from ._utils import _detect_sprint_field_id, _get_platform_project_id
+from ._utils import _detect_sprint_field_id, _get_platform_project_id, _table_exists
 
 
 @asset(
@@ -89,6 +89,7 @@ def clean_jira_issue_types(
             )
             has_hierarchy_level = True
         except Exception:
+            conn.rollback()  # Reset aborted transaction state
             has_hierarchy_level = False
             context.log.warning(
                 "Column 'fields__issuetype__hierarchy_level' not found in raw_jira.issues, falling back to ILIKE logic"
@@ -133,7 +134,8 @@ def clean_jira_issue_types(
             JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
             WHERE r.fields__issuetype__id IS NOT NULL
             ON CONFLICT (project_id, external_id) DO UPDATE SET
-                name = EXCLUDED.name
+                name = EXCLUDED.name,
+                hierarchy_level = EXCLUDED.hierarchy_level
             RETURNING id
             """
             )
@@ -228,7 +230,7 @@ def clean_jira_resolutions(
 
 @asset(
     group_name="jira_clean",
-    deps=["raw_jira_data"],
+    deps=["raw_jira_data", "clean_jira_projects"],
     description="Sync Jira issue statuses to clean layer",
     compute_kind="sql",
 )
@@ -251,17 +253,9 @@ def clean_jira_issue_statuses(
         context.log.info("Syncing issue statuses (current + changelog history)...")
 
         # Check if changelog items table exists for the second source
-        changelog_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__changelog__histories__items'
-            )
-        """
-            )
-        ).scalar()
+        changelog_exists = _table_exists(
+            conn, "raw_jira", "issues__changelog__histories__items"
+        )
 
         if changelog_exists:
             # Two-step approach to avoid (project_id, name) unique constraint conflicts
@@ -403,7 +397,6 @@ def clean_jira_field_keys(
         context.log.info("Extracting field keys from issues...")
 
         # Get all columns from raw_jira.issues
-        # We fetch all and filter in python to be safer and debuggable
         columns_result = conn.execute(
             text(
                 """
@@ -418,58 +411,43 @@ def clean_jira_field_keys(
         all_columns = [row[0] for row in columns_result]
         context.log.info(f"Found {len(all_columns)} columns in raw_jira.issues")
 
-        # Debug log some sample columns
-        if all_columns:
-            context.log.info(f"Sample columns: {all_columns[:10]}")
-        else:
-            context.log.warning(
-                "No columns found in raw_jira.issues! Checking casing..."
-            )
-            # Try case-insensitive search
-            columns_result_ci = conn.execute(
-                text(
-                    """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'raw_jira'
-                  AND LOWER(table_name) = 'issues'
-            """
-                )
+        # Get all project IDs
+        project_ids = [
+            row[0]
+            for row in conn.execute(
+                text("SELECT id FROM clean_jira.projects")
             ).fetchall()
-            all_columns = [row[0] for row in columns_result_ci]
-            context.log.info(
-                f"Found {len(all_columns)} columns using case-insensitive search"
-            )
+        ]
 
-        field_keys_inserted = 0
-
-        # Insert standard and custom field keys
+        field_data = []
         for col_name in all_columns:
             if not col_name.startswith("fields__"):
                 continue
-
-            # Skip deeply nested fields (equivalent to NOT LIKE '%__%__%__%')
-            # We want to keep fields__summary, fields__customfield_123,
-            # fields__status__name
-            # But avoid deeply nested json structures that might have been flattened
             if col_name.count("__") >= 3:
                 continue
-
-            # Skip metadata fields that are usually not useful for analytics
             if col_name.endswith("__self"):
                 continue
 
-            # Extract field key from column name
-            # (e.g., fields__customfield_10001 -> customfield_10001)
             field_key = col_name.replace("fields__", "", 1)
             is_custom = field_key.startswith("customfield_")
 
-            # Derive human-readable name from key
             if is_custom:
-                field_name = field_key  # Will be updated from metadata if available
+                field_name = field_key
             else:
                 field_name = field_key.replace("_", " ").title()
 
+            for p_id in project_ids:
+                field_data.append(
+                    {
+                        "project_id": p_id,
+                        "external_key": field_key,
+                        "name": field_name,
+                        "is_custom": is_custom,
+                    }
+                )
+
+        if field_data:
+            # Multi-row batch insert
             conn.execute(
                 text(
                     """
@@ -480,38 +458,18 @@ def clean_jira_field_keys(
                     is_custom,
                     created_at
                 )
-                SELECT DISTINCT
-                    p.id as project_id,
-                    :field_key as external_key,
-                    :field_name as name,
-                    :is_custom as is_custom,
-                    now() as created_at
-                FROM clean_jira.projects p
+                VALUES (:project_id, :external_key, :name, :is_custom, now())
                 ON CONFLICT (project_id, external_key) DO UPDATE SET
                     name = EXCLUDED.name
-            """
+                """
                 ),
-                {
-                    "field_key": field_key,
-                    "field_name": field_name,
-                    "is_custom": is_custom,
-                },
+                field_data,
             )
-            field_keys_inserted += 1
 
-        context.log.info(f"Inserted {field_keys_inserted} field keys")
+        context.log.info(f"Inserted {len(field_data)} field key rows")
 
         # Try to get human-readable names from raw_jira.fields if it exists
-        fields_table_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira' AND table_name = 'fields'
-            )
-        """
-            )
-        ).scalar()
+        fields_table_exists = _table_exists(conn, "raw_jira", "fields")
 
         if fields_table_exists:
             context.log.info("Updating field names from raw_jira.fields metadata...")
@@ -528,7 +486,6 @@ def clean_jira_field_keys(
                 )
             )
             # Update names for sub-fields (e.g. customfield_10001__value)
-            # We try to match the prefix (customfield_10001) with the field ID
             conn.execute(
                 text(
                     """
@@ -575,5 +532,5 @@ def clean_jira_field_keys(
 
     return {
         "status": "success",
-        "field_keys_inserted": field_keys_inserted,
+        "field_keys_inserted": len(field_data),
     }

@@ -76,14 +76,33 @@ def jira_ghost_cleanup(
 
         context.log.info(f"Fetched {len(all_issue_ids)} issue IDs from Jira API")
 
-        if not all_issue_ids:
-            context.log.warning(
-                "No issues fetched from Jira. Skipping deletion to be safe."
-            )
-            return {"status": "skipped", "reason": "no_issues_from_api"}
-
         engine = database.get_engine()
         with engine.connect() as conn:
+            # M-2: Pagination safety check - compare with DB count
+            total_raw_issues = conn.execute(
+                text("SELECT COUNT(*) FROM raw_jira.issues")
+            ).scalar()
+            if (
+                total_raw_issues
+                and total_raw_issues > 0
+                and len(all_issue_ids) < total_raw_issues * 0.9
+            ):
+                context.log.warning(
+                    f"Jira API returned only {len(all_issue_ids)} IDs but DB has {total_raw_issues} issues. "
+                    "Aborting ghost cleanup to prevent false deletions."
+                )
+                return {
+                    "status": "aborted_incomplete_api_response",
+                    "jira_ids": len(all_issue_ids),
+                    "db_count": total_raw_issues,
+                }
+
+            if not all_issue_ids:
+                context.log.warning(
+                    "No issues fetched from Jira. Skipping deletion to be safe."
+                )
+                return {"status": "skipped", "reason": "no_issues_from_api"}
+
             # Get current IDs in raw_jira.issues
             result = conn.execute(text("SELECT id::text FROM raw_jira.issues"))
             raw_ids = {row[0] for row in result.fetchall()}
@@ -115,4 +134,4 @@ def jira_ghost_cleanup(
 
     except Exception as e:
         context.log.error(f"Error during ghost cleanup: {e}")
-        return {"status": "failed", "error": str(e)}
+        raise  # C-5: Let Dagster handle visibility

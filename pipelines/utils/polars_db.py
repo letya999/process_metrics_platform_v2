@@ -145,12 +145,14 @@ def write_fact_values(
 
         # c. Optional advisory lock for concurrent writers
         use_advisory_lock = (
-            os.getenv("FACT_VALUES_USE_ADVISORY_LOCK", "false").lower() == "true"
+            os.getenv("FACT_VALUES_USE_ADVISORY_LOCK", "true").lower() != "false"
         )
         if use_advisory_lock and metric_ids:
+            # Hash all metric IDs together for a stable per-metric-set lock
+            lock_key = "_".join(sorted(metric_ids))
             conn.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
-                {"lock_key": str(metric_ids[0])},
+                {"lock_key": lock_key},
             )
 
         # d. DELETE existing rows

@@ -121,6 +121,19 @@ def test_calculate_aging_success(monkeypatch):
             )
         if "metrics.fact_values" in query:
             return pl.DataFrame([[1]], schema=["count"])
+        if "metrics.calculation_settings" in query:
+            return pl.DataFrame(
+                {
+                    "project_id": ["p1"],
+                    "settings_json": [
+                        {
+                            "active_categories": ["in_progress"],
+                            "passive_categories": ["to_do"],
+                            "done_categories": ["done"],
+                        }
+                    ],
+                }
+            )
         raise AssertionError(f"Unexpected query: {query}")
 
     monkeypatch.setattr(aging, "read_table", _read_table)
@@ -194,12 +207,26 @@ def test_calculate_flow_efficiency_success(monkeypatch):
             return pl.DataFrame(
                 {
                     "id": ["s1", "s2", "s3"],
+                    "project_id": ["p1", "p1", "p1"],
                     "name": ["In Progress", "To Do", "Done"],
-                    "category": ["indeterminate", "todo", "done"],
+                    "category": ["in_progress", "to_do", "done"],
                 }
             )
         if "metrics.fact_values" in query:
             return pl.DataFrame([[1]], schema=["count"])
+        if "metrics.calculation_settings" in query:
+            return pl.DataFrame(
+                {
+                    "project_id": ["p1"],
+                    "settings_json": [
+                        {
+                            "active_categories": ["in_progress"],
+                            "passive_categories": ["to_do"],
+                            "done_categories": ["done"],
+                        }
+                    ],
+                }
+            )
         raise AssertionError(f"Unexpected query: {query}")
 
     monkeypatch.setattr(flow_efficiency, "read_table", _read_table)

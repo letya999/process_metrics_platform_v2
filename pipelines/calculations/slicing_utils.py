@@ -35,6 +35,11 @@ def get_slice_rules(
     try:
         rules_df = read_table(engine, query)
     except Exception as e:
+        if "relation" in str(e).lower() and "does not exist" in str(e).lower():
+            # Schema not yet migrated — propagate as a clear error
+            raise RuntimeError(
+                "metrics.slice_rules table does not exist. Run: alembic upgrade head"
+            ) from e
         logger.warning(f"Error fetching rules: {e}")
         return pl.DataFrame()
 

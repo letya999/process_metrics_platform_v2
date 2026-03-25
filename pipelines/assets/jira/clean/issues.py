@@ -13,6 +13,8 @@ from sqlalchemy import text
 
 from pipelines.resources.database import DatabaseResource
 
+from ._utils import _table_exists
+
 
 @asset(
     group_name="jira_clean",
@@ -97,17 +99,9 @@ def clean_jira_issues(
         # Also extract users from issue changelog authors
         context.log.info("Extracting users from changelog...")
         # Check if history table exists first
-        history_table_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__changelog__histories'
-            )
-        """
-            )
-        ).scalar()
+        history_table_exists = _table_exists(
+            conn, "raw_jira", "issues__changelog__histories"
+        )
 
         if history_table_exists:
             conn.execute(
@@ -247,6 +241,37 @@ def clean_jira_issues(
         )
         resolution_col = "ir.id" if has_resolution_id else "NULL::uuid"
 
+        # C-4: Count dropped issues due to missing dimensions
+        drop_count_result = conn.execute(
+            text(
+                """
+            SELECT COUNT(*)
+            FROM raw_jira.issues r
+            JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
+            LEFT JOIN clean_jira.issue_types it ON it.project_id = p.id
+                AND it.external_id = r.fields__issuetype__id
+            LEFT JOIN clean_jira.issue_statuses ist ON ist.project_id = p.id
+                AND ist.external_id = r.fields__status__id
+            WHERE (it.id IS NULL OR ist.id IS NULL) AND r.id IS NOT NULL
+        """
+            )
+        )
+        drop_count = drop_count_result.scalar()
+        if drop_count > 0:
+            context.log.warning(
+                f"{drop_count} issues dropped due to missing type_id or status_id in dimension tables"
+            )
+
+        # H-8: Check for issues with null creation date
+        null_date_result = conn.execute(
+            text("SELECT COUNT(*) FROM raw_jira.issues WHERE fields__created IS NULL")
+        )
+        null_date_count = null_date_result.scalar()
+        if null_date_count > 0:
+            context.log.warning(
+                f"{null_date_count} issues dropped due to NULL fields__created"
+            )
+
         sql = f"""
             INSERT INTO clean_jira.issues (
                 project_id,
@@ -274,9 +299,9 @@ def clean_jira_issues(
                 ist.id as status_id,
                 {priority_col} as priority_id,
                 {resolution_col} as resolution_id,
-                r.fields__created::timestamptz as jira_created_at,
-                r.fields__updated::timestamptz as jira_updated_at,
-                {resolutiondate_col}::timestamptz as jira_resolved_at,
+                NULLIF(trim(r.fields__created::text), '')::timestamptz as jira_created_at,
+                NULLIF(trim(r.fields__updated::text), '')::timestamptz as jira_updated_at,
+                NULLIF(trim({resolutiondate_col}::text), '')::timestamptz as jira_resolved_at,
                 now() as db_created_at,
                 now() as db_updated_at
             FROM raw_jira.issues r
@@ -287,6 +312,7 @@ def clean_jira_issues(
                 AND ist.external_id = r.fields__status__id
             {priority_join}
             {resolution_join}
+            WHERE r.fields__created IS NOT NULL
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 external_key = EXCLUDED.external_key,
                 summary = EXCLUDED.summary,
@@ -344,17 +370,7 @@ def clean_jira_labels(
     engine = database.get_engine()
     with engine.connect() as conn:
         # Check if labels table exists in raw
-        table_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__fields__labels'
-            )
-        """
-            )
-        ).scalar()
+        table_exists = _table_exists(conn, "raw_jira", "issues__fields__labels")
 
         if not table_exists:
             context.log.warning("Table raw_jira.issues__fields__labels not found")
@@ -399,17 +415,7 @@ def clean_jira_issue_labels(
     engine = database.get_engine()
     with engine.connect() as conn:
         # Check if raw labels table exists
-        table_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__fields__labels'
-            )
-        """
-            )
-        ).scalar()
+        table_exists = _table_exists(conn, "raw_jira", "issues__fields__labels")
 
         if not table_exists:
             return {"status": "skipped", "reason": "no_labels_table"}
@@ -504,17 +510,7 @@ def clean_jira_issue_links(
     engine = database.get_engine()
     with engine.connect() as conn:
         # Check if issuelinks table exists
-        table_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira'
-                  AND table_name = 'issues__fields__issuelinks'
-            )
-        """
-            )
-        ).scalar()
+        table_exists = _table_exists(conn, "raw_jira", "issues__fields__issuelinks")
 
         if not table_exists:
             context.log.warning("Table raw_jira.issues__fields__issuelinks not found")
@@ -546,20 +542,31 @@ def clean_jira_issue_links(
 
         context.log.info("Syncing issue relationships...")
         # Then sync relation_issue_issues
-        # We need to handle both outward and inward links
+        # H-3: We need to handle both outward and inward links via UNION ALL
         result = conn.execute(
             text(
                 """
             WITH link_data AS (
+                -- Outward links: source -> target
                 SELECT
                     il.type__id as type_external_id,
                     r.id::text as source_external_id,
-                    COALESCE(il.outward_issue__id, il.inward_issue__id)::text as target_external_id,
+                    il.outward_issue__id::text as target_external_id,
                     r.fields__project__id::text as project_external_id
                 FROM raw_jira.issues__fields__issuelinks il
                 JOIN raw_jira.issues r ON il._dlt_parent_id = r._dlt_id
-                WHERE il.type__id IS NOT NULL
-                  AND (il.outward_issue__id IS NOT NULL OR il.inward_issue__id IS NOT NULL)
+                WHERE il.type__id IS NOT NULL AND il.outward_issue__id IS NOT NULL
+                UNION ALL
+                -- Inward links: source -> target (inward direction)
+                SELECT
+                    il.type__id as type_external_id,
+                    r.id::text as source_external_id,
+                    il.inward_issue__id::text as target_external_id,
+                    r.fields__project__id::text as project_external_id
+                FROM raw_jira.issues__fields__issuelinks il
+                JOIN raw_jira.issues r ON il._dlt_parent_id = r._dlt_id
+                WHERE il.type__id IS NOT NULL AND il.inward_issue__id IS NOT NULL
+                  AND il.outward_issue__id IS DISTINCT FROM il.inward_issue__id  -- avoid dup when same
             )
             INSERT INTO clean_jira.relation_issue_issues (
                 relation_type_id,
@@ -605,16 +612,9 @@ def clean_jira_issue_status_changelog(
         context.log.info("Extracting issue status change log...")
 
         # Check raw changelog exists
-        changelog_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira' AND table_name = 'issues__changelog__histories__items'
-            )
-        """
-            )
-        ).scalar()
+        changelog_exists = _table_exists(
+            conn, "raw_jira", "issues__changelog__histories__items"
+        )
 
         if not changelog_exists:
             return {"status": "skipped", "reason": "no_raw_changelog"}
@@ -665,7 +665,10 @@ def clean_jira_issue_status_changelog(
                 ON u.project_id = sc.project_id
                 AND u.external_id = sc.author_external_id
             WHERE s_to.id IS NOT NULL
-            ON CONFLICT (issue_id, to_status_id, changed_at) DO NOTHING
+            -- H-13: Allow updating from_status_id if Jira corrects it
+            ON CONFLICT (issue_id, to_status_id, changed_at) DO UPDATE SET
+                from_status_id = EXCLUDED.from_status_id
+            WHERE clean_jira.issue_status_changelog.from_status_id IS DISTINCT FROM EXCLUDED.from_status_id
             RETURNING id
         """
             )

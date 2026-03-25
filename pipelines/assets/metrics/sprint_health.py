@@ -20,6 +20,7 @@ from pipelines.utils.metric_registry import (
     get_calculation_id,
     get_definition_id,
     get_project_agg_id,
+    resolve_unit_field,
 )
 from pipelines.utils.polars_db import read_table, write_fact_values
 
@@ -114,16 +115,24 @@ def calculate_sprint_health(
     project_ids = sprints_df["project_id"].unique().to_list()
     project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
 
-    # SP field key
-    sp_fields = field_keys_df.filter(
-        (
-            pl.col("external_key").is_in(
-                ["customfield_10036", "customfield_10016", "story_points"]
+    # SP field key — resolved per project via units mechanism
+    # Build a map: project_id -> sp_field_key_id (or None if not configured)
+    sp_field_key_map: dict = {}
+    for p_id in project_ids:
+        unit_info = resolve_unit_field(engine, p_id, "story_points")
+        if unit_info and unit_info.get("source_field_id"):
+            field_id = unit_info["source_field_id"]
+            matched = field_keys_df.filter(pl.col("external_key") == field_id)
+            sp_field_key_map[p_id] = (
+                matched["id"][0] if not matched.is_empty() else None
             )
-        )
-        | (pl.col("name").str.to_lowercase().str.contains("story point"))
+        else:
+            sp_field_key_map[p_id] = None
+            context.log.warning(f"No story_points unit configured for project {p_id}")
+    # Use first non-None as fallback for slicing context (full set); per-project used in calc
+    sp_field_key_id = next(
+        (v for v in sp_field_key_map.values() if v is not None), None
     )
-    sp_field_key_id = sp_fields["id"][0] if not sp_fields.is_empty() else None
 
     lead_time_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
     activation_rules_raw = load_commitment_rules_for_calc(

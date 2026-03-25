@@ -272,3 +272,13 @@ def reset_database_module_state(database_env_vars):
     reset_db_state_for_tests()
     yield
     reset_db_state_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def clear_table_exists_cache():
+    """Clear _TABLE_EXISTS_CACHE between tests to prevent cross-test pollution."""
+    from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
+
+    _TABLE_EXISTS_CACHE.clear()
+    yield
+    _TABLE_EXISTS_CACHE.clear()

@@ -13,7 +13,8 @@ class SmartSlicer:
     def __init__(self, engine: Engine):
         self.engine = engine
         self.logger = logging.getLogger("SmartSlicer")
-        self._schema_cache = None
+        self._schema_cache: Optional[Dict[str, List[Tuple[str, str, str]]]] = None
+        self._columns_cache: Dict[str, List[str]] = {}
 
     def _get_schema_graph(
         self, schema: str = "clean_jira"
@@ -22,6 +23,9 @@ class SmartSlicer:
         Builds an adjacency list of tables based on Foreign Keys.
         Returns: { 'table_a': [('table_b', 'a_col', 'b_col'), ...] }
         """
+        if self._schema_cache is not None:
+            return self._schema_cache
+
         inspector = inspect(self.engine)
         graph = {}
 
@@ -47,6 +51,7 @@ class SmartSlicer:
                         graph[referred_table] = []
                     graph[referred_table].append((full_name, ref_col, local_col))
 
+        self._schema_cache = graph
         return graph
 
     def _find_path(
@@ -77,6 +82,20 @@ class SmartSlicer:
                     queue.append(new_path)
         return None
 
+    def _get_table_columns(self, schema: str, table_name: str) -> List[str]:
+        """Get column names for a table, using cache if available."""
+        full_name = f"{schema}.{table_name}"
+        if full_name in self._columns_cache:
+            return self._columns_cache[full_name]
+
+        inspector = inspect(self.engine)
+        try:
+            cols = [c["name"] for c in inspector.get_columns(table_name, schema=schema)]
+            self._columns_cache[full_name] = cols
+            return cols
+        except Exception:
+            return []
+
     def get_slice_mapping(
         self, source_table: str, target_column: str
     ) -> Optional[pl.DataFrame]:
@@ -96,15 +115,13 @@ class SmartSlicer:
             target_table = f"{schema}.{target_table_name}"
 
             # 1. Validation: Check if columns/tables exist
-            inspector = inspect(self.engine)
-            if target_table_name not in inspector.get_table_names(schema=schema):
-                self.logger.warning(f"Slicing skipped: Table {target_table} not found.")
+            cols = self._get_table_columns(schema, target_table_name)
+            if not cols:
+                self.logger.warning(
+                    f"Slicing skipped: Table {target_table} not found or empty."
+                )
                 return None
 
-            cols = [
-                c["name"]
-                for c in inspector.get_columns(target_table_name, schema=schema)
-            ]
             if col_name not in cols:
                 self.logger.warning(
                     f"Slicing skipped: Column {col_name} not found in {target_table}."
@@ -151,31 +168,25 @@ class SmartSlicer:
         Returns schema.table.col_name string for get_slice_mapping, or None.
         """
         graph = self._get_schema_graph()
-        inspector = inspect(self.engine)
 
         # Check source table itself first
         src_table_parts = source_table.split(".")
-        src_schema = src_table_parts[0]
-        src_table_name = src_table_parts[1]
-
-        src_cols = [
-            c["name"] for c in inspector.get_columns(src_table_name, schema=src_schema)
-        ]
-        if col_name in src_cols:
-            return f"{source_table}.{col_name}"
+        if len(src_table_parts) >= 2:
+            src_schema = src_table_parts[0]
+            src_table_name = src_table_parts[1]
+            src_cols = self._get_table_columns(src_schema, src_table_name)
+            if col_name in src_cols:
+                return f"{source_table}.{col_name}"
 
         # Check FK neighbors (1 hop)
         for neighbor, _, _ in graph.get(source_table, []):
             neighbor_parts = neighbor.split(".")
+            if len(neighbor_parts) < 2:
+                continue
             neighbor_schema = neighbor_parts[0]
             neighbor_table = neighbor_parts[1]
             try:
-                neighbor_cols = [
-                    c["name"]
-                    for c in inspector.get_columns(
-                        neighbor_table, schema=neighbor_schema
-                    )
-                ]
+                neighbor_cols = self._get_table_columns(neighbor_schema, neighbor_table)
                 if col_name in neighbor_cols:
                     return f"{neighbor}.{col_name}"
             except Exception as e:

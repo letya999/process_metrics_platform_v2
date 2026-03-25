@@ -5,7 +5,33 @@ from typing import Any
 
 from sqlalchemy import text
 
+from pipelines.utils.constants import (
+    SPRINT_FIELD_ID_DEFAULT,
+)
+
 logger = logging.getLogger(__name__)
+
+_TABLE_EXISTS_CACHE: dict[str, bool] = {}
+
+
+def _table_exists(conn: Any, schema: str, table: str) -> bool:
+    """Check if a table exists in the database with caching."""
+    key = f"{schema}.{table}"
+    if key in _TABLE_EXISTS_CACHE:
+        return _TABLE_EXISTS_CACHE[key]
+    result = conn.execute(
+        text(
+            """
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = :schema AND table_name = :table
+        )
+    """
+        ),
+        {"schema": schema, "table": table},
+    ).scalar()
+    _TABLE_EXISTS_CACHE[key] = bool(result)
+    return bool(result)
 
 
 def _get_platform_project_id(conn: Any) -> str:
@@ -38,8 +64,11 @@ def _detect_sprint_field_id(conn: Any) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Failed to auto-detect sprint field id from raw_jira.fields, "
-            "falling back to customfield_10020: %s",
+            "falling back to candidate list: %s",
             exc,
         )
-    # Fallback to standard customfield_10020
-    return "customfield_10020"
+
+    # Fallback: check candidates in raw_jira.issues columns or use default
+    # Note: We don't check existence here to avoid heavy queries, just return
+    # the most likely ID based on constants.
+    return SPRINT_FIELD_ID_DEFAULT

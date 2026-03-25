@@ -4,7 +4,7 @@ Each check targets a specific asset and surfaces silent data-quality issues
 that would otherwise go undetected until a downstream consumer fails.
 """
 
-from dagster import AssetCheckExecutionContext, AssetCheckResult, asset_check
+from dagster import AssetCheckExecutionContext, AssetCheckResult, AssetKey, asset_check
 from sqlalchemy import text
 
 from pipelines.resources.database import DatabaseResource
@@ -183,16 +183,9 @@ def check_raw_clean_issue_count(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        raw_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira' AND table_name = 'issues'
-            )
-        """
-            )
-        ).scalar()
+        from ._utils import _table_exists
+
+        raw_exists = _table_exists(conn, "raw_jira", "issues")
 
         if not raw_exists:
             return AssetCheckResult(
@@ -240,16 +233,9 @@ def check_raw_clean_sprint_count(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        raw_exists = conn.execute(
-            text(
-                """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'raw_jira' AND table_name = 'sprints'
-            )
-        """
-            )
-        ).scalar()
+        from ._utils import _table_exists
+
+        raw_exists = _table_exists(conn, "raw_jira", "sprints")
 
         if not raw_exists:
             return AssetCheckResult(
@@ -586,4 +572,44 @@ def check_jira_users_have_external_id(
     return AssetCheckResult(
         passed=null_count == 0,
         metadata={"users_with_null_external_id": null_count},
+    )
+
+
+@asset_check(
+    asset=AssetKey("calculate_flow_efficiency"),
+    description="Verify flow_efficiency_pct is not all-zero (detects missing/wrong status category config)",
+)
+def check_flow_efficiency_nonzero(
+    context: AssetCheckExecutionContext,
+    database: DatabaseResource,
+) -> AssetCheckResult:
+    """Detect case where flow_efficiency_pct is 0 for ALL issues.
+    This indicates status category misconfiguration (e.g. wrong category enum values).
+    """
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        # Check fact_values for flow_efficiency metric
+        result = conn.execute(
+            text(
+                """
+            SELECT COUNT(*) as total, SUM(CASE WHEN value > 0 THEN 1 ELSE 0 END) as nonzero
+            FROM metrics.fact_values fv
+            JOIN metrics.calculations c ON c.id = fv.metric_id
+            WHERE c.calc_code = 'flow_efficiency_pct'
+        """
+            )
+        ).fetchone()
+    total = result[0] or 0
+    nonzero = result[1] or 0
+    if total == 0:
+        return AssetCheckResult(passed=True, metadata={"status": "no_data"})
+    nonzero_pct = (nonzero / total) * 100
+    return AssetCheckResult(
+        passed=nonzero_pct
+        > 5.0,  # At least 5% of issues should have >0 flow efficiency
+        metadata={
+            "total_rows": total,
+            "nonzero_rows": nonzero,
+            "nonzero_pct": round(nonzero_pct, 2),
+        },
     )

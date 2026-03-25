@@ -57,6 +57,13 @@ def test_calculate_sprint_health_success(monkeypatch):
     monkeypatch.setattr(
         sprint_health, "write_fact_values", lambda df, *_a, **_k: df.height
     )
+    monkeypatch.setattr(
+        sprint_health,
+        "resolve_unit_field",
+        lambda _engine, _project_id, _unit_code: {
+            "source_field_id": "customfield_10016"
+        },
+    )
 
     def _read_table(_engine, query, params=None):
         if "FROM clean_jira.sprints" in query:
@@ -96,7 +103,7 @@ def test_calculate_sprint_health_success(monkeypatch):
             return pl.DataFrame(
                 {
                     "id": ["SP", "PR"],
-                    "external_key": ["customfield_10036", "priority"],
+                    "external_key": ["customfield_10016", "priority"],
                     "name": ["Story Points", "Priority"],
                 }
             )
@@ -167,7 +174,6 @@ def test_calculate_sprint_health_success(monkeypatch):
         "identify_commitment_points_from_rule",
         lambda *_a, **_k: {"start_status_ids": ["TODO"], "end_status_ids": ["DONE"]},
     )
-
     monkeypatch.setattr(
         sprint_health.sprint_health_logic,
         "calculate_sprint_scope_changes",
@@ -250,6 +256,168 @@ def test_calculate_sprint_health_success(monkeypatch):
     assert out["status"] == "success"
     assert out["rows_written"] > 0
     assert out["metrics_calculated"] >= 5
+
+
+def test_sprint_health_uses_resolve_unit_field_per_project(monkeypatch):
+    monkeypatch.setattr(sprint_health, "get_definition_id", lambda *_a, **_k: "d1")
+    monkeypatch.setattr(
+        sprint_health,
+        "get_calculation_id",
+        lambda _e, _code: "calc-id",
+    )
+    monkeypatch.setattr(
+        sprint_health, "get_project_agg_id", lambda _e, project_id: f"agg-{project_id}"
+    )
+    monkeypatch.setattr(
+        sprint_health, "write_fact_values", lambda df, *_a, **_k: df.height
+    )
+
+    calls = []
+
+    def _resolve_unit_field(_engine, project_id, unit_code):
+        calls.append((project_id, unit_code))
+        return {
+            "P1": {"source_field_id": "customfield_10016"},
+            "P2": {"source_field_id": "customfield_20016"},
+        }.get(project_id)
+
+    monkeypatch.setattr(sprint_health, "resolve_unit_field", _resolve_unit_field)
+
+    def _read_table(_engine, query, params=None):
+        if "FROM clean_jira.sprints" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["S1", "S2"],
+                    "project_id": ["P1", "P2"],
+                    "start_date": [datetime(2026, 1, 1), datetime(2026, 1, 1)],
+                    "end_date": [datetime(2026, 1, 14), datetime(2026, 1, 14)],
+                    "complete_date": [datetime(2026, 1, 14), datetime(2026, 1, 14)],
+                }
+            )
+        if "FROM clean_jira.sprint_issues_changelog" in query:
+            return pl.DataFrame(
+                {
+                    "issue_id": ["I1", "I2"],
+                    "sprint_id": ["S1", "S2"],
+                    "action": ["added", "added"],
+                    "changed_at": [datetime(2026, 1, 1), datetime(2026, 1, 1)],
+                }
+            )
+        if "FROM clean_jira.sprint_issues" in query:
+            return pl.DataFrame({"issue_id": ["I1", "I2"], "sprint_id": ["S1", "S2"]})
+        if "FROM clean_jira.issues i" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["I1", "I2"],
+                    "project_id": ["P1", "P2"],
+                    "issue_key": ["P1-1", "P2-1"],
+                    "created_at": [datetime(2025, 12, 1), datetime(2025, 12, 1)],
+                    "updated_at": [datetime(2026, 1, 2), datetime(2026, 1, 2)],
+                    "jira_resolved_at": [None, None],
+                    "status_id": ["DONE", "DONE"],
+                    "issue_type_id": ["T1", "T1"],
+                    "type_name": ["Story", "Story"],
+                }
+            )
+        if "FROM clean_jira.field_keys" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["FK1", "FK2"],
+                    "external_key": ["customfield_10016", "customfield_20016"],
+                    "name": ["Story Points P1", "Story Points P2"],
+                }
+            )
+        if "FROM clean_jira.field_values" in query:
+            return pl.DataFrame({"issue_id": [], "field_key_id": [], "json_value": []})
+        if "FROM clean_jira.field_value_changelog" in query:
+            return pl.DataFrame(
+                schema={
+                    "issue_id": pl.Utf8,
+                    "field_key_id": pl.Utf8,
+                    "old_value": pl.Utf8,
+                    "new_value": pl.Utf8,
+                    "changed_at": pl.Datetime,
+                }
+            )
+        if "FROM clean_jira.issue_status_changelog" in query:
+            return pl.DataFrame(
+                {
+                    "issue_id": [],
+                    "from_status_id": [],
+                    "to_status_id": [],
+                    "changed_at": [],
+                }
+            )
+        if "FROM clean_jira.board_columns bc" in query:
+            return pl.DataFrame(
+                {
+                    "id": ["C1", "C2"],
+                    "board_id": ["B1", "B2"],
+                    "name": ["Done", "Done"],
+                    "status_id": ["DONE", "DONE"],
+                    "position": [1, 1],
+                }
+            )
+        if "FROM clean_jira.boards" in query:
+            return pl.DataFrame({"id": ["B1", "B2"], "project_id": ["P1", "P2"]})
+        if "FROM metrics.calculation_settings" in query:
+            return pl.DataFrame()
+        raise AssertionError(query)
+
+    monkeypatch.setattr(sprint_health, "read_table", _read_table)
+    monkeypatch.setattr(
+        sprint_health,
+        "load_commitment_rules_for_calc",
+        lambda *_a, **_k: pl.DataFrame({"r": [1]}),
+    )
+    monkeypatch.setattr(
+        sprint_health, "resolve_rule_from_cache", lambda *_a, **_k: {"id": "r1"}
+    )
+    monkeypatch.setattr(
+        sprint_health,
+        "identify_commitment_points_from_rule",
+        lambda *_a, **_k: {"start_status_ids": ["TODO"], "end_status_ids": ["DONE"]},
+    )
+    monkeypatch.setattr(
+        sprint_health.sprint_health_logic,
+        "calculate_sprint_scope_changes",
+        lambda *_a, **_k: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        sprint_health.sprint_health_logic,
+        "calculate_sprint_spillover",
+        lambda *_a, **_k: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        sprint_health.sprint_health_logic,
+        "calculate_sprint_burndown",
+        lambda *_a, **_k: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        sprint_health.sprint_health_logic,
+        "calculate_activation_velocity",
+        lambda *_a, **_k: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        sprint_health.sprint_health_logic,
+        "calculate_unestimated_closed",
+        lambda *_a, **_k: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        sprint_health.sprint_health_logic,
+        "calculate_field_value_sprint_pct",
+        lambda *_a, **_k: pl.DataFrame(),
+    )
+    monkeypatch.setattr(
+        sprint_health, "get_slice_rules", lambda *_a, **_k: pl.DataFrame()
+    )
+
+    _asset_fn(sprint_health.calculate_sprint_health)(
+        _DummyContext(), _DummyDatabase(object())
+    )
+
+    assert ("P1", "story_points") in calls
+    assert ("P2", "story_points") in calls
 
 
 def test_sprint_health_data_quality_check_fail_and_pass(monkeypatch):

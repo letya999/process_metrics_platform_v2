@@ -3,8 +3,9 @@ Metric Registry: Centralized utility for resolving metadata IDs from the databas
 Uses a simple dictionary cache with TTL within the process to minimize database queries.
 """
 
+import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -13,19 +14,22 @@ from sqlalchemy.engine import Engine
 # Format: {cache_key: {"value": any, "expires_at": float}}
 _CACHE: Dict[str, Dict[str, Any]] = {}
 _TTL = 300  # 5 minutes
+_CACHE_LOCK = threading.Lock()
 
 
 def _get_from_cache(key: str) -> Optional[Any]:
     """Get value from cache if it exists and hasn't expired."""
-    entry = _CACHE.get(key)
-    if entry and entry["expires_at"] > time.time():
-        return entry["value"]
+    with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if entry and entry["expires_at"] > time.time():
+            return entry["value"]
     return None
 
 
 def _set_in_cache(key: str, value: Any) -> None:
     """Store value in cache with expiration."""
-    _CACHE[key] = {"value": value, "expires_at": time.time() + _TTL}
+    with _CACHE_LOCK:
+        _CACHE[key] = {"value": value, "expires_at": time.time() + _TTL}
 
 
 def get_calculation_id(engine: Engine, calc_code: str) -> str:
@@ -95,6 +99,39 @@ def get_project_agg_id(engine: Engine, project_id: str) -> str:
     return str(result)
 
 
+def get_project_agg_ids_batch(engine: Engine, project_ids: List[str]) -> Dict[str, str]:
+    """Return {project_id: project_agg_id} for all given project_ids in one query."""
+    result = {}
+    missing = []
+    for pid in project_ids:
+        cached = _get_from_cache(f"proj_agg_id_{pid}")
+        if cached is not None:
+            result[pid] = cached
+        else:
+            missing.append(pid)
+
+    if missing:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT project_id, id FROM metrics.dim_projects WHERE project_id = ANY(CAST(:ids AS uuid[]))"
+                ),
+                {"ids": missing},
+            ).fetchall()
+        for row in rows:
+            pid, agg_id = str(row[0]), str(row[1])
+            _set_in_cache(f"proj_agg_id_{pid}", agg_id)
+            result[pid] = agg_id
+
+        for pid in missing:
+            if pid not in result:
+                raise ValueError(
+                    f"Project ID '{pid}' not found in metrics.dim_projects."
+                )
+
+    return result
+
+
 def resolve_unit_field(
     engine: Engine, project_id: str, unit_code: str
 ) -> Optional[Dict[str, Any]]:
@@ -135,5 +172,5 @@ def resolve_unit_field(
 
 def clear_cache():
     """Clear the internal cache (useful for tests)."""
-    global _CACHE
-    _CACHE.clear()
+    with _CACHE_LOCK:
+        _CACHE.clear()
