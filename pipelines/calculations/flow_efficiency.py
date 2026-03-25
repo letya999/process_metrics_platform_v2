@@ -49,6 +49,15 @@ def calculate_flow_efficiency_per_issue(
         ["issue_id", "changed_at"]
     )
 
+    # Restrict intervals to the first completion window per issue.
+    history = history.join(
+        completed_events.select(
+            ["issue_id", pl.col("changed_at").alias("completion_date")]
+        ),
+        on="issue_id",
+        how="inner",
+    )
+
     # 3. Calculate time in each status
     # Add next_changed_at by shifting
     history = history.with_columns(
@@ -58,12 +67,21 @@ def calculate_flow_efficiency_per_issue(
     # Duration in status
     history = history.with_columns(
         [
+            pl.when(pl.col("next_changed_at").is_null())
+            .then(pl.col("completion_date"))
+            .otherwise(pl.min_horizontal(["next_changed_at", "completion_date"]))
+            .alias("interval_end_at")
+        ]
+    ).filter(pl.col("changed_at") < pl.col("completion_date"))
+
+    history = history.with_columns(
+        [
             (
-                (pl.col("next_changed_at") - pl.col("changed_at")).dt.total_seconds()
+                (pl.col("interval_end_at") - pl.col("changed_at")).dt.total_seconds()
                 / 86400.0
             ).alias("duration_days")
         ]
-    ).filter(pl.col("duration_days").is_not_null())
+    ).filter(pl.col("duration_days") > 0)
 
     # 4. Map statuses to Active/Wait
     active_set = set(active_status_ids)

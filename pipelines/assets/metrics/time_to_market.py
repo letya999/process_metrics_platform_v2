@@ -136,16 +136,41 @@ def calculate_time_to_market(
 
         if not ttm_df.is_empty():
             ttm_df = ttm_df.with_columns(
-                pl.lit(points.get("commitment_rule_id"))
-                .cast(pl.Utf8)
-                .alias("commitment_rule_id")
+                [
+                    pl.lit(points.get("commitment_rule_id"))
+                    .cast(pl.Utf8)
+                    .alias("commitment_rule_id"),
+                    pl.lit(b_id).cast(pl.Utf8).alias("_source_board_id"),
+                    pl.lit(points.get("commitment_rule_id") is not None)
+                    .cast(pl.Boolean)
+                    .alias("_has_rule"),
+                ]
             )
             all_ttm.append(ttm_df)
 
     if not all_ttm:
         return {"status": "no_data"}
 
-    ttm_wide = pl.concat(all_ttm).unique(subset=["issue_id"])
+    # Deterministic winner per issue for multi-board projects:
+    # 1) rows with explicit commitment_rule_id
+    # 2) earlier commitment_start_at
+    # 3) earlier commitment_end_at
+    # 4) stable board id tie-breaker
+    ttm_wide = (
+        pl.concat(all_ttm)
+        .sort(
+            [
+                "issue_id",
+                "_has_rule",
+                "commitment_start_at",
+                "commitment_end_at",
+                "_source_board_id",
+            ],
+            descending=[False, True, False, False, False],
+        )
+        .unique(subset=["issue_id"], keep="first")
+        .drop(["_source_board_id", "_has_rule"])
+    )
 
     # 5. Transform to fact_values
     def transform_to_fact_values(

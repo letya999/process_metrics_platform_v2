@@ -1,3 +1,4 @@
+import os
 from typing import List
 
 import polars as pl
@@ -99,6 +100,10 @@ def calculate_epic_delivery_time(
     """
     Calculate epic delivery time: min(child starts) to max(child dones).
     """
+    strict_complete_children = (
+        os.getenv("METRICS_STRICT_EPIC_COMPLETION", "true").lower() == "true"
+    )
+
     if "parent_id" not in issues_df.columns:
         return pl.DataFrame(
             schema={
@@ -153,10 +158,17 @@ def calculate_epic_delivery_time(
                 pl.col("project_id").first(),
                 pl.col("issue_start").min().alias("epic_start"),
                 pl.col("issue_end").max().alias("epic_end"),
+                pl.col("id").count().alias("child_count"),
+                pl.col("issue_end").is_not_null().sum().alias("done_child_count"),
             ]
         )
         .filter(pl.col("epic_start").is_not_null() & pl.col("epic_end").is_not_null())
     )
+
+    if strict_complete_children:
+        epic_times = epic_times.filter(
+            pl.col("child_count") == pl.col("done_child_count")
+        )
 
     # Join with epic details
     epics = issues_df.select(["id", "issue_key"]).rename(

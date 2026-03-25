@@ -113,7 +113,11 @@ def calculate_cycle_time_extended(
                     list(set(all_done_ids)),
                 )
                 if not lifetime.is_empty():
-                    lifetime_results.append(lifetime)
+                    lifetime_results.append(
+                        lifetime.with_columns(
+                            pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id")
+                        )
+                    )
         if lifetime_results:
             results.append(
                 pl.concat(lifetime_results).with_columns(
@@ -144,12 +148,30 @@ def calculate_cycle_time_extended(
                     end_ids[0],
                 )
                 if not custom_cycle.is_empty():
-                    custom_results.append(custom_cycle)
+                    custom_results.append(
+                        custom_cycle.with_columns(
+                            [
+                                pl.lit(points.get("commitment_rule_id"))
+                                .cast(pl.Utf8)
+                                .alias("commitment_rule_id"),
+                                pl.lit(points.get("commitment_rule_id") is not None)
+                                .cast(pl.Boolean)
+                                .alias("_has_rule"),
+                            ]
+                        )
+                    )
         if custom_results:
-            results.append(
-                pl.concat(custom_results).with_columns(
-                    pl.lit(calc_id_custom).alias("calc_id")
+            custom_merged = (
+                pl.concat(custom_results)
+                .sort(
+                    ["id", "_has_rule", "end_at"],
+                    descending=[False, True, False],
                 )
+                .unique(subset=["id"], keep="first")
+                .drop(["_has_rule"])
+            )
+            results.append(
+                custom_merged.with_columns(pl.lit(calc_id_custom).alias("calc_id"))
             )
 
         # C. Epic Delivery Time
@@ -175,12 +197,30 @@ def calculate_cycle_time_extended(
                     end_ids,
                 )
                 if not epic_delivery.is_empty():
-                    epic_results.append(epic_delivery)
+                    epic_results.append(
+                        epic_delivery.with_columns(
+                            [
+                                pl.lit(points.get("commitment_rule_id"))
+                                .cast(pl.Utf8)
+                                .alias("commitment_rule_id"),
+                                pl.lit(points.get("commitment_rule_id") is not None)
+                                .cast(pl.Boolean)
+                                .alias("_has_rule"),
+                            ]
+                        )
+                    )
         if epic_results:
-            results.append(
-                pl.concat(epic_results).with_columns(
-                    pl.lit(calc_id_epic).alias("calc_id")
+            epic_merged = (
+                pl.concat(epic_results)
+                .sort(
+                    ["epic_id", "_has_rule", "epic_end"],
+                    descending=[False, True, False],
                 )
+                .unique(subset=["epic_id"], keep="first")
+                .drop(["_has_rule"])
+            )
+            results.append(
+                epic_merged.with_columns(pl.lit(calc_id_epic).alias("calc_id"))
             )
 
         return results
@@ -201,7 +241,17 @@ def calculate_cycle_time_extended(
                 if cid == calc_id_lifetime
                 else ("end_at" if cid == calc_id_custom else "epic_end")
             )
-            ent_id_col = "epic_id" if cid == calc_id_epic else "id"
+            ent_id_col = "epic_key" if cid == calc_id_epic else "issue_key"
+            event_start_col = (
+                "created_at"
+                if cid == calc_id_lifetime
+                else ("start_at" if cid == calc_id_custom else "epic_start")
+            )
+            event_end_col = (
+                "done_date"
+                if cid == calc_id_lifetime
+                else ("end_at" if cid == calc_id_custom else "epic_end")
+            )
 
             facts = df_wide.with_columns(
                 [
@@ -220,9 +270,15 @@ def calculate_cycle_time_extended(
                     pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
                     if slice_value_col
                     else pl.lit(None).cast(pl.Utf8).alias("slice_value"),
-                    pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
-                    pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
-                    pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
+                    pl.col("commitment_rule_id")
+                    .cast(pl.Utf8)
+                    .alias("commitment_rule_id"),
+                    pl.col(event_start_col)
+                    .cast(pl.Datetime("us", "UTC"))
+                    .alias("event_start_at"),
+                    pl.col(event_end_col)
+                    .cast(pl.Datetime("us", "UTC"))
+                    .alias("event_end_at"),
                 ]
             )
             facts_list.append(
@@ -274,13 +330,25 @@ def calculate_cycle_time_extended(
                 if cid == calc_id_lifetime
                 else ("end_at" if cid == calc_id_custom else "epic_end")
             )
-            ent_id_col = "epic_id" if cid == calc_id_epic else "id"
-            res_list[i] = df.rename(
-                {
-                    val_col: "value",
-                    time_col: "time_id_src",
-                    ent_id_col: "entity_id_src",
-                }
+            entity_key_col = "epic_key" if cid == calc_id_epic else "issue_key"
+            event_start_col = (
+                "created_at"
+                if cid == calc_id_lifetime
+                else ("start_at" if cid == calc_id_custom else "epic_start")
+            )
+            event_end_col = (
+                "done_date"
+                if cid == calc_id_lifetime
+                else ("end_at" if cid == calc_id_custom else "epic_end")
+            )
+            res_list[i] = df.with_columns(
+                [
+                    pl.col(val_col).alias("value"),
+                    pl.col(time_col).alias("time_id_src"),
+                    pl.col(entity_key_col).alias("entity_id_src"),
+                    pl.col(event_start_col).alias("event_start_src"),
+                    pl.col(event_end_col).alias("event_end_src"),
+                ]
             )
         return pl.concat(res_list)
 
@@ -315,11 +383,13 @@ def calculate_cycle_time_extended(
                                 pl.col("slice_value")
                                 .cast(pl.Utf8)
                                 .alias("slice_value"),
-                                pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
-                                pl.lit(None)
+                                pl.col("commitment_rule_id")
+                                .cast(pl.Utf8)
+                                .alias("commitment_rule_id"),
+                                pl.col("event_start_src")
                                 .cast(pl.Datetime("us", "UTC"))
                                 .alias("event_start_at"),
-                                pl.lit(None)
+                                pl.col("event_end_src")
                                 .cast(pl.Datetime("us", "UTC"))
                                 .alias("event_end_at"),
                             ]

@@ -146,17 +146,29 @@ def calculate_sprint_scope_changes(
         how="inner",
     )
 
-    added_cl = cl_with_dates.filter(
-        (pl.col("action") == "added")
-        & (pl.col("changed_at") > pl.col("start_date"))
-        & (pl.col("changed_at") <= pl.col("effective_end_date"))
-    ).select(["issue_id", "sprint_id", "changed_at"])
+    added_cl = (
+        cl_with_dates.filter(
+            (pl.col("action") == "added")
+            & (pl.col("changed_at") > pl.col("start_date"))
+            & (pl.col("changed_at") <= pl.col("effective_end_date"))
+        )
+        .select(["issue_id", "sprint_id", "changed_at"])
+        .sort("changed_at", descending=False)
+        # Count each issue as scope creep only once per sprint.
+        .unique(subset=["issue_id", "sprint_id"], keep="first")
+    )
 
-    removed_cl = cl_with_dates.filter(
-        (pl.col("action") == "removed")
-        & (pl.col("changed_at") > pl.col("start_date"))
-        & (pl.col("changed_at") <= pl.col("effective_end_date"))
-    ).select(["issue_id", "sprint_id", "changed_at"])
+    removed_cl = (
+        cl_with_dates.filter(
+            (pl.col("action") == "removed")
+            & (pl.col("changed_at") > pl.col("start_date"))
+            & (pl.col("changed_at") <= pl.col("effective_end_date"))
+        )
+        .select(["issue_id", "sprint_id", "changed_at"])
+        .sort("changed_at", descending=False)
+        # Count each issue as removed only once per sprint.
+        .unique(subset=["issue_id", "sprint_id"], keep="first")
+    )
 
     current_sp_df = extract_story_points(issues_df, field_values_df, field_keys_df)
 
@@ -641,25 +653,33 @@ def calculate_field_value_sprint_pct(
 
     field_key_id = field_key["id"][0]
 
-    # Get all issues in sprints
-    sprint_full = sprint_issues_df.join(
-        field_values_df.filter(pl.col("field_key_id") == field_key_id),
-        on="issue_id",
-        how="left",
+    sprint_unique = sprint_issues_df.select(["sprint_id", "issue_id"]).unique()
+    field_values_single = (
+        field_values_df.filter(pl.col("field_key_id") == field_key_id)
+        .group_by("issue_id")
+        .agg(
+            pl.col("json_value")
+            .drop_nulls()
+            .cast(pl.Utf8)
+            .str.strip_chars()
+            .first()
+            .alias("field_value")
+        )
     )
+    sprint_full = sprint_unique.join(field_values_single, on="issue_id", how="left")
 
     # Calculate pct per sprint
     agg = (
         sprint_full.group_by("sprint_id")
         .agg(
             [
-                pl.col("issue_id").count().alias("total_count"),
-                pl.col("json_value")
+                pl.col("issue_id").n_unique().alias("total_count"),
+                pl.col("issue_id")
                 .filter(
-                    pl.col("json_value").cast(pl.Utf8).str.to_lowercase()
-                    == field_value.lower()
+                    pl.col("field_value").cast(pl.Utf8).str.to_lowercase()
+                    == field_value.lower().strip()
                 )
-                .count()
+                .n_unique()
                 .alias("match_count"),
             ]
         )
@@ -670,6 +690,7 @@ def calculate_field_value_sprint_pct(
                 .otherwise(pl.lit(0.0))
             ).alias("field_pct")
         )
+        .with_columns(pl.col("field_pct").clip(0.0, 100.0))
     )
 
     result = (
@@ -709,19 +730,36 @@ def calculate_unestimated_closed(
         sprints_df,
     )
 
-    # Join with SP values
-    unestimated = completed.join(
-        field_values_df.filter(pl.col("field_key_id") == sp_field_key_id),
-        on="issue_id",
-        how="left",
-    ).filter(
-        pl.col("json_value").is_null()
-        | (pl.col("json_value").cast(pl.Utf8) == "0")
-        | (pl.col("json_value").cast(pl.Utf8) == "0.0")
+    sp_by_issue = (
+        field_values_df.filter(pl.col("field_key_id") == sp_field_key_id)
+        .with_columns(
+            pl.when(
+                pl.col("json_value").is_not_null()
+                & pl.col("json_value")
+                .cast(pl.Utf8)
+                .str.strip_chars()
+                .str.contains(r"^-?[0-9]+\.?[0-9]*$")
+            )
+            .then(
+                pl.col("json_value")
+                .cast(pl.Utf8)
+                .str.strip_chars()
+                .cast(pl.Float64, strict=False)
+            )
+            .otherwise(None)
+            .alias("sp_num")
+        )
+        .group_by("issue_id")
+        # If any positive estimate exists for issue, treat it as estimated.
+        .agg(pl.col("sp_num").max().alias("sp_num"))
+    )
+
+    unestimated = completed.join(sp_by_issue, on="issue_id", how="left").filter(
+        pl.col("sp_num").is_null() | (pl.col("sp_num") <= 0.0)
     )
 
     agg = unestimated.group_by("sprint_id").agg(
-        pl.col("issue_id").count().alias("unestimated_count")
+        pl.col("issue_id").n_unique().alias("unestimated_count")
     )
 
     result = (

@@ -15,6 +15,15 @@ from pipelines.calculations.commitment_resolver import (
 )
 
 
+def _to_utc_datetime(value: datetime) -> datetime:
+    """Normalize datetime to timezone-aware UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def calculate_work_item_aging_facts(
     issues_df: pl.DataFrame,
     status_changelog_df: pl.DataFrame,
@@ -65,43 +74,85 @@ def calculate_work_item_aging_facts(
     if active_issues.is_empty():
         return pl.DataFrame()
 
-    # 3. Identify commitment points (In Progress)
-    points = identify_commitment_points_heuristic(board_columns_df)
-    middle_status_ids = points["middle_status_ids"]
-    end_status_ids = points["end_status_ids"]
+    # 3. Resolve commitment points per project to avoid cross-project status leakage.
+    # Fall back to global heuristic only for projects without board metadata.
+    start_events_by_project = []
+    if not status_changelog_df.is_empty():
+        active_project_ids = active_issues["project_id"].unique().to_list()
 
-    # 4. Find commitment start for each active issue
-    if not status_changelog_df.is_empty() and middle_status_ids:
-        # a. Find LAST time issue LEFT the "Done" column (to handle Done -> In Progress)
-        # Note: from_status_id may be NULL (e.g. 30% of Jira changelog for initial status)
-        last_left_done = (
-            status_changelog_df.filter(
-                pl.col("from_status_id").is_in(end_status_ids)
-                & ~pl.col("to_status_id").is_in(end_status_ids)
+        for project_id in active_project_ids:
+            project_issue_ids = active_issues.filter(
+                pl.col("project_id") == project_id
+            )["id"].to_list()
+            if not project_issue_ids:
+                continue
+
+            project_board_ids = boards_df.filter(pl.col("project_id") == project_id)[
+                "id"
+            ].to_list()
+            project_middle_status_ids = []
+            project_end_status_ids = []
+
+            for board_id in project_board_ids:
+                points = identify_commitment_points_heuristic(
+                    board_columns_df.filter(pl.col("board_id") == board_id)
+                )
+                project_middle_status_ids.extend(points.get("middle_status_ids", []))
+                project_end_status_ids.extend(points.get("end_status_ids", []))
+
+            if not project_middle_status_ids and not project_end_status_ids:
+                fallback = identify_commitment_points_heuristic(board_columns_df)
+                project_middle_status_ids = fallback.get("middle_status_ids", [])
+                project_end_status_ids = fallback.get("end_status_ids", [])
+
+            project_middle_status_ids = list(set(project_middle_status_ids))
+            project_end_status_ids = list(set(project_end_status_ids))
+
+            if not project_middle_status_ids:
+                continue
+
+            project_changelog = status_changelog_df.filter(
+                pl.col("issue_id").is_in(project_issue_ids)
             )
-            .group_by("issue_id")
-            .agg(pl.col("changed_at").max().alias("last_left_done_at"))
-        )
+            if project_changelog.is_empty():
+                continue
 
-        # b. Find FIRST entry to In Progress (middle) AFTER that exit
-        start_transitions = status_changelog_df.filter(
-            pl.col("to_status_id").is_in(middle_status_ids)
-        )
-
-        if not last_left_done.is_empty():
-            start_transitions = start_transitions.join(
-                last_left_done, on="issue_id", how="left"
-            ).filter(
-                pl.col("last_left_done_at").is_null()
-                | (pl.col("changed_at") > pl.col("last_left_done_at"))
+            # a. Find LAST time issue LEFT the "Done" column (to handle Done -> In Progress)
+            # Note: from_status_id may be NULL (e.g. 30% of Jira changelog for initial status)
+            last_left_done = (
+                project_changelog.filter(
+                    pl.col("from_status_id").is_in(project_end_status_ids)
+                    & ~pl.col("to_status_id").is_in(project_end_status_ids)
+                )
+                .group_by("issue_id")
+                .agg(pl.col("changed_at").max().alias("last_left_done_at"))
             )
 
-        start_events = start_transitions.group_by("issue_id").agg(
-            pl.col("changed_at").min().alias("start_at_from_changelog")
-        )
+            # b. Find FIRST entry to In Progress (middle) AFTER that exit
+            start_transitions = project_changelog.filter(
+                pl.col("to_status_id").is_in(project_middle_status_ids)
+            )
 
+            if not last_left_done.is_empty():
+                start_transitions = start_transitions.join(
+                    last_left_done, on="issue_id", how="left"
+                ).filter(
+                    pl.col("last_left_done_at").is_null()
+                    | (pl.col("changed_at") > pl.col("last_left_done_at"))
+                )
+
+            start_events = start_transitions.group_by("issue_id").agg(
+                pl.col("changed_at").min().alias("start_at_from_changelog")
+            )
+            if not start_events.is_empty():
+                start_events_by_project.append(start_events)
+
+    if start_events_by_project:
         active_issues = active_issues.join(
-            start_events, left_on="id", right_on="issue_id", how="left"
+            pl.concat(start_events_by_project),
+            left_on="id",
+            right_on="issue_id",
+            how="left",
         )
     else:
         active_issues = active_issues.with_columns(
@@ -179,7 +230,8 @@ def calculate_blocked_time(
     Calculate total hours an issue was in "blocked" state.
     """
     if now_date is None:
-        now_date = datetime.now(timezone.utc).replace(tzinfo=None)
+        now_date = datetime.now(timezone.utc)
+    now_date = _to_utc_datetime(now_date)
 
     if field_value_changelog_df.is_empty():
         return pl.DataFrame(
@@ -224,18 +276,17 @@ def calculate_blocked_time(
         blocked_since = None
 
         for change in issue_changes:
+            change_time = _to_utc_datetime(change["change_time"])
             new_val_blocked = is_blocked_val(change["new_value"])
             old_val_blocked = is_blocked_val(change["old_value"])
 
             if new_val_blocked and not old_val_blocked:
                 # Started being blocked
-                blocked_since = change["change_time"]
+                blocked_since = change_time
             elif not new_val_blocked and old_val_blocked:
                 # Stopped being blocked
                 if blocked_since:
-                    total_seconds += (
-                        change["change_time"] - blocked_since
-                    ).total_seconds()
+                    total_seconds += (change_time - blocked_since).total_seconds()
                     blocked_since = None
 
         # If still blocked
@@ -266,8 +317,10 @@ def calculate_stale_days(
     """
     Calculate days since last update for open issues.
     """
+    _ = issue_status_changelog_df  # Reserved for future stale logic based on status transitions.
     if now_date is None:
-        now_date = datetime.now(timezone.utc).replace(tzinfo=None)
+        now_date = datetime.now(timezone.utc)
+    now_date = _to_utc_datetime(now_date)
 
     # Filter issues: not in done category
     # We need issue_statuses to know category, but if not available, use done_status_ids
@@ -289,11 +342,21 @@ def calculate_stale_days(
             }
         )
 
-    result = open_issues.with_columns(
-        ((pl.lit(now_date) - pl.col("updated_at")).dt.total_seconds() / 86400.0)
-        .round(2)
-        .alias("stale_days")
-    ).rename({"id": "issue_id", "key": "issue_key", "status_id": "current_status_id"})
+    result = (
+        open_issues.with_columns(
+            pl.col("updated_at")
+            .map_elements(_to_utc_datetime, return_dtype=pl.Datetime("us", "UTC"))
+            .alias("updated_at_utc")
+        )
+        .with_columns(
+            ((pl.lit(now_date) - pl.col("updated_at_utc")).dt.total_seconds() / 86400.0)
+            .round(2)
+            .alias("stale_days")
+        )
+        .rename(
+            {"id": "issue_id", "key": "issue_key", "status_id": "current_status_id"}
+        )
+    )
 
     return result.select(
         ["project_id", "issue_id", "issue_key", "current_status_id", "stale_days"]
