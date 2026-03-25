@@ -10,6 +10,21 @@ from ..utils.smart_slicer import SmartSlicer
 logger = logging.getLogger(__name__)
 
 
+def _normalize_datetime_precision(df: pl.DataFrame) -> pl.DataFrame:
+    """Cast all Datetime columns to microseconds to avoid concat schema conflicts."""
+    casts: list[pl.Expr] = []
+    for col_name, dtype in df.schema.items():
+        if isinstance(dtype, pl.Datetime):
+            casts.append(
+                pl.col(col_name).cast(
+                    pl.Datetime(time_unit="us", time_zone=dtype.time_zone)
+                )
+            )
+    if not casts:
+        return df
+    return df.with_columns(casts)
+
+
 def get_slice_rules(
     engine: Engine,
     project_id: Optional[str] = None,
@@ -238,9 +253,9 @@ def apply_slicing(
                 if "project_id" not in result_df.columns and p_id:
                     result_df = result_df.with_columns(pl.lit(p_id).alias("project_id"))
 
-                sliced_frames.append(result_df)
+                sliced_frames.append(_normalize_datetime_precision(result_df))
 
     if not sliced_frames:
         return pl.DataFrame()
 
-    return pl.concat(sliced_frames)
+    return pl.concat(sliced_frames, how="vertical_relaxed")

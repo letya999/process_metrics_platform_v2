@@ -337,11 +337,13 @@ def clean_jira_field_values(
             """
             )  # noqa: S608
 
-            # M-1: Use streaming to avoid OOM
-            result = conn.execution_options(stream_results=True).execute(rows_query)
+            # NOTE:
+            # stream_results=True uses server-side named cursors on psycopg2.
+            # Named cursors do not support executemany, which breaks batched inserts below.
+            result = conn.execute(rows_query)
 
             insert_data = []
-            for row in result.yield_per(1000):
+            for row in result:
                 issue_id = row.issue_id
                 project_id = row.project_id
 

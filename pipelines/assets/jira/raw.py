@@ -5,11 +5,13 @@ Data is loaded as-is from Jira API into the raw_jira schema using dlt.
 """
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 import dlt
 from dagster import AssetExecutionContext, asset
+from dlt.pipeline.exceptions import PipelineStepFailed
 from dlt.sources.helpers import requests
 from tenacity import (
     retry,
@@ -56,6 +58,119 @@ def _get_with_retry(url: str, **kwargs):
     response = requests.get(url, **kwargs)
     response.raise_for_status()
     return response
+
+
+def _is_missing_relation_error(exc: BaseException) -> bool:
+    """Detect PostgreSQL missing relation errors anywhere in exception chain."""
+    to_visit = [exc]
+    visited: set[int] = set()
+
+    while to_visit:
+        current = to_visit.pop()
+        if current is None:
+            continue
+        current_id = id(current)
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+
+        message = str(current).lower()
+        if "relation" in message and "does not exist" in message:
+            return True
+
+        # dlt wraps root cause in different places depending on step and adapter.
+        nested = getattr(current, "exception", None)
+        if isinstance(nested, BaseException):
+            to_visit.append(nested)
+        cause = getattr(current, "__cause__", None)
+        if isinstance(cause, BaseException):
+            to_visit.append(cause)
+        context = getattr(current, "__context__", None)
+        if isinstance(context, BaseException):
+            to_visit.append(context)
+
+    return False
+
+
+def _extract_missing_relation(exc: BaseException) -> tuple[str, str] | None:
+    """Extract (schema, table) from PostgreSQL relation-not-found errors."""
+    pattern = re.compile(r'relation "([^"]+)"\."([^"]+)" does not exist', re.IGNORECASE)
+    to_visit = [exc]
+    visited: set[int] = set()
+
+    while to_visit:
+        current = to_visit.pop()
+        if current is None:
+            continue
+        current_id = id(current)
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+
+        match = pattern.search(str(current))
+        if match:
+            return match.group(1), match.group(2)
+
+        nested = getattr(current, "exception", None)
+        if isinstance(nested, BaseException):
+            to_visit.append(nested)
+        cause = getattr(current, "__cause__", None)
+        if isinstance(cause, BaseException):
+            to_visit.append(cause)
+        context = getattr(current, "__context__", None)
+        if isinstance(context, BaseException):
+            to_visit.append(context)
+
+    return None
+
+
+def _dlt_type_to_postgres_type(dlt_type: str) -> str:
+    """Map dlt logical types to PostgreSQL types for fallback table creation."""
+    mapping = {
+        "text": "text",
+        "bigint": "bigint",
+        "double": "double precision",
+        "bool": "boolean",
+        "timestamp": "timestamp with time zone",
+        "date": "date",
+        "time": "time without time zone",
+        "binary": "bytea",
+        "json": "jsonb",
+        "decimal": "numeric",
+        "wei": "numeric",
+    }
+    return mapping.get(dlt_type, "text")
+
+
+def _create_missing_table_from_pipeline_schema(
+    pipeline: dlt.Pipeline, dataset_name: str, table_name: str
+) -> bool:
+    """Create a missing destination table based on current dlt schema metadata."""
+    table_schema = pipeline.default_schema.tables.get(table_name)
+    if not table_schema:
+        return False
+
+    columns = table_schema.get("columns", {})
+    if not columns:
+        return False
+
+    col_defs: list[str] = []
+    for column_name, column_schema in columns.items():
+        data_type = _dlt_type_to_postgres_type(column_schema.get("data_type", "text"))
+        nullable = column_schema.get("nullable", True)
+        null_sql = "" if nullable else " NOT NULL"
+        col_defs.append(f'"{column_name}" {data_type}{null_sql}')
+
+    if not col_defs:
+        return False
+
+    create_sql = (
+        f'CREATE TABLE IF NOT EXISTS "{dataset_name}"."{table_name}" '
+        f'({", ".join(col_defs)});'
+    )
+    with pipeline.sql_client() as sql_client:
+        sql_client.execute_sql(create_sql)
+    return True
 
 
 @dlt.source(name="jira")
@@ -471,16 +586,40 @@ def run_jira_pipeline(
         dataset_name=destination_schema,
     )
 
-    # Create source
-    source = jira_source(
-        base_url=base_url,
-        email=email,
-        api_token=api_token,
-        projects=projects,
-    )
+    # Keep local state/schema in sync with destination and ensure schema tables exist
+    # before executing merge jobs. This helps avoid transient "relation does not exist"
+    # failures on deeply nested Jira child tables.
+    pipeline.sync_destination()
+    pipeline.sync_schema()
 
-    # Run the pipeline
-    load_info = pipeline.run(source)
+    def _build_source():
+        return jira_source(
+            base_url=base_url,
+            email=email,
+            api_token=api_token,
+            projects=projects,
+        )
+
+    # Run the pipeline. If load fails due to missing relation, re-sync schema and retry once.
+    try:
+        load_info = pipeline.run(_build_source())
+    except PipelineStepFailed as exc:
+        if exc.step == "load" and _is_missing_relation_error(exc):
+            relation = _extract_missing_relation(exc)
+            table_created = False
+            if relation:
+                schema_name, table_name = relation
+                if schema_name == destination_schema:
+                    table_created = _create_missing_table_from_pipeline_schema(
+                        pipeline,
+                        destination_schema,
+                        table_name,
+                    )
+            if not table_created:
+                pipeline.sync_schema()
+            load_info = pipeline.run(_build_source())
+        else:
+            raise
 
     return {
         "pipeline_name": pipeline.pipeline_name,
