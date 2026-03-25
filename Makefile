@@ -131,13 +131,6 @@ migrate:
 	docker compose --profile migration run --rm alembic upgrade head
 	@echo "$(GREEN)Migrations complete!$(NC)"
 
-## Update database views (metrics.sql)
-update-views:
-	@echo "$(BLUE)Updating database views...$(NC)"
-	docker compose cp db/views/metrics.sql postgres:/tmp/metrics.sql
-	docker compose exec postgres psql -U postgres -d process_metrics_v2 -f /tmp/metrics.sql
-	@echo "$(GREEN)Views updated!$(NC)"
-
 ## Create new migration (use: make migrate-create MSG="description")
 migrate-create:
 	@if [ -z "$(MSG)" ]; then \
