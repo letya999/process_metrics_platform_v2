@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import polars as pl
+import pytest
 
 from pipelines.assets.metrics import waste
 
@@ -13,13 +14,31 @@ class _DummyDatabase:
         return self._engine
 
 
+class _DummyLog:
+    def info(self, *_args, **_kwargs):
+        return None
+
+
+class _DummyContext:
+    def __init__(self):
+        self.log = _DummyLog()
+
+
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
 
 
+@pytest.fixture(autouse=True)
+def _stub_definition_id(monkeypatch):
+    monkeypatch.setattr(waste, "get_definition_id", lambda *_a, **_k: "def-w")
+    monkeypatch.setattr(waste, "get_calculation_id", lambda *_a, **_k: "metric")
+
+
 def test_calculate_waste_metrics_skipped(monkeypatch):
     monkeypatch.setattr(waste, "read_table", lambda *_a, **_k: pl.DataFrame())
-    out = _asset_fn(waste.calculate_waste_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(waste.calculate_waste_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "skipped"
 
 
@@ -29,7 +48,9 @@ def test_calculate_waste_metrics_no_data(monkeypatch):
 
     def _read_table(_engine, query, params=None):
         if "FROM clean_jira.issues" in query:
-            return pl.DataFrame({"id": ["I1"], "project_id": ["P1"]})
+            return pl.DataFrame(
+                {"id": ["I1"], "project_id": ["P1"], "type_name": ["Task"]}
+            )
         if "FROM clean_jira.issue_status_changelog" in query:
             return pl.DataFrame({"issue_id": [], "to_status_id": [], "changed_at": []})
         if "FROM clean_jira.issue_statuses" in query:
@@ -47,7 +68,9 @@ def test_calculate_waste_metrics_no_data(monkeypatch):
         lambda *_a, **_k: pl.DataFrame(),
     )
 
-    out = _asset_fn(waste.calculate_waste_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(waste.calculate_waste_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "no_data"
 
 
@@ -58,7 +81,9 @@ def test_calculate_waste_metrics_success(monkeypatch):
 
     def _read_table(_engine, query, params=None):
         if "FROM clean_jira.issues" in query:
-            return pl.DataFrame({"id": ["I1"], "project_id": ["P1"]})
+            return pl.DataFrame(
+                {"id": ["I1"], "project_id": ["P1"], "type_name": ["Task"]}
+            )
         if "FROM clean_jira.issue_status_changelog" in query:
             return pl.DataFrame(
                 {
@@ -91,7 +116,9 @@ def test_calculate_waste_metrics_success(monkeypatch):
         ),
     )
 
-    out = _asset_fn(waste.calculate_waste_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(waste.calculate_waste_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "success"
     assert out["rows_written"] == 1
 

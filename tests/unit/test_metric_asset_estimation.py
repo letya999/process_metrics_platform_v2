@@ -1,4 +1,5 @@
 import polars as pl
+import pytest
 
 from pipelines.assets.metrics import estimation
 
@@ -11,14 +12,30 @@ class _DummyDatabase:
         return self._engine
 
 
+class _DummyLog:
+    def info(self, *_args, **_kwargs):
+        return None
+
+
+class _DummyContext:
+    def __init__(self):
+        self.log = _DummyLog()
+
+
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
+
+
+@pytest.fixture(autouse=True)
+def _stub_definition_id(monkeypatch):
+    monkeypatch.setattr(estimation, "get_definition_id", lambda *_a, **_k: "def-e")
+    monkeypatch.setattr(estimation, "get_calculation_id", lambda *_a, **_k: "metric")
 
 
 def test_calculate_estimation_metrics_skipped(monkeypatch):
     monkeypatch.setattr(estimation, "read_table", lambda *_a, **_k: pl.DataFrame())
     out = _asset_fn(estimation.calculate_estimation_metrics)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "skipped"
 
@@ -30,7 +47,12 @@ def test_calculate_estimation_metrics_skips_without_story_points_field(monkeypat
     def _read_table(_engine, query, params=None):
         if "FROM clean_jira.issues" in query:
             return pl.DataFrame(
-                {"id": ["I1"], "project_id": ["P1"], "issue_key": ["P1-1"]}
+                {
+                    "id": ["I1"],
+                    "project_id": ["P1"],
+                    "issue_key": ["P1-1"],
+                    "type_name": ["Task"],
+                }
             )
         if "FROM clean_jira.field_keys" in query:
             return pl.DataFrame(
@@ -52,7 +74,7 @@ def test_calculate_estimation_metrics_skips_without_story_points_field(monkeypat
 
     monkeypatch.setattr(estimation, "read_table", _read_table)
     out = _asset_fn(estimation.calculate_estimation_metrics)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "skipped"
     assert out["reason"] == "No Story Points field found"
@@ -75,7 +97,12 @@ def test_calculate_estimation_metrics_success(monkeypatch):
     def _read_table(_engine, query, params=None):
         if "FROM clean_jira.issues" in query:
             return pl.DataFrame(
-                {"id": ["I1"], "project_id": ["P1"], "issue_key": ["P1-1"]}
+                {
+                    "id": ["I1"],
+                    "project_id": ["P1"],
+                    "issue_key": ["P1-1"],
+                    "type_name": ["Task"],
+                }
             )
         if "FROM clean_jira.field_keys" in query:
             return pl.DataFrame(
@@ -103,7 +130,7 @@ def test_calculate_estimation_metrics_success(monkeypatch):
 
     monkeypatch.setattr(estimation, "read_table", _read_table)
     out = _asset_fn(estimation.calculate_estimation_metrics)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 1

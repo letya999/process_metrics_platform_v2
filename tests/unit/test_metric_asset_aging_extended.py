@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import polars as pl
+import pytest
 
 from pipelines.assets.metrics import aging_extended
 
@@ -13,14 +14,32 @@ class _DummyDatabase:
         return self._engine
 
 
+class _DummyLog:
+    def info(self, *_args, **_kwargs):
+        return None
+
+
+class _DummyContext:
+    def __init__(self):
+        self.log = _DummyLog()
+
+
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
+
+
+@pytest.fixture(autouse=True)
+def _stub_definition_id(monkeypatch):
+    monkeypatch.setattr(aging_extended, "get_definition_id", lambda *_a, **_k: "def-a")
+    monkeypatch.setattr(
+        aging_extended, "get_calculation_id", lambda *_a, **_k: "metric"
+    )
 
 
 def test_calculate_aging_extended_skipped(monkeypatch):
     monkeypatch.setattr(aging_extended, "read_table", lambda *_a, **_k: pl.DataFrame())
     out = _asset_fn(aging_extended.calculate_aging_extended)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "skipped"
 
@@ -48,6 +67,7 @@ def test_calculate_aging_extended_no_data(monkeypatch):
                     "id": ["I1"],
                     "project_id": ["P1"],
                     "key": ["P1-1"],
+                    "type_name": ["Task"],
                     "status_id": ["IN_PROGRESS"],
                     "updated_at": [datetime(2026, 1, 2)],
                 }
@@ -84,7 +104,7 @@ def test_calculate_aging_extended_no_data(monkeypatch):
 
     monkeypatch.setattr(aging_extended, "read_table", _read_table)
     out = _asset_fn(aging_extended.calculate_aging_extended)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "no_data"
 
@@ -135,6 +155,7 @@ def test_calculate_aging_extended_success(monkeypatch):
                     "id": ["I1"],
                     "project_id": ["P1"],
                     "key": ["P1-1"],
+                    "type_name": ["Task"],
                     "status_id": ["IN_PROGRESS"],
                     "updated_at": [datetime(2026, 1, 2)],
                 }
@@ -177,7 +198,7 @@ def test_calculate_aging_extended_success(monkeypatch):
 
     monkeypatch.setattr(aging_extended, "read_table", _read_table)
     out = _asset_fn(aging_extended.calculate_aging_extended)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 2

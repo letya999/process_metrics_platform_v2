@@ -53,6 +53,36 @@ def test_calculate_epic_delivery_time_basic():
     )
     status_changelog = pl.DataFrame(
         {
+            "issue_id": ["I1", "I1", "I2", "I2"],
+            "to_status_id": ["START", "DONE", "START", "DONE"],
+            "changed_at": [
+                datetime(2024, 1, 1),
+                datetime(2024, 1, 4),
+                datetime(2024, 1, 2),
+                datetime(2024, 1, 5),
+            ],
+        }
+    )
+
+    result = logic.calculate_epic_delivery_time(
+        issues, status_changelog, ["START"], ["DONE"]
+    )
+
+    # Epic starts at min(child starts) Jan 1, ends at max(child dones) Jan 5.
+    assert result[0, "delivery_days"] == 4.0
+
+
+def test_calculate_epic_delivery_time_partial_children_filtered_by_default():
+    issues = pl.DataFrame(
+        {
+            "id": ["E1", "I1", "I2"],
+            "issue_key": ["EK1", "K1", "K2"],
+            "project_id": ["P1", "P1", "P1"],
+            "parent_id": [None, "E1", "E1"],
+        }
+    )
+    status_changelog = pl.DataFrame(
+        {
             "issue_id": ["I1", "I2"],
             "to_status_id": ["START", "DONE"],
             "changed_at": [datetime(2024, 1, 1), datetime(2024, 1, 5)],
@@ -62,10 +92,31 @@ def test_calculate_epic_delivery_time_basic():
     result = logic.calculate_epic_delivery_time(
         issues, status_changelog, ["START"], ["DONE"]
     )
+    assert result.is_empty()
 
-    # Epic starts when I1 enters START (Jan 1)
-    # Epic ends when I2 enters DONE (Jan 5)
-    assert result[0, "delivery_days"] == 4.0
+
+def test_calculate_epic_delivery_time_partial_children_can_be_enabled(monkeypatch):
+    monkeypatch.setenv("METRICS_STRICT_EPIC_COMPLETION", "false")
+    issues = pl.DataFrame(
+        {
+            "id": ["E1", "I1", "I2"],
+            "issue_key": ["EK1", "K1", "K2"],
+            "project_id": ["P1", "P1", "P1"],
+            "parent_id": [None, "E1", "E1"],
+        }
+    )
+    status_changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I2"],
+            "to_status_id": ["START", "DONE"],
+            "changed_at": [datetime(2024, 1, 1), datetime(2024, 1, 5)],
+        }
+    )
+
+    result = logic.calculate_epic_delivery_time(
+        issues, status_changelog, ["START"], ["DONE"]
+    )
+    assert result.height == 1
 
 
 def test_calculate_issue_lifetime_no_completions():

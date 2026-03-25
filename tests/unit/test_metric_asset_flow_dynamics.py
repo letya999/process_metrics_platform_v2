@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import polars as pl
+import pytest
 
 from pipelines.assets.metrics import flow_dynamics
 
@@ -13,14 +14,30 @@ class _DummyDatabase:
         return self._engine
 
 
+class _DummyLog:
+    def info(self, *_args, **_kwargs):
+        return None
+
+
+class _DummyContext:
+    def __init__(self):
+        self.log = _DummyLog()
+
+
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
+
+
+@pytest.fixture(autouse=True)
+def _stub_definition_id(monkeypatch):
+    monkeypatch.setattr(flow_dynamics, "get_definition_id", lambda *_a, **_k: "def-fd")
+    monkeypatch.setattr(flow_dynamics, "get_calculation_id", lambda *_a, **_k: "metric")
 
 
 def test_calculate_flow_dynamics_skipped(monkeypatch):
     monkeypatch.setattr(flow_dynamics, "read_table", lambda *_a, **_k: pl.DataFrame())
     out = _asset_fn(flow_dynamics.calculate_flow_dynamics)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "skipped"
 
@@ -52,13 +69,17 @@ def test_calculate_flow_dynamics_no_data(monkeypatch):
                     "change_time": [],
                 }
             )
+        if "FROM clean_jira.issues i" in query:
+            return pl.DataFrame(
+                {"id": ["I1"], "project_id": ["P1"], "type_name": ["Task"]}
+            )
         if "FROM metrics.calculation_settings" in query:
             return pl.DataFrame()
         raise AssertionError(query)
 
     monkeypatch.setattr(flow_dynamics, "read_table", _read_table)
     out = _asset_fn(flow_dynamics.calculate_flow_dynamics)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "no_data"
 
@@ -99,6 +120,10 @@ def test_calculate_flow_dynamics_success(monkeypatch):
                     "new_value": ["2"],
                     "change_time": [datetime(2026, 1, 3)],
                 }
+            )
+        if "FROM clean_jira.issues i" in query:
+            return pl.DataFrame(
+                {"id": ["I1"], "project_id": ["P1"], "type_name": ["Task"]}
             )
         if "FROM metrics.calculation_settings" in query and params["calc_id"] == "m1":
             return pl.DataFrame(
@@ -145,7 +170,7 @@ def test_calculate_flow_dynamics_success(monkeypatch):
     )
 
     out = _asset_fn(flow_dynamics.calculate_flow_dynamics)(
-        None, _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 2

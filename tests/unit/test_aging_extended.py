@@ -40,3 +40,20 @@ def test_calculate_stale_days_basic():
     result = logic.calculate_stale_days(issues, pl.DataFrame(), ["DONE"], now)
 
     assert result[0, "stale_days"] == 5.0
+
+
+def test_calculate_stale_days_supports_naive_updated_at():
+    now = datetime(2024, 1, 10, tzinfo=timezone.utc)
+    issues = pl.DataFrame(
+        {
+            "id": ["I1"],
+            "project_id": ["P1"],
+            "key": ["K1"],
+            "status_id": ["INPROG"],
+            # naive timestamp from source DB should be interpreted as UTC
+            "updated_at": [datetime(2024, 1, 8)],
+        }
+    )
+
+    result = logic.calculate_stale_days(issues, pl.DataFrame(), ["DONE"], now)
+    assert result[0, "stale_days"] == 2.0

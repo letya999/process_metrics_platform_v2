@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import polars as pl
+import pytest
 
 from pipelines.assets.metrics import input_flow
 
@@ -13,13 +14,31 @@ class _DummyDatabase:
         return self._engine
 
 
+class _DummyLog:
+    def info(self, *_args, **_kwargs):
+        return None
+
+
+class _DummyContext:
+    def __init__(self):
+        self.log = _DummyLog()
+
+
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
 
 
+@pytest.fixture(autouse=True)
+def _stub_definition_id(monkeypatch):
+    monkeypatch.setattr(input_flow, "get_definition_id", lambda *_a, **_k: "def-if")
+    monkeypatch.setattr(input_flow, "get_calculation_id", lambda *_a, **_k: "metric")
+
+
 def test_calculate_input_flow_skipped(monkeypatch):
     monkeypatch.setattr(input_flow, "read_table", lambda *_a, **_k: pl.DataFrame())
-    out = _asset_fn(input_flow.calculate_input_flow)(None, _DummyDatabase(object()))
+    out = _asset_fn(input_flow.calculate_input_flow)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "skipped"
 
 
@@ -29,13 +48,15 @@ def test_calculate_input_flow_no_data(monkeypatch):
     monkeypatch.setattr(
         input_flow,
         "load_commitment_rules_for_calc",
-        lambda *_a, **_k: pl.DataFrame({"r": [1]}),
+        lambda *_a, **_k: [{"id": "r1"}],
     )
     monkeypatch.setattr(input_flow, "resolve_rule_from_cache", lambda *_a, **_k: None)
 
     def _read_table(_engine, query, params=None):
         if "FROM clean_jira.issues" in query:
-            return pl.DataFrame({"id": ["I1"], "project_id": ["P1"]})
+            return pl.DataFrame(
+                {"id": ["I1"], "project_id": ["P1"], "type_name": ["Task"]}
+            )
         if "FROM clean_jira.issue_status_changelog" in query:
             return pl.DataFrame({"issue_id": [], "to_status_id": [], "changed_at": []})
         if "FROM clean_jira.board_columns bc" in query:
@@ -53,7 +74,9 @@ def test_calculate_input_flow_no_data(monkeypatch):
         raise AssertionError(query)
 
     monkeypatch.setattr(input_flow, "read_table", _read_table)
-    out = _asset_fn(input_flow.calculate_input_flow)(None, _DummyDatabase(object()))
+    out = _asset_fn(input_flow.calculate_input_flow)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "no_data"
 
 
@@ -66,7 +89,7 @@ def test_calculate_input_flow_success(monkeypatch):
     monkeypatch.setattr(
         input_flow,
         "load_commitment_rules_for_calc",
-        lambda *_a, **_k: pl.DataFrame({"r": [1]}),
+        lambda *_a, **_k: [{"id": "r1"}],
     )
     monkeypatch.setattr(
         input_flow, "resolve_rule_from_cache", lambda *_a, **_k: {"id": "r1"}
@@ -79,7 +102,9 @@ def test_calculate_input_flow_success(monkeypatch):
 
     def _read_table(_engine, query, params=None):
         if "FROM clean_jira.issues" in query:
-            return pl.DataFrame({"id": ["I1"], "project_id": ["P1"]})
+            return pl.DataFrame(
+                {"id": ["I1"], "project_id": ["P1"], "type_name": ["Task"]}
+            )
         if "FROM clean_jira.issue_status_changelog" in query:
             return pl.DataFrame(
                 {
@@ -115,7 +140,9 @@ def test_calculate_input_flow_success(monkeypatch):
         ),
     )
 
-    out = _asset_fn(input_flow.calculate_input_flow)(None, _DummyDatabase(object()))
+    out = _asset_fn(input_flow.calculate_input_flow)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "success"
     assert out["rows_written"] == 1
 

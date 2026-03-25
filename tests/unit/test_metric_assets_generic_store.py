@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
 import polars as pl
+import pytest
 
 from pipelines.assets.metrics import (
     backlog_growth,
@@ -75,6 +76,16 @@ class _FakeEngine:
 
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
+
+
+@pytest.fixture(autouse=True)
+def _stub_definition_ids(monkeypatch):
+    monkeypatch.setattr(
+        cumulative_flow, "get_definition_id", lambda *_a, **_k: "def-cfd"
+    )
+    monkeypatch.setattr(
+        time_to_market, "get_definition_id", lambda *_a, **_k: "def-ttm"
+    )
 
 
 def test_calculate_velocity_success(monkeypatch):
@@ -166,7 +177,7 @@ def test_calculate_velocity_success(monkeypatch):
         if "FROM clean_jira.issue_statuses" in query:
             return pl.DataFrame({"id": ["s1"], "name": ["Done"], "category": ["done"]})
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[1]], schema=["count"])
+            return pl.DataFrame([[1]], schema=["cnt"])
         raise AssertionError(f"Unexpected query: {query}")
 
     monkeypatch.setattr(velocity, "read_table", _read_table)
@@ -444,7 +455,7 @@ def test_calculate_lead_time_success(monkeypatch):
                 }
             )
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[1]], schema=["count"])
+            return pl.DataFrame([[0]], schema=["cnt"])
         raise AssertionError(query)
 
     monkeypatch.setattr(lead_time, "read_table", _read_table)
@@ -538,7 +549,7 @@ def test_calculate_lead_time_skipped_and_no_data_and_check(monkeypatch):
                 }
             )
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[1]], schema=["count"])
+            return pl.DataFrame([[1]], schema=["cnt"])
         raise AssertionError(query)
 
     monkeypatch.setattr(lead_time, "read_table", _read_table)
@@ -1118,6 +1129,7 @@ def test_calculate_cfd_success(monkeypatch):
                 {
                     "id": ["i1"],
                     "project_id": ["p1"],
+                    "type_name": ["Story"],
                     "type_id": ["t1"],
                     "status_id": ["s1"],
                     "jira_created_at": [datetime(2026, 1, 1)],
@@ -1562,7 +1574,7 @@ def test_calculate_ttm_success(monkeypatch):
                 }
             )
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[1]], schema=["count"])
+            return pl.DataFrame([[1]], schema=["cnt"])
         raise AssertionError(query)
 
     monkeypatch.setattr(time_to_market, "read_table", _read_table)
@@ -1574,12 +1586,26 @@ def test_calculate_ttm_success(monkeypatch):
     monkeypatch.setattr(
         time_to_market,
         "load_commitment_rules_for_calc",
-        lambda *_args, **_kwargs: [],
+        lambda *_args, **_kwargs: [{"id": "r1"}],
+    )
+    monkeypatch.setattr(
+        time_to_market,
+        "resolve_rule_from_cache",
+        lambda *_args, **_kwargs: {"id": "r1"},
+    )
+    monkeypatch.setattr(
+        time_to_market,
+        "identify_commitment_points_from_rule",
+        lambda *_args, **_kwargs: {
+            "middle_status_ids": ["in_progress"],
+            "end_status_ids": ["done"],
+            "commitment_rule_id": "r1",
+        },
     )
     monkeypatch.setattr(
         time_to_market.lead_time_logic,
         "calculate_lead_time_per_issue",
-        lambda **_kwargs: pl.DataFrame(
+        lambda *_args, **_kwargs: pl.DataFrame(
             {
                 "issue_id": ["i1"],
                 "project_id": ["p1"],
@@ -1665,7 +1691,7 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
                 }
             )
         if "FROM metrics.fact_values" in query:
-            return pl.DataFrame([[1]], schema=["count"])
+            return pl.DataFrame([[0]], schema=["cnt"])
         raise AssertionError(query)
 
     monkeypatch.setattr(time_to_market, "read_table", _read_table)
@@ -1677,12 +1703,26 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
     monkeypatch.setattr(
         time_to_market,
         "load_commitment_rules_for_calc",
-        lambda *_args, **_kwargs: [],
+        lambda *_args, **_kwargs: [{"id": "r1"}],
+    )
+    monkeypatch.setattr(
+        time_to_market,
+        "resolve_rule_from_cache",
+        lambda *_args, **_kwargs: {"id": "r1"},
+    )
+    monkeypatch.setattr(
+        time_to_market,
+        "identify_commitment_points_from_rule",
+        lambda *_args, **_kwargs: {
+            "middle_status_ids": ["in_progress"],
+            "end_status_ids": ["done"],
+            "commitment_rule_id": "r1",
+        },
     )
     monkeypatch.setattr(
         time_to_market.lead_time_logic,
         "calculate_lead_time_per_issue",
-        lambda **_kwargs: pl.DataFrame(),
+        lambda *_args, **_kwargs: pl.DataFrame(),
     )
     no_data = _asset_fn(time_to_market.calculate_time_to_market)(
         _DummyContext(), _DummyDatabase(object())
@@ -1692,7 +1732,7 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
     monkeypatch.setattr(
         time_to_market.lead_time_logic,
         "calculate_lead_time_per_issue",
-        lambda **_kwargs: pl.DataFrame(
+        lambda *_args, **_kwargs: pl.DataFrame(
             {
                 "issue_id": ["i1"],
                 "project_id": ["p1"],
@@ -1723,10 +1763,11 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
         lambda *_args, **_kwargs: pl.DataFrame(
             {
                 "project_id": ["p1"],
-                "released_at": [datetime(2026, 1, 10)],
-                "time_to_market_days": [9.0],
+                "commitment_end_at": [datetime(2026, 1, 10)],
+                "lead_time_days": [9.0],
                 "issue_key": ["P1-1"],
-                "jira_created_at": [datetime(2026, 1, 1)],
+                "commitment_start_at": [datetime(2026, 1, 1)],
+                "commitment_rule_id": ["r1"],
                 "slice_value": ["Team A"],
             }
         ),

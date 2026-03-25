@@ -115,6 +115,62 @@ def test_calculate_sprint_scope_changes_uses_sp_at_event_time():
     assert result[0, "added_sp"] == 5.0
 
 
+def test_calculate_sprint_scope_changes_dedupes_repeated_same_action():
+    sprints = pl.DataFrame(
+        {
+            "id": ["S1"],
+            "project_id": ["P1"],
+            "name": ["Sprint 1"],
+            "start_date": [datetime(2024, 1, 1)],
+            "end_date": [datetime(2024, 1, 14)],
+            "complete_date": [datetime(2024, 1, 14)],
+        }
+    )
+    changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I1", "I1", "I1"],
+            "sprint_id": ["S1", "S1", "S1", "S1"],
+            "action": ["added", "added", "removed", "removed"],
+            "changed_at": [
+                datetime(2024, 1, 5, 9, 0),
+                datetime(2024, 1, 6, 10, 0),
+                datetime(2024, 1, 7, 9, 0),
+                datetime(2024, 1, 8, 10, 0),
+            ],
+        }
+    )
+    issues = pl.DataFrame({"id": ["I1"], "project_id": ["P1"], "issue_key": ["K1"]})
+    field_values = pl.DataFrame(
+        {
+            "issue_id": ["I1"],
+            "field_key_id": ["SP"],
+            "json_value": ["5"],
+        }
+    )
+    field_keys = pl.DataFrame(
+        {"id": ["SP"], "external_key": ["customfield_10036"], "name": ["Story Points"]}
+    )
+    field_value_changelog = pl.DataFrame(
+        schema={
+            "issue_id": pl.Utf8,
+            "field_key_id": pl.Utf8,
+            "old_value": pl.Utf8,
+            "new_value": pl.Utf8,
+            "changed_at": pl.Datetime,
+        }
+    )
+
+    result = logic.calculate_sprint_scope_changes(
+        sprints, changelog, issues, field_values, field_keys, field_value_changelog
+    )
+
+    # Same issue should count once for added and once for removed.
+    assert result["added_count"].sum() == 1
+    assert result["removed_count"].sum() == 1
+    assert result["added_sp"].sum() == 5.0
+    assert result["removed_sp"].sum() == 5.0
+
+
 def test_calculate_sprint_spillover_basic():
     sprints = pl.DataFrame(
         {
@@ -1174,6 +1230,40 @@ def test_calculate_field_value_sprint_pct_unknown_field():
     assert result[0, "field_pct"] == 0.0
 
 
+def test_calculate_field_value_sprint_pct_dedupes_duplicate_rows():
+    sprints = pl.DataFrame(
+        {
+            "id": ["S1"],
+            "project_id": ["P1"],
+            "name": ["Sprint 1"],
+            "start_date": [datetime(2024, 1, 1)],
+        }
+    )
+    sprint_issues = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I1", "I2", "I3"],
+            "sprint_id": ["S1", "S1", "S1", "S1"],
+        }
+    )
+    issues = pl.DataFrame({"id": ["I1", "I2", "I3"], "project_id": ["P1", "P1", "P1"]})
+    fv = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I1", "I2", "I3"],
+            "field_key_id": ["PR", "PR", "PR", "PR"],
+            "json_value": ["High", "High", "Low", "High"],
+        }
+    )
+    fk = pl.DataFrame(
+        {"id": ["PR"], "external_key": ["cf_priority"], "name": ["priority"]}
+    )
+
+    result = logic.calculate_field_value_sprint_pct(
+        sprints, sprint_issues, issues, "priority", "High", fv, fk
+    )
+    # Unique issues in sprint: 3, matches: I1 + I3 = 2 -> 66.67%.
+    assert abs(result[0, "field_pct"] - 66.67) < 0.1
+
+
 def test_calculate_unestimated_closed_none_unestimated():
     """When all closed issues have SP > 0, count should be 0."""
     sprints = pl.DataFrame(
@@ -1226,3 +1316,75 @@ def test_calculate_unestimated_closed_none_unestimated():
         "SP",
     )
     assert result[0, "unestimated_count"] == 0
+
+
+def test_calculate_unestimated_closed_handles_duplicate_sp_rows_and_numeric_zero():
+    sprints = pl.DataFrame(
+        {
+            "id": ["S1"],
+            "project_id": ["P1"],
+            "name": ["Sprint 1"],
+            "start_date": [datetime(2024, 1, 1)],
+            "end_date": [datetime(2024, 1, 14)],
+            "complete_date": [datetime(2024, 1, 14)],
+        }
+    )
+    sprint_issues = pl.DataFrame(
+        {"issue_id": ["I1", "I2", "I3"], "sprint_id": ["S1", "S1", "S1"]}
+    )
+    sprint_changelog = pl.DataFrame(
+        schema={
+            "issue_id": pl.Utf8,
+            "sprint_id": pl.Utf8,
+            "action": pl.Utf8,
+            "changed_at": pl.Datetime,
+        }
+    )
+    issues = pl.DataFrame(
+        {
+            "id": ["I1", "I2", "I3"],
+            "project_id": ["P1", "P1", "P1"],
+            "status_id": ["DONE", "DONE", "DONE"],
+            "jira_resolved_at": [
+                datetime(2024, 1, 10),
+                datetime(2024, 1, 10),
+                datetime(2024, 1, 10),
+            ],
+            "type_name": ["Task", "Task", "Task"],
+        }
+    )
+    status_changelog = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I2", "I3"],
+            "from_status_id": ["TODO", "TODO", "TODO"],
+            "to_status_id": ["DONE", "DONE", "DONE"],
+            "changed_at": [
+                datetime(2024, 1, 10),
+                datetime(2024, 1, 10),
+                datetime(2024, 1, 10),
+            ],
+        }
+    )
+    fv = pl.DataFrame(
+        {
+            "issue_id": ["I1", "I1", "I2", "I3"],
+            "field_key_id": ["SP", "SP", "SP", "SP"],
+            # I1 has duplicated zeros -> count once as unestimated.
+            # I2 has positive estimate -> not unestimated.
+            # I3 has numeric zero format -> unestimated.
+            "json_value": ["0", "0.00", "3", "0.00"],
+        }
+    )
+
+    result = logic.calculate_unestimated_closed(
+        sprints,
+        sprint_issues,
+        sprint_changelog,
+        issues,
+        status_changelog,
+        ["DONE"],
+        fv,
+        "SP",
+    )
+
+    assert result[0, "unestimated_count"] == 2

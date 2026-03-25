@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import polars as pl
+import pytest
 
 from pipelines.assets.metrics import delivery
 
@@ -13,13 +14,31 @@ class _DummyDatabase:
         return self._engine
 
 
+class _DummyLog:
+    def info(self, *_args, **_kwargs):
+        return None
+
+
+class _DummyContext:
+    def __init__(self):
+        self.log = _DummyLog()
+
+
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
 
 
+@pytest.fixture(autouse=True)
+def _stub_definition_id(monkeypatch):
+    monkeypatch.setattr(delivery, "get_definition_id", lambda *_a, **_k: "def-d")
+    monkeypatch.setattr(delivery, "get_calculation_id", lambda *_a, **_k: "metric")
+
+
 def test_calculate_delivery_metrics_skipped(monkeypatch):
     monkeypatch.setattr(delivery, "read_table", lambda *_a, **_k: pl.DataFrame())
-    out = _asset_fn(delivery.calculate_delivery_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(delivery.calculate_delivery_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "skipped"
 
 
@@ -37,6 +56,7 @@ def test_calculate_delivery_metrics_no_data(monkeypatch):
                 {
                     "id": ["I1"],
                     "project_id": ["P1"],
+                    "type_name": ["Task"],
                     "created_at": [datetime(2026, 1, 1)],
                 }
             )
@@ -45,7 +65,7 @@ def test_calculate_delivery_metrics_no_data(monkeypatch):
         if "FROM clean_jira.field_keys" in query:
             return pl.DataFrame({"id": ["SP"], "name": ["Story Points"]})
         if "FROM clean_jira.field_values" in query:
-            return pl.DataFrame({"issue_id": [], "field_key_id": [], "value": []})
+            return pl.DataFrame({"issue_id": [], "field_key_id": [], "json_value": []})
         if "FROM clean_jira.field_value_changelog" in query:
             return pl.DataFrame(
                 {
@@ -68,12 +88,14 @@ def test_calculate_delivery_metrics_no_data(monkeypatch):
             )
         if "SELECT * FROM clean_jira.boards" in query:
             return pl.DataFrame({"id": ["B1"], "project_id": ["P1"]})
-        if "FROM clean_jira.issue_fix_versions" in query:
+        if "FROM clean_jira.release_issues" in query:
             return pl.DataFrame({"issue_id": [], "version_name": []})
         raise AssertionError(query)
 
     monkeypatch.setattr(delivery, "read_table", _read_table)
-    out = _asset_fn(delivery.calculate_delivery_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(delivery.calculate_delivery_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "no_data"
 
 
@@ -118,6 +140,7 @@ def test_calculate_delivery_metrics_success(monkeypatch):
                 {
                     "id": ["I1"],
                     "project_id": ["P1"],
+                    "type_name": ["Task"],
                     "created_at": [datetime(2026, 1, 1)],
                 }
             )
@@ -127,7 +150,7 @@ def test_calculate_delivery_metrics_success(monkeypatch):
             return pl.DataFrame({"id": ["SP"], "name": ["Story Points"]})
         if "FROM clean_jira.field_values" in query:
             return pl.DataFrame(
-                {"issue_id": ["I1"], "field_key_id": ["SP"], "value": ["5"]}
+                {"issue_id": ["I1"], "field_key_id": ["SP"], "json_value": ["5"]}
             )
         if "FROM clean_jira.field_value_changelog" in query:
             return pl.DataFrame(
@@ -151,12 +174,14 @@ def test_calculate_delivery_metrics_success(monkeypatch):
             )
         if "SELECT * FROM clean_jira.boards" in query:
             return pl.DataFrame({"id": ["B1"], "project_id": ["P1"]})
-        if "FROM clean_jira.issue_fix_versions" in query:
+        if "FROM clean_jira.release_issues" in query:
             return pl.DataFrame({"issue_id": ["I1"], "version_name": ["1.0"]})
         raise AssertionError(query)
 
     monkeypatch.setattr(delivery, "read_table", _read_table)
-    out = _asset_fn(delivery.calculate_delivery_metrics)(None, _DummyDatabase(object()))
+    out = _asset_fn(delivery.calculate_delivery_metrics)(
+        _DummyContext(), _DummyDatabase(object())
+    )
     assert out["status"] == "success"
     assert out["rows_written"] == 2
 
