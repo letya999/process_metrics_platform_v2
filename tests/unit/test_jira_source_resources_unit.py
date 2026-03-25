@@ -15,7 +15,7 @@ class _Resp:
 def test_jira_source_issues_jql_and_pagination(monkeypatch):
     calls = []
 
-    def _get(url, auth=None, params=None):
+    def _get(url, auth=None, params=None, timeout=None, **_kwargs):
         calls.append((url, params))
         if "search/jql" in url and len(calls) == 1:
             return _Resp(
@@ -64,7 +64,7 @@ def test_jira_source_issues_updated_filter_and_missing_next_token(monkeypatch):
         ),
     )
 
-    def _get(url, auth=None, params=None):
+    def _get(url, auth=None, params=None, timeout=None, **_kwargs):
         calls.append((url, params))
         return _Resp(
             {
@@ -85,7 +85,7 @@ def test_jira_source_issues_updated_filter_and_missing_next_token(monkeypatch):
 
 
 def test_jira_source_projects_and_users(monkeypatch):
-    def _get(url, auth=None, params=None):
+    def _get(url, auth=None, params=None, timeout=None, **_kwargs):
         if "project/search" in url:
             start_at = params.get("startAt", 0)
             if start_at == 0:
@@ -118,7 +118,7 @@ def test_jira_source_projects_and_users(monkeypatch):
 
 
 def test_jira_source_users_breaks_on_empty_page(monkeypatch):
-    def _get(url, auth=None, params=None):
+    def _get(url, auth=None, params=None, timeout=None, **_kwargs):
         if "user/assignable/search" in url:
             return _Resp([])
         raise AssertionError(url)
@@ -130,7 +130,7 @@ def test_jira_source_users_breaks_on_empty_page(monkeypatch):
 
 
 def test_jira_source_sprints_handles_http_error(monkeypatch):
-    def _get(url, auth=None, params=None):
+    def _get(url, auth=None, params=None, timeout=None, **_kwargs):
         if "/rest/agile/1.0/board" in url and "/sprint" not in url:
             return _Resp(
                 {
@@ -167,7 +167,7 @@ def test_jira_source_sprints_handles_http_error(monkeypatch):
 def test_jira_source_sprints_project_filter_and_pagination(monkeypatch):
     sprint_calls = []
 
-    def _get(url, auth=None, params=None):
+    def _get(url, auth=None, params=None, timeout=None, **_kwargs):
         if "/rest/agile/1.0/board" in url and "/sprint" not in url:
             return _Resp(
                 {
@@ -201,7 +201,7 @@ def test_jira_source_sprints_project_filter_and_pagination(monkeypatch):
 
 
 def test_jira_source_versions_board_configs_and_fields(monkeypatch):
-    def _get(url, auth=None, params=None):
+    def _get(url, auth=None, params=None, timeout=None, **_kwargs):
         if "project/search" in url:
             return _Resp(
                 {"values": [{"id": "1", "key": "AAA"}, {"id": "2", "key": "BBB"}]}
@@ -261,7 +261,7 @@ def test_jira_source_versions_board_configs_and_fields(monkeypatch):
 def test_jira_source_versions_and_board_configs_project_filter(monkeypatch):
     called = {"versions": [], "configs": []}
 
-    def _get(url, auth=None, params=None):
+    def _get(url, auth=None, params=None, timeout=None, **_kwargs):
         if "project/search" in url:
             return _Resp(
                 {"values": [{"id": "1", "key": "AAA"}, {"id": "2", "key": "BBB"}]}

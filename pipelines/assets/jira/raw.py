@@ -18,15 +18,41 @@ from tenacity import (
     wait_exponential,
 )
 
+_RETRYABLE_HTTP_EXCEPTIONS = tuple(
+    exc
+    for exc in (
+        requests.HTTPError,
+        getattr(requests, "Timeout", None),
+        getattr(requests, "ConnectionError", None),
+    )
+    if exc is not None
+)
+
+
+def _get_http_timeout() -> tuple[float, float]:
+    """Get connect/read timeout tuple from environment."""
+    connect_timeout_raw = os.getenv("JIRA_HTTP_CONNECT_TIMEOUT_SEC", "5")
+    read_timeout_raw = os.getenv("JIRA_HTTP_READ_TIMEOUT_SEC", "60")
+    try:
+        connect_timeout = float(connect_timeout_raw)
+    except (TypeError, ValueError):
+        connect_timeout = 5.0
+    try:
+        read_timeout = float(read_timeout_raw)
+    except (TypeError, ValueError):
+        read_timeout = 60.0
+    return (connect_timeout, read_timeout)
+
 
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=2, max=30),
-    retry=retry_if_exception_type(requests.HTTPError),
+    retry=retry_if_exception_type(_RETRYABLE_HTTP_EXCEPTIONS),
     reraise=True,
 )
 def _get_with_retry(url: str, **kwargs):
     """Execute GET request with exponential backoff retry."""
+    kwargs.setdefault("timeout", _get_http_timeout())
     response = requests.get(url, **kwargs)
     response.raise_for_status()
     return response
@@ -269,40 +295,48 @@ def jira_source(
 
         For each project: GET /rest/api/3/project/{projectKey}/versions
         """
-        # First get all projects
-        projects_response = _get_with_retry(
-            f"{base_url}/rest/api/3/project/search",
-            auth=(email, api_token),
-            params={"maxResults": 100},
-        )
-        projects_response.raise_for_status()
-        projects_data = projects_response.json()
+        # First get all projects (paginated)
+        start_at = 0
+        max_results = 100
+        while True:
+            projects_response = _get_with_retry(
+                f"{base_url}/rest/api/3/project/search",
+                auth=(email, api_token),
+                params={"startAt": start_at, "maxResults": max_results},
+            )
+            projects_response.raise_for_status()
+            projects_data = projects_response.json()
 
-        for project in projects_data.get("values", []):
-            project_key = project.get("key")
-            project_id = project.get("id")
+            project_list = projects_data.get("values", [])
+            for project in project_list:
+                project_key = project.get("key")
+                project_id = project.get("id")
 
-            # Filter by project if specified
-            if projects and project_key not in projects:
-                continue
+                # Filter by project if specified
+                if projects and project_key not in projects:
+                    continue
 
-            try:
-                # Get versions for this project
-                versions_response = _get_with_retry(
-                    f"{base_url}/rest/api/3/project/{project_key}/versions",
-                    auth=(email, api_token),
-                )
-                versions_response.raise_for_status()
-                versions = versions_response.json()
+                try:
+                    # Get versions for this project
+                    versions_response = _get_with_retry(
+                        f"{base_url}/rest/api/3/project/{project_key}/versions",
+                        auth=(email, api_token),
+                    )
+                    versions_response.raise_for_status()
+                    versions = versions_response.json()
 
-                for version in versions:
-                    version["project_id"] = project_id
-                    version["project_key"] = project_key
-                    yield version
+                    for version in versions:
+                        version["project_id"] = project_id
+                        version["project_key"] = project_key
+                        yield version
 
-            except requests.HTTPError:
-                # Some projects may not have versions enabled
-                continue
+                except requests.HTTPError:
+                    # Some projects may not have versions enabled
+                    continue
+
+            if projects_data.get("isLast", True):
+                break
+            start_at += max_results
 
     @dlt.resource(
         name="board_configurations",
@@ -314,45 +348,52 @@ def jira_source(
 
         For each board: GET /rest/agile/1.0/board/{boardId}/configuration
         """
-        # First get all boards
-        boards_response = _get_with_retry(
-            f"{base_url}/rest/agile/1.0/board",
-            auth=(email, api_token),
-            params={"maxResults": 100},
-        )
-        boards_response.raise_for_status()
-        boards_data = boards_response.json()
+        # First get all boards (paginated)
+        start_at = 0
+        max_results = 100
+        while True:
+            boards_response = _get_with_retry(
+                f"{base_url}/rest/agile/1.0/board",
+                auth=(email, api_token),
+                params={"startAt": start_at, "maxResults": max_results},
+            )
+            boards_response.raise_for_status()
+            boards_data = boards_response.json()
 
-        for board in boards_data.get("values", []):
-            board_id = board.get("id")
-            board_project = board.get("location", {}).get("projectKey")
+            for board in boards_data.get("values", []):
+                board_id = board.get("id")
+                board_project = board.get("location", {}).get("projectKey")
 
-            # Filter by project if specified
-            if projects and board_project not in projects:
-                continue
+                # Filter by project if specified
+                if projects and board_project not in projects:
+                    continue
 
-            try:
-                # Get configuration for this board
-                config_response = _get_with_retry(
-                    f"{base_url}/rest/agile/1.0/board/{board_id}/configuration",
-                    auth=(email, api_token),
-                )
-                config_response.raise_for_status()
-                config = config_response.json()
+                try:
+                    # Get configuration for this board
+                    config_response = _get_with_retry(
+                        f"{base_url}/rest/agile/1.0/board/{board_id}/configuration",
+                        auth=(email, api_token),
+                    )
+                    config_response.raise_for_status()
+                    config = config_response.json()
 
-                yield {
-                    "board_id": board_id,
-                    "board_name": board.get("name"),
-                    "board_type": board.get("type"),
-                    "project_key": board_project,
-                    "columns_config": config.get("columnConfig", {}),
-                    "filter_id": config.get("filter", {}).get("id"),
-                    "sub_query": config.get("subQuery", {}).get("query"),
-                }
+                    yield {
+                        "board_id": board_id,
+                        "board_name": board.get("name"),
+                        "board_type": board.get("type"),
+                        "project_key": board_project,
+                        "columns_config": config.get("columnConfig", {}),
+                        "filter_id": config.get("filter", {}).get("id"),
+                        "sub_query": config.get("subQuery", {}).get("query"),
+                    }
 
-            except requests.HTTPError:
-                # Some boards may not have configuration accessible
-                continue
+                except requests.HTTPError:
+                    # Some boards may not have configuration accessible
+                    continue
+
+            if boards_data.get("isLast", True):
+                break
+            start_at += max_results
 
     @dlt.resource(
         name="fields",
@@ -471,7 +512,7 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
     - versions (releases)
     - board_configurations
 
-    Data is loaded into the raw_jira schema as append-only.
+    Data is loaded into the raw_jira schema via dlt merge/upsert semantics.
 
     Configuration sources (in priority order):
     1. Config file (config/projects.yaml)

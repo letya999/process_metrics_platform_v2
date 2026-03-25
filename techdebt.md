@@ -19,3 +19,13 @@ Two conflicting patterns in codebase:
 The hourly metrics refresh job runs independently of the clean layer job. If clean layer
 is mid-run, metrics compute on partially updated data.
 **Resolution:** Add Dagster sensor that delays metrics refresh until clean layer finishes.
+
+## TD-004: Issues ingestion load strategy (Raw Jira)
+**Status:** Deferred / Not Started
+Current `raw_jira.issues` extraction uses heavy payload and long re-read window by default.
+Proposed changes were intentionally deferred:
+- add config knobs for `expand` and rendered fields
+- reduce default incremental lookback for daily runs
+- add separate periodic backfill with larger lookback window
+**Reason deferred:** functional concerns from product side about changing current extraction behavior.
+**Resolution (future):** implement tunable daily-vs-backfill strategy after alignment on acceptable freshness/load tradeoff.
