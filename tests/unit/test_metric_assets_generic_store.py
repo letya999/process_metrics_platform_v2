@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
@@ -209,7 +210,7 @@ def test_calculate_velocity_success(monkeypatch):
     )
 
     out = _asset_fn(velocity.calculate_velocity)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 4
@@ -237,7 +238,7 @@ def test_calculate_velocity_skipped_no_data_slices_and_check(monkeypatch):
         velocity, "read_table", lambda *_args, **_kwargs: pl.DataFrame()
     )
     skipped = _asset_fn(velocity.calculate_velocity)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert skipped["status"] == "skipped"
 
@@ -322,7 +323,7 @@ def test_calculate_velocity_skipped_no_data_slices_and_check(monkeypatch):
         lambda **_kwargs: pl.DataFrame(),
     )
     no_data = _asset_fn(velocity.calculate_velocity)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert no_data["status"] == "no_data"
 
@@ -382,7 +383,7 @@ def test_calculate_velocity_skipped_no_data_slices_and_check(monkeypatch):
     )
 
     out = _asset_fn(velocity.calculate_velocity)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 8
@@ -481,7 +482,7 @@ def test_calculate_lead_time_success(monkeypatch):
     )
 
     out = _asset_fn(lead_time.calculate_lead_time)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 1
@@ -510,7 +511,7 @@ def test_calculate_lead_time_skipped_and_no_data_and_check(monkeypatch):
         lead_time, "read_table", lambda *_args, **_kwargs: pl.DataFrame()
     )
     skipped = _asset_fn(lead_time.calculate_lead_time)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert skipped["status"] == "skipped"
 
@@ -554,7 +555,7 @@ def test_calculate_lead_time_skipped_and_no_data_and_check(monkeypatch):
 
     monkeypatch.setattr(lead_time, "read_table", _read_table)
     no_data = _asset_fn(lead_time.calculate_lead_time)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert no_data["status"] == "no_data"
 
@@ -683,7 +684,7 @@ def test_calculate_lead_time_with_slices(monkeypatch):
     )
 
     out = _asset_fn(lead_time.calculate_lead_time)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 2
@@ -790,7 +791,7 @@ def test_calculate_lead_time_passes_middle_and_end_statuses_from_rule(monkeypatc
     )
 
     out = _asset_fn(lead_time.calculate_lead_time)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
 
     assert out["status"] == "success"
@@ -908,7 +909,7 @@ def test_calculate_lead_time_deduplicates_same_issue_from_multiple_boards(monkey
     monkeypatch.setattr(lead_time, "write_fact_values", _write_fact_values)
 
     out = _asset_fn(lead_time.calculate_lead_time)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
 
     assert out["status"] == "success"
@@ -984,7 +985,7 @@ def test_calculate_throughput_success(monkeypatch):
     )
 
     out = _asset_fn(throughput.calculate_throughput)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 1
@@ -1005,7 +1006,7 @@ def test_calculate_throughput_skipped_no_data_slices_and_check(monkeypatch):
         throughput, "read_table", lambda *_args, **_kwargs: pl.DataFrame()
     )
     skipped = _asset_fn(throughput.calculate_throughput)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert skipped["status"] == "skipped"
 
@@ -1053,7 +1054,7 @@ def test_calculate_throughput_skipped_no_data_slices_and_check(monkeypatch):
         lambda **_kwargs: pl.DataFrame(),
     )
     no_data = _asset_fn(throughput.calculate_throughput)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert no_data["status"] == "no_data"
 
@@ -1104,13 +1105,13 @@ def test_calculate_throughput_skipped_no_data_slices_and_check(monkeypatch):
         throughput, "write_fact_values", lambda df, *_args, **_kwargs: df.height
     )
     out = _asset_fn(throughput.calculate_throughput)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 2
 
     check = _asset_fn(throughput.throughput_data_quality_check)(
-        _DummyDatabase(object())
+        _DummyDatabase(MagicMock())
     )
     assert check.passed is True
 
@@ -1189,7 +1190,7 @@ def test_calculate_cfd_success(monkeypatch):
     )
 
     out = _asset_fn(cumulative_flow.calculate_cumulative_flow_diagram)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 1
@@ -1291,7 +1292,7 @@ def test_calculate_backlog_growth_success(monkeypatch):
     )
 
     out = _asset_fn(backlog_growth.calculate_backlog_growth)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 4
@@ -1377,7 +1378,7 @@ def test_calculate_backlog_growth_no_data(monkeypatch):
     )
 
     out = _asset_fn(backlog_growth.calculate_backlog_growth)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "no_data"
 
@@ -1510,13 +1511,13 @@ def test_calculate_backlog_growth_with_slices_and_check(monkeypatch):
     )
 
     out = _asset_fn(backlog_growth.calculate_backlog_growth)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 8
 
     check = _asset_fn(backlog_growth.backlog_growth_data_quality_check)(
-        _DummyDatabase(object())
+        _DummyDatabase(MagicMock())
     )
     assert check.passed is True
 
@@ -1624,7 +1625,7 @@ def test_calculate_ttm_success(monkeypatch):
     )
 
     out = _asset_fn(time_to_market.calculate_time_to_market)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 1
@@ -1645,7 +1646,7 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
         time_to_market, "read_table", lambda *_args, **_kwargs: pl.DataFrame()
     )
     skipped = _asset_fn(time_to_market.calculate_time_to_market)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert skipped["status"] == "skipped"
 
@@ -1725,7 +1726,7 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
         lambda *_args, **_kwargs: pl.DataFrame(),
     )
     no_data = _asset_fn(time_to_market.calculate_time_to_market)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert no_data["status"] == "no_data"
 
@@ -1782,7 +1783,7 @@ def test_calculate_ttm_skipped_no_data_slices_and_check(monkeypatch):
         time_to_market, "write_fact_values", lambda df, *_args, **_kwargs: df.height
     )
     out = _asset_fn(time_to_market.calculate_time_to_market)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 2
