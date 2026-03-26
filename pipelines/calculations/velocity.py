@@ -315,6 +315,7 @@ def determine_story_points_at_date(
     changelog_df: pl.DataFrame,
     field_keys_df: pl.DataFrame,
     date_col: str = "start_date",
+    sp_field_key_ids_override: list[str] | None = None,
 ) -> pl.DataFrame:
     """
     Determine Story Points for each issue in scope at the specific sprint date.
@@ -327,20 +328,22 @@ def determine_story_points_at_date(
     scope_with_dates = scope_df.join(target_dates, on="sprint_id", how="left")
 
     # Identify SP fields
-    sp_fields = field_keys_df.filter(
-        (
-            pl.col("external_key").is_in(
-                ["customfield_10036", "customfield_10016", "story_points"]
+    if sp_field_key_ids_override:
+        sp_field_ids = sp_field_key_ids_override
+    else:
+        sp_fields = field_keys_df.filter(
+            (
+                pl.col("external_key").is_in(
+                    ["customfield_10036", "customfield_10016", "story_points"]
+                )
             )
+            | (pl.col("name").str.to_lowercase().str.contains("story point"))
         )
-        | (pl.col("name").str.to_lowercase().str.contains("story point"))
-    )
-    if sp_fields.is_empty() or changelog_df.is_empty():
-        return scope_df.join(current_sp_df, on="issue_id", how="left").select(
-            ["issue_id", "sprint_id", "story_points"]
-        )
-
-    sp_field_ids = sp_fields["id"].to_list()
+        if sp_fields.is_empty() or changelog_df.is_empty():
+            return scope_df.join(current_sp_df, on="issue_id", how="left").select(
+                ["issue_id", "sprint_id", "story_points"]
+            )
+        sp_field_ids = sp_fields["id"].to_list()
 
     # Filter changelog
     changes = changelog_df.filter(pl.col("field_key_id").is_in(sp_field_ids))
@@ -407,6 +410,7 @@ def extract_story_points(
     issues_df: pl.DataFrame,
     field_values_df: pl.DataFrame,
     field_keys_df: pl.DataFrame,
+    sp_field_key_ids_override: list[str] | None = None,
 ) -> pl.DataFrame:
     """
     Extract Story Points for each issue.
@@ -421,23 +425,24 @@ def extract_story_points(
     if field_keys_df.is_empty():
         return pl.DataFrame(schema={"issue_id": pl.Utf8, "story_points": pl.Float64})
 
-    sp_fields = field_keys_df.filter(
-        (
-            pl.col("external_key").is_in(
-                ["customfield_10036", "customfield_10016", "story_points"]
+    if sp_field_key_ids_override:
+        sp_field_ids = sp_field_key_ids_override
+    else:
+        sp_fields = field_keys_df.filter(
+            (
+                pl.col("external_key").is_in(
+                    ["customfield_10036", "customfield_10016", "story_points"]
+                )
             )
+            | (pl.col("name").str.to_lowercase().str.contains("story point"))
         )
-        | (pl.col("name").str.to_lowercase().str.contains("story point"))
-    )
-
-    if sp_fields.is_empty():
-        return (
-            issues_df.select(["id"])
-            .rename({"id": "issue_id"})
-            .with_columns(pl.lit(0.0).alias("story_points"))
-        )
-
-    sp_field_ids = sp_fields.select("id").to_series().to_list()
+        if sp_fields.is_empty():
+            return (
+                issues_df.select(["id"])
+                .rename({"id": "issue_id"})
+                .with_columns(pl.lit(0.0).alias("story_points"))
+            )
+        sp_field_ids = sp_fields.select("id").to_series().to_list()
 
     # Filter field_values to only SP fields
     sp_values = field_values_df.filter(pl.col("field_key_id").is_in(sp_field_ids))
@@ -717,6 +722,7 @@ def calculate_velocity_facts(
     issue_statuses_df: pl.DataFrame = None,
     done_status_ids: List[str] | None = None,
     allow_current_status_fallback: bool = True,
+    sp_field_key_ids_override: list[str] | None = None,
 ) -> pl.DataFrame:
     """
     Main orchestration function: Calculate Velocity facts.
@@ -734,7 +740,10 @@ def calculate_velocity_facts(
 
     # 1. Extract CURRENT Story Points for all issues
     current_story_points_df = extract_story_points(
-        issues_df, field_values_df, field_keys_df
+        issues_df,
+        field_values_df,
+        field_keys_df,
+        sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
     # 2. Identify Final Scope (issue set that ended in sprint)
@@ -758,6 +767,7 @@ def calculate_velocity_facts(
         field_value_changelog_df,
         field_keys_df,
         date_col="start_date",
+        sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
     # 3. Identify Completed
@@ -783,6 +793,7 @@ def calculate_velocity_facts(
         field_value_changelog_df,
         field_keys_df,
         date_col="effective_end_date",
+        sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
     # 6. Aggregate by Sprint
