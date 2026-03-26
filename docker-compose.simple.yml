@@ -29,6 +29,7 @@ services:
       - internal
     depends_on:
       - app
+      - admin-ui
       - dagster
       - metabase
 
@@ -85,6 +86,34 @@ services:
       retries: 3
     # ports:
     #   - "${APP_PORT:-8000}:8000" # ВРЕМЕННО через Caddy
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ===========================================================================
+  # Streamlit Admin Studio
+  # ===========================================================================
+  admin-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: admin-ui
+    restart: unless-stopped
+    environment:
+      ADMIN_API_URL: http://app:8000/api/v1
+    env_file:
+      - .env.production
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8501" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - internal
     deploy:
