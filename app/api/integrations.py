@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.dependencies import AdminDependency
 from app.database import get_db
 from app.models.orm import IntegrationTypeModel, ToolIntegration, User
 from app.schemas.integration import (
@@ -60,6 +61,7 @@ async def list_integration_types(db: DBSession):
 @router.get("/integrations", response_model=list[IntegrationResponse])
 async def list_integrations(
     db: DBSession,
+    _admin: AdminDependency,
     user_id: Annotated[UUID | None, Query(description="Filter by user ID")] = None,
     is_active: Annotated[
         bool | None, Query(description="Filter by active status")
@@ -98,6 +100,7 @@ async def list_integrations(
 )
 async def create_integration(
     db: DBSession,
+    _admin: AdminDependency,
     integration_data: IntegrationCreate,
     user_id: Annotated[UUID, Query(description="User ID creating the integration")],
 ):
@@ -151,7 +154,7 @@ async def create_integration(
 
 
 @router.get("/integrations/{integration_id}", response_model=IntegrationResponse)
-async def get_integration(db: DBSession, integration_id: UUID):
+async def get_integration(db: DBSession, integration_id: UUID, _admin: AdminDependency):
     """Get integration by ID."""
     result = await db.execute(
         select(ToolIntegration)
@@ -178,6 +181,7 @@ async def get_integration(db: DBSession, integration_id: UUID):
 async def update_integration(
     db: DBSession,
     integration_id: UUID,
+    _admin: AdminDependency,
     update_data: IntegrationUpdate,
 ):
     """Update an integration."""
@@ -221,7 +225,9 @@ async def update_integration(
 
 
 @router.delete("/integrations/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_integration(db: DBSession, integration_id: UUID):
+async def delete_integration(
+    db: DBSession, integration_id: UUID, _admin: AdminDependency
+):
     """Delete an integration."""
     result = await db.execute(
         select(ToolIntegration).where(ToolIntegration.id == integration_id)
@@ -239,7 +245,7 @@ async def delete_integration(db: DBSession, integration_id: UUID):
 
 
 @router.post("/integrations/{integration_id}/sync", response_model=SyncResponse)
-async def trigger_sync(db: DBSession, integration_id: UUID):
+async def trigger_sync(db: DBSession, integration_id: UUID, _admin: AdminDependency):
     """Trigger a sync for an integration via Dagster."""
     # Verify integration exists
     result = await db.execute(
@@ -324,7 +330,9 @@ async def trigger_sync(db: DBSession, integration_id: UUID):
 @router.get(
     "/integrations/{integration_id}/sync/{run_id}", response_model=SyncStatusResponse
 )
-async def get_sync_status(db: DBSession, integration_id: UUID, run_id: str):
+async def get_sync_status(
+    db: DBSession, integration_id: UUID, run_id: str, _admin: AdminDependency
+):
     """Get the status of a sync run."""
     # Verify integration exists
     result = await db.execute(

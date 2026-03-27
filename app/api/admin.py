@@ -1,6 +1,7 @@
 """Admin API for metrics configuration studio."""
 
 import logging
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import AdminDependency
 from app.database import get_db
 from app.limiter import limiter
 from app.schemas.admin import (
@@ -39,12 +41,10 @@ from app.schemas.admin import (
 )
 from app.services.admin_auth import (
     AdminSession,
-    create_token,
-    get_session,
+    create_access_token,
     hash_password,
     parse_bearer_token,
     revoke_token,
-    save_session,
     verify_password,
 )
 
@@ -64,24 +64,6 @@ REQUIRED_SETTINGS_BY_CALC: dict[str, list[str]] = {
     "cancellation_rate_weekly": ["cancelled_status_ids"],
     "field_value_sprint_pct": ["field_value_match"],
 }
-
-
-async def _get_current_admin(
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
-) -> AdminSession:
-    token = parse_bearer_token(authorization)
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing bearer token",
-        )
-    session = get_session(token)
-    if not session or not session.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
-    return session
 
 
 @router.post("/auth/login", response_model=AdminLoginResponse)
@@ -122,16 +104,14 @@ async def admin_login(request: Request, payload: AdminLoginRequest, db: DBSessio
             {"h": new_hash, "id": str(row["id"])},
         )
 
-    token, expires_at = create_token()
-    save_session(
-        token,
+    token, expires_at = create_access_token(
         AdminSession(
             user_id=str(row["id"]),
             email=row["email"],
             display_name=row["display_name"],
             is_admin=True,
-            expires_at=expires_at,
-        ),
+            expires_at=datetime.now(UTC),
+        )
     )
 
     return AdminLoginResponse(
@@ -143,7 +123,7 @@ async def admin_login(request: Request, payload: AdminLoginRequest, db: DBSessio
 
 
 @router.get("/auth/me", response_model=AdminMeResponse)
-async def admin_me(admin: Annotated[AdminSession, Depends(_get_current_admin)]):
+async def admin_me(admin: AdminDependency):
     return AdminMeResponse(
         user_id=UUID(admin.user_id),
         email=admin.email,
@@ -165,7 +145,7 @@ async def admin_logout(
 @router.get("/catalog/projects", response_model=list[ProjectCatalogItem])
 async def catalog_projects(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     rows = (
         (
@@ -188,7 +168,7 @@ async def catalog_projects(
 @router.get("/catalog/boards", response_model=list[BoardCatalogItem])
 async def catalog_boards(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: UUID,
 ):
     rows = (
@@ -214,7 +194,7 @@ async def catalog_boards(
 @router.get("/catalog/board-columns", response_model=list[BoardColumnCatalogItem])
 async def catalog_board_columns(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     board_id: UUID,
 ):
     rows = (
@@ -249,7 +229,7 @@ async def catalog_board_columns(
 @router.get("/catalog/statuses", response_model=list[StatusCatalogItem])
 async def catalog_statuses(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: UUID,
 ):
     rows = (
@@ -275,7 +255,7 @@ async def catalog_statuses(
 @router.get("/catalog/field-keys", response_model=list[FieldKeyCatalogItem])
 async def catalog_field_keys(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: UUID,
 ):
     rows = (
@@ -301,7 +281,7 @@ async def catalog_field_keys(
 @router.get("/catalog/issue-types", response_model=list[IssueTypeCatalogItem])
 async def catalog_issue_types(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: UUID,
 ):
     rows = (
@@ -327,7 +307,7 @@ async def catalog_issue_types(
 @router.get("/catalog/clean-jira-schema-map", response_model=SchemaMapResponse)
 async def catalog_clean_jira_schema_map(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     rows = (
         (
@@ -389,7 +369,7 @@ async def catalog_clean_jira_schema_map(
 @router.get("/contracts/catalog", response_model=list[CalculationContract])
 async def contract_catalog(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     rows = (
         (
@@ -433,7 +413,7 @@ async def contract_catalog(
 @router.get("/commitment-rules", response_model=list[CommitmentRuleResponse])
 async def list_commitment_rules(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: UUID | None = None,
     board_id: UUID | None = None,
     calc_code: str | None = None,
@@ -467,7 +447,7 @@ async def list_commitment_rules(
 async def upsert_commitment_rule(
     payload: CommitmentRuleUpsert,
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     calc = (
         (
@@ -584,7 +564,7 @@ async def upsert_commitment_rule(
 async def delete_commitment_rule(
     rule_id: UUID,
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     result = await db.execute(
         text("DELETE FROM metrics.commitment_rules WHERE id=:id"),
@@ -598,7 +578,7 @@ async def delete_commitment_rule(
 @router.get("/calculation-settings", response_model=list[CalculationSettingResponse])
 async def list_calculation_settings(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: UUID | None = None,
     calc_code: str | None = None,
     settings_type: str | None = None,
@@ -631,7 +611,7 @@ async def list_calculation_settings(
 async def upsert_calculation_setting(
     payload: CalculationSettingUpsert,
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     calc = (
         (
@@ -720,7 +700,7 @@ async def upsert_calculation_setting(
 async def delete_calculation_setting(
     setting_id: UUID,
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     result = await db.execute(
         text("DELETE FROM metrics.calculation_settings WHERE id=:id"),
@@ -734,7 +714,7 @@ async def delete_calculation_setting(
 @router.get("/units", response_model=list[UnitBindingResponse])
 async def list_units(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: UUID | None = None,
 ):
     query = """
@@ -757,7 +737,7 @@ async def upsert_unit(
     unit_code: str,
     payload: UnitBindingUpsert,
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     existing = (
         (
@@ -839,7 +819,7 @@ async def upsert_unit(
 async def delete_unit(
     unit_id: UUID,
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     result = await db.execute(
         text("DELETE FROM metrics.units WHERE id=:id"),
@@ -853,7 +833,7 @@ async def delete_unit(
 @router.get("/slice-rules", response_model=list[SliceRuleResponse])
 async def list_slice_rules(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: UUID | None = None,
     definition_id: UUID | None = None,
 ):
@@ -881,7 +861,7 @@ async def list_slice_rules(
 async def upsert_slice_rule(
     payload: SliceRuleUpsert,
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     if payload.id:
         sql = text(
@@ -962,7 +942,7 @@ async def upsert_slice_rule(
 async def delete_slice_rule(
     rule_id: UUID,
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
 ):
     result = await db.execute(
         text("DELETE FROM metrics.slice_rules WHERE id=:id"),
@@ -976,7 +956,7 @@ async def delete_slice_rule(
 @router.post("/validate", response_model=ValidationResponse)
 async def validate_config(
     db: DBSession,
-    _admin: Annotated[AdminSession, Depends(_get_current_admin)],
+    _admin: AdminDependency,
     project_id: Annotated[UUID | None, Query()] = None,
 ):
     projects_query = """

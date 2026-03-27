@@ -1,13 +1,16 @@
-"""Simple in-memory token auth for admin endpoints."""
+"""Admin auth helpers: password verification and stateless signed sessions."""
 
+import base64
+import hashlib
 import hmac
-import secrets
+import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import bcrypt
 
-MAX_TOKEN_STORE_SIZE = 1000
+DEFAULT_ADMIN_TOKEN_TTL_MINUTES = 480
 
 
 @dataclass
@@ -19,13 +22,116 @@ class AdminSession:
     expires_at: datetime
 
 
-_TOKEN_STORE: dict[str, AdminSession] = {}
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def create_token(ttl_minutes: int = 480) -> tuple[str, datetime]:
-    token = secrets.token_urlsafe(48)
+def _b64url_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(f"{data}{padding}".encode("ascii"))
+
+
+def _get_signing_secret() -> str:
+    return (
+        os.getenv("ADMIN_AUTH_SECRET")
+        or os.getenv("SECRET_KEY")
+        or "dev-insecure-secret-change-me"
+    )
+
+
+def _sign(data: str) -> str:
+    digest = hmac.new(
+        _get_signing_secret().encode("utf-8"),
+        data.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return _b64url_encode(digest)
+
+
+def _serialize(session: AdminSession) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {
+        "sub": session.user_id,
+        "email": session.email,
+        "name": session.display_name,
+        "is_admin": session.is_admin,
+        "exp": int(session.expires_at.timestamp()),
+    }
+    encoded_header = _b64url_encode(
+        json.dumps(header, separators=(",", ":")).encode("utf-8")
+    )
+    encoded_payload = _b64url_encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    )
+    signing_input = f"{encoded_header}.{encoded_payload}"
+    signature = _sign(signing_input)
+    return f"{signing_input}.{signature}"
+
+
+def _deserialize(token: str) -> AdminSession | None:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+
+    encoded_header, encoded_payload, signature = parts
+    signing_input = f"{encoded_header}.{encoded_payload}"
+    expected_signature = _sign(signing_input)
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+
+    try:
+        header = json.loads(_b64url_decode(encoded_header))
+        payload = json.loads(_b64url_decode(encoded_payload))
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    if header.get("alg") != "HS256" or header.get("typ") != "JWT":
+        return None
+
+    try:
+        expires_at = datetime.fromtimestamp(int(payload["exp"]), tz=UTC)
+        if expires_at < datetime.now(UTC):
+            return None
+
+        return AdminSession(
+            user_id=str(payload["sub"]),
+            email=str(payload["email"]),
+            display_name=str(payload.get("name", "")),
+            is_admin=bool(payload.get("is_admin", False)),
+            expires_at=expires_at,
+        )
+    except (KeyError, TypeError, ValueError, OSError):
+        return None
+
+
+def create_access_token(
+    session: AdminSession, ttl_minutes: int = DEFAULT_ADMIN_TOKEN_TTL_MINUTES
+) -> tuple[str, datetime]:
     expires_at = datetime.now(UTC) + timedelta(minutes=ttl_minutes)
+    token = _serialize(
+        AdminSession(
+            user_id=session.user_id,
+            email=session.email,
+            display_name=session.display_name,
+            is_admin=session.is_admin,
+            expires_at=expires_at,
+        )
+    )
     return token, expires_at
+
+
+def create_token(
+    ttl_minutes: int = DEFAULT_ADMIN_TOKEN_TTL_MINUTES,
+) -> tuple[str, datetime]:
+    """Backward-compatible wrapper for old tests/callers."""
+    session = AdminSession(
+        user_id="",
+        email="",
+        display_name="",
+        is_admin=False,
+        expires_at=datetime.now(UTC),
+    )
+    return create_access_token(session, ttl_minutes=ttl_minutes)
 
 
 def hash_password(plain: str) -> str:
@@ -41,44 +147,23 @@ def verify_password(plain: str, stored: str) -> tuple[bool, bool]:
     if is_bcrypt:
         valid = bcrypt.checkpw(plain.encode(), stored.encode())
         return valid, False
-    # Legacy plaintext path — constant-time compare to avoid timing attacks
+    # Legacy plaintext path - constant-time compare to avoid timing attacks.
     valid = hmac.compare_digest(plain, stored)
-    return (
-        valid,
-        valid,
-    )  # needs_rehash only when valid (no point rehashing wrong password)
-
-
-def _purge_expired() -> None:
-    now = datetime.now(UTC)
-    expired_keys = [k for k, s in _TOKEN_STORE.items() if s.expires_at < now]
-    for k in expired_keys:
-        _TOKEN_STORE.pop(k, None)
+    return valid, valid
 
 
 def save_session(token: str, session: AdminSession) -> None:
-    if len(_TOKEN_STORE) >= MAX_TOKEN_STORE_SIZE:
-        _purge_expired()
-        if len(_TOKEN_STORE) >= MAX_TOKEN_STORE_SIZE:
-            # Evict oldest half by expiry
-            sorted_keys = sorted(_TOKEN_STORE, key=lambda k: _TOKEN_STORE[k].expires_at)
-            for k in sorted_keys[: MAX_TOKEN_STORE_SIZE // 2]:
-                _TOKEN_STORE.pop(k, None)
-    _TOKEN_STORE[token] = session
+    """No-op for stateless token mode, kept for backward compatibility."""
+    _ = (token, session)
 
 
 def get_session(token: str) -> AdminSession | None:
-    session = _TOKEN_STORE.get(token)
-    if not session:
-        return None
-    if session.expires_at < datetime.now(UTC):
-        _TOKEN_STORE.pop(token, None)
-        return None
-    return session
+    return _deserialize(token)
 
 
 def revoke_token(token: str) -> None:
-    _TOKEN_STORE.pop(token, None)
+    """Stateless tokens cannot be server-revoked without shared store."""
+    _ = token
 
 
 def parse_bearer_token(auth_header: str | None) -> str | None:

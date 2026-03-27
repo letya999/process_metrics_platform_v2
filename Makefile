@@ -49,7 +49,7 @@ help:
 	@echo "  make check       - Run all checks: lint + test + validate"
 	@echo "  make dev         - Start development environment (docker-compose up)"
 	@echo "  make test        - Run pytest with coverage"
-	@echo "  make lint        - Check code style (ruff + black)"
+	@echo "  make lint        - Check code style (ruff + black + policy)"
 	@echo "  make lint-local  - Check code style only for changed Python files"
 	@echo "  make format      - Auto-format code (ruff --fix + black)"
 	@echo "  make validate    - Run data validation checks"
@@ -107,6 +107,7 @@ lint:
 	@echo "$(BLUE)Checking code style...$(NC)"
 	$(PYTHON_BIN) -m ruff check app/ pipelines/ tests/
 	$(PYTHON_BIN) -m black --check app/ pipelines/ tests/
+	$(PYTHON_BIN) scripts/check_repo_policy.py
 	@echo "$(GREEN)Linting passed!$(NC)"
 
 ## Check style for changed Python files only (local workflow)
@@ -125,7 +126,7 @@ format:
 ## Run data validation checks
 validate:
 	@echo "$(BLUE)Running data validation...$(NC)"
-	@$(PYTHON_BIN) scripts/run_validation.py || echo "$(YELLOW)Validation script execution failed$(NC)"
+	$(PYTHON_BIN) scripts/run_validation.py
 	@echo "$(GREEN)Validation complete!$(NC)"
 
 # =============================================================================

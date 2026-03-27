@@ -7,8 +7,10 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.dependencies import require_admin
 from app.database import get_db
 from app.main import app
+from app.services.admin_auth import AdminSession
 
 pytestmark = pytest.mark.integration
 
@@ -170,6 +172,29 @@ def api_client():
     async def _override_get_db():
         yield fake_db
 
+    async def _override_admin():
+        return AdminSession(
+            user_id=str(uuid4()),
+            email="admin@example.com",
+            display_name="Admin",
+            is_admin=True,
+            expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+        )
+
+    app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[require_admin] = _override_admin
+    with TestClient(app) as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def unauth_api_client():
+    fake_db = _FakeAsyncSession()
+
+    async def _override_get_db():
+        yield fake_db
+
     app.dependency_overrides[get_db] = _override_get_db
     with TestClient(app) as client:
         yield client
@@ -203,6 +228,10 @@ class TestIntegrationTypesEndpoint:
 
 
 class TestIntegrationsEndpoint:
+    def test_list_integrations_requires_auth(self, unauth_api_client):
+        response = unauth_api_client.get("/api/v1/integrations")
+        assert response.status_code == 401
+
     def test_list_integrations(self, api_client):
         response = api_client.get("/api/v1/integrations")
         assert response.status_code == 200
@@ -229,6 +258,10 @@ class TestIntegrationsEndpoint:
 
 
 class TestProjectsEndpoint:
+    def test_list_projects_requires_auth(self, unauth_api_client):
+        response = unauth_api_client.get("/api/v1/projects")
+        assert response.status_code == 401
+
     def test_list_projects(self, api_client):
         response = api_client.get("/api/v1/projects")
         assert response.status_code == 200

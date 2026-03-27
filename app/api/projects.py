@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import AdminDependency
 from app.database import get_db
 from app.models.orm import Project, ToolIntegration, User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
@@ -21,6 +22,7 @@ DBSession = Annotated[AsyncSession, Depends(get_db)]
 @router.get("/projects", response_model=list[ProjectResponse])
 async def list_projects(
     db: DBSession,
+    _admin: AdminDependency,
     user_id: Annotated[
         UUID | None, Query(description="Filter by owner user ID")
     ] = None,
@@ -51,6 +53,7 @@ async def list_projects(
 )
 async def create_project(
     db: DBSession,
+    _admin: AdminDependency,
     project_data: ProjectCreate,
     user_id: Annotated[UUID, Query(description="User ID creating the project")],
 ):
@@ -109,7 +112,7 @@ async def create_project(
 
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
-async def get_project(db: DBSession, project_id: UUID):
+async def get_project(db: DBSession, project_id: UUID, _admin: AdminDependency):
     """Get project by ID."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
@@ -127,6 +130,7 @@ async def get_project(db: DBSession, project_id: UUID):
 async def update_project(
     db: DBSession,
     project_id: UUID,
+    _admin: AdminDependency,
     update_data: ProjectUpdate,
 ):
     """Update project sync settings."""
@@ -154,7 +158,7 @@ async def update_project(
 
 
 @router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_project(db: DBSession, project_id: UUID):
+async def delete_project(db: DBSession, project_id: UUID, _admin: AdminDependency):
     """Delete a project."""
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
