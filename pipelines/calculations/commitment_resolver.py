@@ -104,7 +104,7 @@ def get_done_column_ids(board_columns_df: pl.DataFrame) -> List[str]:
     done_cols = board_columns_df.filter(
         pl.col("name")
         .str.to_lowercase()
-        .str.contains("done|готово|closed|resolved|completed")
+        .str.contains("done|готово|closed|resolved|completed")  # 'готово' means 'done'
     )
     if not done_cols.is_empty():
         status_ids = done_cols.select("status_id").drop_nulls().to_series().to_list()
@@ -231,7 +231,9 @@ def identify_commitment_points_heuristic(
     start_cols = board_columns_df.filter(
         pl.col("name")
         .str.to_lowercase()
-        .str.contains("in progress|в работе|progress|active")
+        .str.contains(
+            "in progress|в работе|progress|active"
+        )  # 'в работе' means 'in progress'
     )
     if start_cols.is_empty():
         start_pos = 0
@@ -251,7 +253,7 @@ def identify_commitment_points_heuristic(
     end_cols = board_columns_df.filter(
         pl.col("name")
         .str.to_lowercase()
-        .str.contains("done|готово|closed|resolved|completed")
+        .str.contains("done|готово|closed|resolved|completed")  # 'готово' means 'done'
     )
     if end_cols.is_empty():
         end_pos = 999

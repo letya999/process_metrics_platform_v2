@@ -45,11 +45,11 @@ def test_get_done_column_ids_strategies():
     # Empty
     assert get_done_column_ids(pl.DataFrame()) == []
 
-    # Heuristic fallback (Russian)
+    # Heuristic fallback
     df = pl.DataFrame(
         {
             "board_id": ["B1"],
-            "name": ["Готово"],  # 'Готово' means 'Done'
+            "name": ["Done"],
             "position": [5],
             "status_id": ["S_DONE"],
         }

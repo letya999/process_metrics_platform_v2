@@ -69,7 +69,10 @@ class TestCommitmentPoints:
             {
                 "id": ["COL-1", "COL-2"],
                 "board_id": ["BOARD-1", "BOARD-1"],
-                "name": ["В работе", "Готово"],
+                "name": [
+                    "В работе",  # 'В работе' means 'In Progress'
+                    "Готово",  # 'Готово' means 'Done'
+                ],
                 "position": [1, 2],
                 "status_id": ["STATUS-2", "STATUS-3"],
             }
@@ -85,7 +88,7 @@ class TestLeadTimeCalculation:
     """Tests for calculating lead time per issue."""
 
     def test_calculate_lead_time_simple(self):
-        """Basic lead time calculation: start to end."""
+        """Test basic lead time calculation from start to end transition."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-1"],
@@ -120,7 +123,7 @@ class TestLeadTimeCalculation:
         assert result["lead_time_days"][0] == 5.0
 
     def test_lead_time_only_counts_first_start_and_first_end(self):
-        """Lead time uses FIRST start and FIRST end (after start)."""
+        """Test that lead time uses the first start and first end after that start."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-2"],
@@ -167,7 +170,7 @@ class TestLeadTimeCalculation:
         assert result["lead_time_days"][0] == 9.0
 
     def test_issue_without_end_event_uses_resolved_at(self):
-        """Issue without Done event falls back to jira_resolved_at."""
+        """Test fallback to jira_resolved_at when no explicit 'Done' transition exists."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-3"],
@@ -200,7 +203,7 @@ class TestLeadTimeCalculation:
         assert result["lead_time_days"][0] == 9.0
 
     def test_issue_without_commitment_zone_transition_is_excluded(self):
-        """Issue that skips the commitment zone (e.g. To Do -> Done) is excluded (no fallback to created_at)."""
+        """Test that issues skipping the commitment zone are excluded from calculation."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-3B"],
@@ -232,7 +235,7 @@ class TestLeadTimeCalculation:
         assert result.is_empty()
 
     def test_issue_entering_zone_at_middle_status_not_in_progress(self):
-        """Issue is included if it enters ANY middle status (not necessarily In Progress)."""
+        """Test inclusion of issues entering at any middle status, not just 'In Progress'."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-3C"],
@@ -268,7 +271,7 @@ class TestLeadTimeCalculation:
         assert result["lead_time_days"][0] == 5.0
 
     def test_lead_time_ceil_fractional_hours(self):
-        """Lead time is ceiled to the next whole day (5 hours -> 1 day)."""
+        """Test that fractional days are ceiled to the next whole day."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-F1"],
@@ -296,7 +299,7 @@ class TestLeadTimeCalculation:
         assert result["lead_time_days"][0] == 1.0
 
     def test_lead_time_ceil_25_hours(self):
-        """Lead time is ceiled to the next whole day (25 hours -> 2 days)."""
+        """Test that 25 hours is correctly ceiled to 2.0 days."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-F2"],
@@ -324,7 +327,7 @@ class TestLeadTimeCalculation:
         assert result["lead_time_days"][0] == 2.0
 
     def test_lead_time_ceil_exactly_24_hours(self):
-        """Lead time exactly 24 hours is 1.0 day."""
+        """Test that exactly 24 hours is calculated as 1.0 day."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-F3"],
@@ -352,7 +355,7 @@ class TestLeadTimeCalculation:
         assert result["lead_time_days"][0] == 1.0
 
     def test_issue_with_no_end_status_and_no_resolved_at_is_excluded(self):
-        """Issue without any end signal (status or resolved_at) is excluded."""
+        """Test exclusion of issues with no end status and no resolved date."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-NOEND"],
@@ -377,7 +380,7 @@ class TestLeadTimeCalculation:
         assert result.is_empty()
 
     def test_multiple_issues_mix_included_and_excluded(self):
-        """Multiple issues with mixed valid/invalid commitment zones are handled correctly."""
+        """Test a mix of valid and invalid issues in a single calculation batch."""
         issues = pl.DataFrame(
             {
                 "id": ["A", "B", "C"],
@@ -424,10 +427,7 @@ class TestLeadTimeCalculation:
         assert sorted(result["issue_id"].to_list()) == ["A", "C"]
 
     def test_pre_reset_commitment_start_after_last_done_exit(self):
-        """
-        If an issue was Done and then reopened, the commitment start must be AFTER the last Done exit.
-        Previous In Progress periods are ignored (pre-reset bug fix).
-        """
+        """Test that commitment start is correctly reset after an issue is reopened from Done."""
         issues = pl.DataFrame(
             {
                 "id": ["ISS-5"],
@@ -480,7 +480,7 @@ class TestHistogramBins:
     """Tests for histogram bins calculation."""
 
     def test_calculate_bins(self):
-        """Bins are created correctly (ceiling of days)."""
+        """Test that lead time values are correctly binned using ceiling logic."""
         lead_time_df = pl.DataFrame(
             {
                 "issue_id": ["ISS-1", "ISS-2", "ISS-3", "ISS-4"],
@@ -501,7 +501,7 @@ class TestHistogramBins:
         assert bin_3_count == 2
 
     def test_empty_lead_time_returns_empty_bins(self):
-        """Empty lead time = empty bins."""
+        """Test that empty input produces empty histogram bins."""
         lead_time_df = pl.DataFrame(
             {"issue_id": [], "project_id": [], "lead_time_days": []},
             schema={
@@ -520,7 +520,7 @@ class TestLeadTimeSlice:
     """Tests for lead time aggregation by issue type."""
 
     def test_calculate_slice_by_issue_type(self):
-        """Lead time aggregated by issue type."""
+        """Test aggregation of lead time statistics by issue type."""
         lead_time_df = pl.DataFrame(
             {
                 "issue_id": ["ISS-1", "ISS-2", "ISS-3"],
@@ -543,7 +543,7 @@ class TestLeadTimeSlice:
         assert bug_row["avg_lead_time_days"][0] == 10.0
 
     def test_empty_lead_time_returns_empty_slice(self):
-        """Empty lead time = empty slice."""
+        """Test that empty input produces empty sliced results."""
         lead_time_df = pl.DataFrame(
             {"issue_id": [], "project_id": [], "issue_type": [], "lead_time_days": []},
             schema={
@@ -560,7 +560,7 @@ class TestLeadTimeSlice:
 
 
 def test_calculate_histogram_bins_slice():
-    """Test histogram bins by slice (issue type)."""
+    """Test histogram bins calculation when grouped by slice (issue type)."""
     from pipelines.calculations.lead_time import calculate_histogram_bins_slice
 
     # Empty

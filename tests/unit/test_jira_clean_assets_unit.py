@@ -7,10 +7,13 @@ from pipelines.assets.jira import clean
 
 
 def _asset_fn(defn):
+    """Extract the compute function from a Dagster asset definition."""
     return defn.node_def.compute_fn.decorated_fn
 
 
 class _DummyLog:
+    """Mock logger for testing."""
+
     def info(self, _msg):
         pass
 
@@ -22,11 +25,15 @@ class _DummyLog:
 
 
 class _DummyContext:
+    """Mock Dagster context for testing."""
+
     def __init__(self):
         self.log = _DummyLog()
 
 
 class _Result:
+    """Mock SQLAlchemy result object."""
+
     def __init__(self, fetchall_data=None, scalar_value=None, first_value=None):
         self._fetchall_data = fetchall_data if fetchall_data is not None else []
         self._scalar_value = scalar_value
@@ -57,6 +64,8 @@ class _Result:
 
 
 class _Row:
+    """Mock SQLAlchemy row object."""
+
     def __init__(self, values, **attrs):
         self._values = list(values)
         for k, v in attrs.items():
@@ -67,6 +76,8 @@ class _Row:
 
 
 class _SequencedConnection:
+    """Mock SQLAlchemy connection with a pre-defined sequence of results."""
+
     def __init__(self, responses):
         self._responses = list(responses)
         self.commits = 0
@@ -106,6 +117,8 @@ class _SequencedConnection:
 
 
 class _Engine:
+    """Mock SQLAlchemy engine."""
+
     def __init__(self, conn):
         self._conn = conn
 
@@ -114,6 +127,8 @@ class _Engine:
 
 
 class _DummyDatabase:
+    """Mock database resource for Dagster assets."""
+
     def __init__(self, conn):
         self._engine = _Engine(conn)
 
@@ -122,6 +137,7 @@ class _DummyDatabase:
 
 
 def test_clean_jira_basic_sync_assets():
+    """Verify basic sync assets (projects, issue types, statuses) behave correctly."""
     # clean_jira_projects
     # 1st call: _get_platform_project_id, 2nd call: INSERT
     conn = _SequencedConnection(
@@ -161,12 +177,14 @@ def test_clean_jira_basic_sync_assets():
 
 
 def test_clean_jira_issues_raises_without_system_integration():
+    """Jira issues sync must fail if no system integration is configured."""
     conn = _SequencedConnection([_Result(first_value=None)])
     with pytest.raises(RuntimeError, match="System Jira integration not found"):
         _asset_fn(clean.clean_jira_issues)(_DummyContext(), _DummyDatabase(conn))
 
 
 def test_clean_jira_issues_success():
+    """Verify successful sync of Jira issues."""
     conn = _SequencedConnection(
         [
             _Result(first_value=("integration-id",)),
@@ -194,6 +212,7 @@ def test_clean_jira_issues_success():
 
 
 def test_clean_jira_labels_success():
+    """Verify successful sync of labels."""
     # clean_jira_labels
     conn = _SequencedConnection(
         [
@@ -224,6 +243,7 @@ def test_clean_jira_labels_success():
 
 
 def test_clean_jira_worklogs_success():
+    """Verify successful sync of worklogs."""
     conn = _SequencedConnection(
         [
             _Result(scalar_value=True),  # table exists
@@ -237,6 +257,7 @@ def test_clean_jira_worklogs_success():
 
 
 def test_clean_jira_priorities_resolutions_success():
+    """Verify successful sync of priorities and resolutions."""
     # priorities
     conn_p = _SequencedConnection([_Result(fetchall_data=[(1,)])])
     out_p = _asset_fn(clean.clean_jira_priorities)(
@@ -253,6 +274,7 @@ def test_clean_jira_priorities_resolutions_success():
 
 
 def test_clean_jira_sprints_success_and_fallback():
+    """Verify sprint sync success and fallback paths."""
     conn_success = _SequencedConnection(
         [_Result(scalar_value=True), _Result(fetchall_data=[(1,), (2,)])]
     )
@@ -274,6 +296,7 @@ def test_clean_jira_sprints_success_and_fallback():
 
 
 def test_clean_jira_field_keys_success():
+    """Verify field keys extraction and sync."""
     # 1. cols scan, 2. INSERT loop start, 3. INSERT loop end, 4. fields exists?, 5. names update 1, 6. names update 2, 7. _detect_sprint_field_id, 8. Sprint INSERT
     conn = _SequencedConnection(
         [
@@ -305,6 +328,7 @@ def test_clean_jira_field_keys_success():
 
 
 def test_clean_jira_field_values_success():
+    """Verify extraction and storage of field values."""
     fk_row = types.SimpleNamespace(
         id="fk1", project_id="p1", external_key="customfield_10001"
     )
@@ -333,6 +357,7 @@ def test_clean_jira_field_values_success():
 
 
 def test_clean_jira_field_value_changelog_skip_and_success():
+    """Verify field value changelog sync and skip conditions."""
     from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
 
     conn_skip = _SequencedConnection([_Result(scalar_value=False)])
@@ -352,6 +377,7 @@ def test_clean_jira_field_value_changelog_skip_and_success():
 
 
 def test_clean_jira_sprint_assets_success():
+    """Verify sync of sprint-issue mapping and its changelog."""
     # clean_jira_sprint_issues
     # 1. changelog exists, 2. _detect_sprint_field_id, 3. INSERT (with fetchall), 4. update closed sprints
     conn_sprint_issues = _SequencedConnection(
@@ -383,6 +409,7 @@ def test_clean_jira_sprint_assets_success():
 
 
 def test_clean_jira_comments_skip_and_success():
+    """Verify sync of issue comments."""
     from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
 
     # possible_tables = [rendered_fields..., fields__comment__comments, fields__comment]
@@ -419,6 +446,7 @@ def test_clean_jira_comments_skip_and_success():
 
 
 def test_clean_jira_release_assets_skip_and_success():
+    """Verify sync of releases and release-issue mapping."""
     from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
 
     conn_rel_skip = _SequencedConnection([_Result(scalar_value=False)])
@@ -478,6 +506,7 @@ def test_clean_jira_release_assets_skip_and_success():
 
 
 def test_clean_jira_user_issue_roles_success():
+    """Verify sync of user roles on issues."""
     conn = _SequencedConnection([_Result(fetchall_data=[(1,), (2,)])])
     out = _asset_fn(clean.clean_jira_user_issue_roles)(
         _DummyContext(), _DummyDatabase(conn)
@@ -488,6 +517,7 @@ def test_clean_jira_user_issue_roles_success():
 
 
 def test_clean_jira_issue_links_success():
+    """Verify sync of issue links."""
     conn = _SequencedConnection(
         [
             _Result(scalar_value=True),  # table exists
@@ -502,6 +532,7 @@ def test_clean_jira_issue_links_success():
 
 
 def test_clean_jira_misc_assets_success():
+    """Verify sync of miscellaneous assets (changelogs, boards, columns)."""
     from pipelines.assets.jira.clean._utils import _TABLE_EXISTS_CACHE
 
     conn_sc = _SequencedConnection([_Result(fetchall_data=[(1,), (2,)])])
@@ -567,6 +598,7 @@ def test_clean_jira_misc_assets_success():
 
 
 def test_clean_jira_asset_checks():
+    """Verify all asset checks correctly identify passed/failed states."""
     check_fns = [
         clean.check_no_orphan_issues,
         clean.check_issues_have_required_fields,
@@ -591,6 +623,7 @@ def test_clean_jira_asset_checks():
     {"JIRA_URL": "http://jira", "JIRA_EMAIL": "a@b.c", "JIRA_API_TOKEN": "tok"},
 )
 def test_jira_ghost_cleanup_success(mock_get):
+    """Verify that ghost cleanup correctly identifies and deletes removed issues."""
     # Mock Jira API response
     # Return 100 IDs
     api_ids = [{"id": str(10000 + i)} for i in range(100)]
@@ -628,6 +661,7 @@ class TestCleanJiraReleaseChangelog:
     """Tests for task 3.8: release property change tracking via snapshot diff."""
 
     def test_inserts_initial_rows_when_no_prior_changelog(self):
+        """Initial run should treat all current fields as new additions."""
         # First run: no prior changelog entries - all current fields are "new"
         conn = _SequencedConnection(
             [
@@ -648,6 +682,7 @@ class TestCleanJiraReleaseChangelog:
         assert out["changelog_count"] == 4  # 4 fields x 1 release
 
     def test_inserts_zero_rows_when_no_changes(self):
+        """No changes should result in zero insertions."""
         # No differences detected - nothing to insert
         conn = _SequencedConnection(
             [
@@ -661,6 +696,7 @@ class TestCleanJiraReleaseChangelog:
         assert out["changelog_count"] == 0
 
     def test_tracks_multiple_releases(self):
+        """Verify tracking across multiple release objects."""
         # 3 releases with 4 fields each = up to 12 initial rows
         conn = _SequencedConnection(
             [
@@ -695,6 +731,7 @@ class TestCleanJiraSprintChangelog:
     """Tests for Phase 5: sprint_changelog upgrade to full snapshot-diff."""
 
     def test_bootstrap_inserts_all_5_fields_on_first_run(self):
+        """Bootstrap run should capture all 5 sprint fields."""
         # 1 sprint x 5 fields = 5 rows inserted
         conn = _SequencedConnection(
             [
@@ -708,6 +745,7 @@ class TestCleanJiraSprintChangelog:
         assert out["changelog_count"] == 5
 
     def test_no_insertion_when_values_unchanged(self):
+        """Unchanged values should result in no changelog entries."""
         # IS DISTINCT FROM will return nothing if values match last_known
         conn = _SequencedConnection(
             [
@@ -721,6 +759,7 @@ class TestCleanJiraSprintChangelog:
         assert out["changelog_count"] == 0
 
     def test_detects_changes(self):
+        """Verify change detection for modified fields."""
         # If 2 fields changed (e.g. name and status), expect 2 rows
         conn = _SequencedConnection(
             [
@@ -734,6 +773,7 @@ class TestCleanJiraSprintChangelog:
         assert out["changelog_count"] == 2
 
     def test_multiple_sprints_multiple_changes(self):
+        """Verify tracking of multiple changes across multiple sprints."""
         # 3 sprints, each having some changes. Suppose total 7 field changes across them.
         conn = _SequencedConnection(
             [
@@ -762,6 +802,7 @@ class TestJiraDataQuality:
     """Tests for task 4.1: raw vs clean row count quality checks."""
 
     def test_check_fails_when_raw_clean_issue_count_differs(self):
+        """Check must fail if data loss between raw and clean exceeds threshold."""
         # raw=100 issues, clean=50 issues → 50% loss → should fail
         conn = _SequencedConnection(
             [_Result(scalar_value=100), _Result(scalar_value=50)]
@@ -776,6 +817,7 @@ class TestJiraDataQuality:
         assert result.metadata["loss_pct"].value == 50.0
 
     def test_check_passes_when_counts_match(self):
+        """Check must pass if counts are identical."""
         # raw=100, clean=100 → 0% loss → pass
         conn = _SequencedConnection(
             [_Result(scalar_value=100), _Result(scalar_value=100)]
@@ -790,6 +832,7 @@ class TestJiraDataQuality:
         assert result.metadata["loss_pct"].value == 0.0
 
     def test_check_passes_within_threshold(self):
+        """Check must pass if data loss is within 5% tolerance."""
         # raw=100, clean=96 → 4% loss → within 5% threshold → pass
         conn = _SequencedConnection(
             [_Result(scalar_value=100), _Result(scalar_value=96)]
@@ -804,6 +847,7 @@ class TestJiraDataQuality:
         assert result.metadata["loss_pct"].value == 4.0
 
     def test_check_skips_when_no_raw_table(self):
+        """Check should skip if raw table does not exist."""
         conn = _SequencedConnection([])
         with patch(
             "pipelines.assets.jira.clean._utils._table_exists", return_value=False
@@ -815,6 +859,7 @@ class TestJiraDataQuality:
         assert result.metadata["status"].text == "skipped_no_raw_table"
 
     def test_sprint_check_fails_when_count_differs(self):
+        """Sprint count check must fail if counts differ significantly."""
         conn = _SequencedConnection(
             [_Result(scalar_value=161), _Result(scalar_value=100)]
         )
@@ -827,6 +872,7 @@ class TestJiraDataQuality:
         assert result.passed is False
 
     def test_sprint_check_passes_when_counts_match(self):
+        """Sprint count check must pass if counts match."""
         conn = _SequencedConnection(
             [_Result(scalar_value=161), _Result(scalar_value=161)]
         )
@@ -843,7 +889,7 @@ class TestSecretsLeak:
     """Tests for task 4.3: verify no API tokens/passwords are logged."""
 
     def test_no_api_token_logged(self):
-        """raw.py must not log the actual token value."""
+        """Source code and loggers must not expose actual token values."""
         import inspect
 
         from pipelines.assets.jira import raw
@@ -863,7 +909,7 @@ class TestSecretsLeak:
             assert not matches, f"Potential secret in log: {matches}"
 
     def test_env_not_tracked_in_git(self):
-        """Verify .env is listed in .gitignore."""
+        """Verify .env is listed in .gitignore to prevent accidental commit."""
         with open(".gitignore") as f:
             gitignore = f.read()
         assert ".env" in gitignore
@@ -939,6 +985,7 @@ class TestGetPlatformProjectId:
     """Tests for _get_platform_project_id guard behavior."""
 
     def test_returns_id_when_row_exists(self):
+        """Verify successful retrieval of platform project ID."""
         conn = _SequencedConnection([_Result(first_value=("uuid-project-1",))])
         result = clean._get_platform_project_id(conn)
         assert result == "uuid-project-1"
@@ -962,6 +1009,7 @@ class TestSupplementaryIssueJoinScoping:
     """Ensure supplementary assets scope issue joins by project to avoid cross-project matches."""
 
     def test_comments_and_links_are_project_scoped(self):
+        """Verify project scoping in comments and links sync SQL."""
         import inspect
 
         source = inspect.getsource(_asset_fn(clean.clean_jira_comments))
@@ -979,6 +1027,7 @@ class TestSupplementaryIssueJoinScoping:
         )
 
     def test_field_values_and_changelog_are_project_scoped(self):
+        """Verify project scoping in field values and changelog sync SQL."""
         import inspect
 
         field_values_source = inspect.getsource(
@@ -1642,99 +1691,120 @@ class TestNewAssetChecks:
     """Pass/fail tests for all 10 new @asset_check functions."""
 
     def _run_check(self, check_fn, scalar_value):
+        """Run a standard asset check function and return the result."""
         return _asset_fn(check_fn)(
             None,
             _DummyDatabase(_SequencedConnection([_Result(scalar_value=scalar_value)])),
         )
 
     def test_closed_sprint_issues_inactive_passes_when_zero(self):
+        """Check passes if no issues are active in closed sprints."""
         assert (
             self._run_check(clean.check_closed_sprint_issues_inactive, 0).passed is True
         )
 
     def test_closed_sprint_issues_inactive_fails_when_nonzero(self):
+        """Check fails if some issues are still active in closed sprints."""
         result = self._run_check(clean.check_closed_sprint_issues_inactive, 3)
         assert result.passed is False
         assert result.metadata["active_issues_in_closed_sprints"].value == 3
 
     def test_issue_fk_integrity_passes_when_zero(self):
+        """Check passes if all issue foreign keys are valid."""
         assert self._run_check(clean.check_issue_fk_integrity, 0).passed is True
 
     def test_issue_fk_integrity_fails_when_nonzero(self):
+        """Check fails if some issue foreign keys are broken."""
         result = self._run_check(clean.check_issue_fk_integrity, 5)
         assert result.passed is False
         assert result.metadata["issues_with_broken_dimension_fk"].value == 5
 
     def test_no_orphan_worklogs_passes_when_zero(self):
+        """Check passes if no worklogs are missing their issues."""
         assert self._run_check(clean.check_no_orphan_worklogs, 0).passed is True
 
     def test_no_orphan_worklogs_fails_when_nonzero(self):
+        """Check fails if orphan worklogs are found."""
         result = self._run_check(clean.check_no_orphan_worklogs, 2)
         assert result.passed is False
         assert result.metadata["orphan_worklogs_count"].value == 2
 
     def test_no_orphan_sprints_passes_when_zero(self):
+        """Check passes if all sprints belong to existing boards."""
         assert self._run_check(clean.check_no_orphan_sprints, 0).passed is True
 
     def test_no_orphan_sprints_fails_when_nonzero(self):
+        """Check fails if orphan sprints are found."""
         result = self._run_check(clean.check_no_orphan_sprints, 1)
         assert result.passed is False
         assert result.metadata["orphan_sprints_count"].value == 1
 
     def test_field_values_fk_integrity_passes_when_zero(self):
+        """Check passes if field value foreign keys are valid."""
         assert self._run_check(clean.check_field_values_fk_integrity, 0).passed is True
 
     def test_field_values_fk_integrity_fails_when_nonzero(self):
+        """Check fails if field values have broken foreign keys."""
         result = self._run_check(clean.check_field_values_fk_integrity, 10)
         assert result.passed is False
         assert result.metadata["field_values_broken_fk_count"].value == 10
 
     def test_no_self_referencing_issue_links_passes_when_zero(self):
+        """Check passes if no issue links to itself."""
         assert (
             self._run_check(clean.check_no_self_referencing_issue_links, 0).passed
             is True
         )
 
     def test_no_self_referencing_issue_links_fails_when_nonzero(self):
+        """Check fails if self-referencing issue links are found."""
         result = self._run_check(clean.check_no_self_referencing_issue_links, 1)
         assert result.passed is False
         assert result.metadata["self_referencing_links_count"].value == 1
 
     def test_status_changelog_fk_integrity_passes_when_zero(self):
+        """Check passes if status changelog foreign keys are valid."""
         assert (
             self._run_check(clean.check_status_changelog_fk_integrity, 0).passed is True
         )
 
     def test_status_changelog_fk_integrity_fails_when_nonzero(self):
+        """Check fails if status changelog has broken foreign keys."""
         result = self._run_check(clean.check_status_changelog_fk_integrity, 4)
         assert result.passed is False
         assert result.metadata["changelog_unresolved_to_status_count"].value == 4
 
     def test_at_most_one_active_sprint_passes_when_zero(self):
+        """Check passes if each project has at most one active sprint."""
         assert (
             self._run_check(clean.check_at_most_one_active_sprint_per_project, 0).passed
             is True
         )
 
     def test_at_most_one_active_sprint_fails_when_nonzero(self):
+        """Check fails if projects have multiple active sprints."""
         result = self._run_check(clean.check_at_most_one_active_sprint_per_project, 2)
         assert result.passed is False
         assert result.metadata["projects_with_multiple_active_sprints"].value == 2
 
     def test_no_self_referencing_parent_passes_when_zero(self):
+        """Check passes if no issue is its own parent."""
         assert self._run_check(clean.check_no_self_referencing_parent, 0).passed is True
 
     def test_no_self_referencing_parent_fails_when_nonzero(self):
+        """Check fails if self-referencing parents are found."""
         result = self._run_check(clean.check_no_self_referencing_parent, 1)
         assert result.passed is False
         assert result.metadata["self_referencing_parents_count"].value == 1
 
     def test_jira_users_have_external_id_passes_when_zero(self):
+        """Check passes if all Jira users have an external ID."""
         assert (
             self._run_check(clean.check_jira_users_have_external_id, 0).passed is True
         )
 
     def test_jira_users_have_external_id_fails_when_nonzero(self):
+        """Check fails if some Jira users are missing an external ID."""
         result = self._run_check(clean.check_jira_users_have_external_id, 7)
         assert result.passed is False
         assert result.metadata["users_with_null_external_id"].value == 7
@@ -1744,6 +1814,7 @@ class TestFlowEfficiencyNonzeroCheck:
     """Behavioral coverage for check_flow_efficiency_nonzero."""
 
     def test_all_zero_values_fails(self):
+        """Check should fail if 100% of flow efficiency values are zero."""
         from pipelines.assets.jira.clean import checks as checks_mod
 
         conn = _SequencedConnection([_Result(first_value=(10, 0))])
@@ -1755,6 +1826,7 @@ class TestFlowEfficiencyNonzeroCheck:
         assert result.metadata["nonzero_rows"].value == 0
 
     def test_some_nonzero_values_passes(self):
+        """Check should pass if some flow efficiency values are non-zero."""
         from pipelines.assets.jira.clean import checks as checks_mod
 
         conn = _SequencedConnection([_Result(first_value=(100, 20))])
@@ -1765,6 +1837,7 @@ class TestFlowEfficiencyNonzeroCheck:
         assert result.metadata["nonzero_pct"].value == 20.0
 
     def test_no_data_passes(self):
+        """Check should pass if there is no data to check."""
         from pipelines.assets.jira.clean import checks as checks_mod
 
         conn = _SequencedConnection([_Result(first_value=(0, 0))])
@@ -1816,8 +1889,7 @@ class TestChangelogStatusCategoryCompleteness:
         "Canceled",
         "Cancelled",
         "Resolved",
-        "Отмена",
-    ]  # 'Отмена' means 'Cancel'
+    ]
     TODO_NAMES = [
         "To Do",
         "К выполнению",  # 'К выполнению' means 'To be done'
@@ -1845,8 +1917,8 @@ class TestChangelogStatusCategoryCompleteness:
                 "cancelled",
                 "closed",
                 "resolved",
-                "отмена",
-            }  # 'отмена' means 'cancel'
+                "отмена",  # 'отмена' means 'cancel'
+            }
             or "cancel" in n
             or "отмен" in n  # 'отмен' is root for 'cancel'
         ):

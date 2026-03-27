@@ -448,7 +448,7 @@ def _tab_commitment_v2(client: AdminApiClient, token: str) -> None:
             source_project_labels,
             index=0,
             key="commitment_board_source_project_input",
-            help="Проект, из которого взять доску/колонки для общего (NULL) правила.",
+            help="Project to fetch board/columns from for the global (NULL) rule.",
         )
         board_project_id = source_project_map[source_project_label]
 

@@ -302,16 +302,12 @@ def clean_jira_issue_statuses(
                     hi.to_string as name,
                     CASE
                         WHEN LOWER(hi.to_string) IN ('done', 'canceled', 'cancelled',
-                                                      'closed', 'resolved',
-                                                      'отмена') -- 'отмена' means 'cancel'
+                                                      'closed', 'resolved')
                             OR LOWER(hi.to_string) LIKE '%cancel%'
-                            OR LOWER(hi.to_string) LIKE '%отмен%' -- 'отмен' is root for 'cancel'
                             THEN 'done'::clean_jira.issue_status_category
                         WHEN LOWER(hi.to_string) IN ('to do',
-                                                      'к выполнению', -- 'к выполнению' means 'to do'
                                                       'open', 'backlog', 'new', 'todo')
                             OR LOWER(hi.to_string) LIKE '%to do%'
-                            OR LOWER(hi.to_string) LIKE '%к выполнению%' -- 'к выполнению' means 'to do'
                             THEN 'to_do'::clean_jira.issue_status_category
                         ELSE 'in_progress'::clean_jira.issue_status_category
                     END as category

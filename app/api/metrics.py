@@ -1,10 +1,11 @@
 """API routes for metrics configuration and retrieval."""
 
+import logging
 from datetime import date
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +22,7 @@ from app.schemas.metrics import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # Dependency for database session
@@ -220,8 +222,12 @@ async def get_lead_time_metrics(
                 else None
             ),
         )
-    except Exception:
-        return LeadTimeResponse(items=[], total_count=0)
+    except Exception as err:
+        logger.exception("Failed to query metrics")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal error querying metrics",
+        ) from err
 
 
 @router.get("/metrics/velocity", response_model=VelocityResponse)
@@ -310,8 +316,12 @@ async def get_velocity_metrics(
             for row in rows
         ]
         return VelocityResponse(items=items, total_count=len(items))
-    except Exception:
-        return VelocityResponse(items=[], total_count=0)
+    except Exception as err:
+        logger.exception("Failed to query velocity metrics")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal error querying velocity metrics",
+        ) from err
 
 
 @router.get("/metrics/throughput", response_model=ThroughputResponse)
@@ -384,8 +394,12 @@ async def get_throughput_metrics(
             total_count=len(items),
             total_issues_completed=total_completed,
         )
-    except Exception:
-        return ThroughputResponse(items=[], total_count=0, total_issues_completed=0)
+    except Exception as err:
+        logger.exception("Failed to query throughput metrics")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal error querying throughput metrics",
+        ) from err
 
 
 @router.post("/metrics/refresh", status_code=status.HTTP_202_ACCEPTED)

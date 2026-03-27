@@ -103,7 +103,7 @@ services:
   # Metabase - BI and visualization
   # =============================================================================
   metabase:
-    image: metabase/metabase:latest
+    image: metabase/metabase:v0.51.4
     container_name: metabase
     ports:
       - "3001:3000"

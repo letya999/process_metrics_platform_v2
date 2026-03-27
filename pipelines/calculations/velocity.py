@@ -73,7 +73,10 @@ def get_done_status_ids(
         and "status_id" in board_columns_df.columns
     ):
         done_by_name = board_columns_df.filter(
-            pl.col("name").cast(pl.Utf8).str.to_lowercase().str.contains("done")
+            pl.col("name")
+            .cast(pl.Utf8)
+            .str.to_lowercase()
+            .str.contains("done|closed|resolved|completed")
         ).filter(pl.col("status_id").is_not_null())
         if not done_by_name.is_empty():
             return (

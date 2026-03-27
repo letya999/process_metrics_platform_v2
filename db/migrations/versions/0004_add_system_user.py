@@ -18,15 +18,17 @@ depends_on = None
 def upgrade() -> None:
     """Add system user and default Jira integration for pipeline operations."""
     # Create system user if it doesn't exist
+    # Service account for automated pipelines. is_active=false prevents login.
+    # password_hash is a bcrypt hash of 'system-account-no-login'
     op.execute(
         text(
             """
         INSERT INTO platform.users (email, password_hash, display_name, is_active, is_admin)
         VALUES (
             'system@metrics.local',
-            'system',
+            '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TiGnvospkrfauScnWBuPMjZNv/em',
             'System',
-            true,
+            false,
             true
         )
         ON CONFLICT (email) DO NOTHING;

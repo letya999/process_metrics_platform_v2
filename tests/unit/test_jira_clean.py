@@ -338,8 +338,8 @@ class TestHistoricalStatusSync:
                     "cancelled",
                     "closed",
                     "resolved",
-                    "отмена",
-                ]  # 'отмена' means 'cancel'
+                    "отмена",  # 'отмена' means 'cancel'
+                ]
                 or "cancel" in name_lower
                 or "отмен" in name_lower  # 'отмен' is root for 'cancel'
             ):
@@ -367,7 +367,9 @@ class TestHistoricalStatusSync:
         assert infer_category("Closed") == "done"
         assert infer_category("Canceled") == "done"
         assert infer_category("Cancelled") == "done"
-        assert infer_category("Выполнено") == "in_progress"  # Not in the SQL list yet
+        assert (
+            infer_category("Выполнено") == "in_progress"
+        )  # 'Выполнено' means 'Done' (not in SQL list yet)
         assert infer_category("Отмена") == "done"  # 'Отмена' means 'Cancel'
         assert infer_category("Task Canceled") == "done"  # LIKE %cancel%
 

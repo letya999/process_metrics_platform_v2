@@ -233,16 +233,16 @@ def infer_commitment_rules(conn):
 
         for col_id, col_name in columns:
             name_lower = col_name.lower()
-            # Match start columns using English and Russian common terms
+            # Match start columns using common terms
             if not start_col and any(
                 word in name_lower
-                for word in ["in progress", "в работе", "progress", "active"]
+                for word in ["in progress", "in work", "progress", "active"]
             ):
                 start_col = (col_id, col_name)
-            # Match end columns using English and Russian common terms
+            # Match end columns using common terms
             if any(
                 word in name_lower
-                for word in ["done", "готово", "closed", "resolved", "completed"]
+                for word in ["done", "finished", "closed", "resolved", "completed"]
             ):
                 end_col = (col_id, col_name)
 

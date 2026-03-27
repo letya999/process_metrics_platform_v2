@@ -170,7 +170,7 @@ services:
   # Metabase
   # ===========================================================================
   metabase:
-    image: metabase/metabase:latest
+    image: metabase/metabase:v0.51.4
     container_name: metabase
     restart: unless-stopped
     # Do NOT expose port externally - accessed via Caddy
