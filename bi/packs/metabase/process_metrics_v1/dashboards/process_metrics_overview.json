@@ -1,0 +1,51 @@
+{
+  "key": "process_metrics_overview",
+  "collection": "process_metrics",
+  "name": "Process Metrics Overview",
+  "description": "Starter operational dashboard for engineering flow metrics",
+  "parameters": [],
+  "layout": [
+    {
+      "card_key": "velocity_sp",
+      "row": 0,
+      "col": 0,
+      "size_x": 12,
+      "size_y": 6
+    },
+    {
+      "card_key": "throughput_weekly",
+      "row": 0,
+      "col": 12,
+      "size_x": 12,
+      "size_y": 6
+    },
+    {
+      "card_key": "lead_time_distribution",
+      "row": 6,
+      "col": 0,
+      "size_x": 12,
+      "size_y": 6
+    },
+    {
+      "card_key": "cfd_30_days",
+      "row": 6,
+      "col": 12,
+      "size_x": 12,
+      "size_y": 6
+    },
+    {
+      "card_key": "avg_flow_efficiency",
+      "row": 12,
+      "col": 0,
+      "size_x": 6,
+      "size_y": 4
+    },
+    {
+      "card_key": "backlog_health",
+      "row": 12,
+      "col": 6,
+      "size_x": 18,
+      "size_y": 6
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "key": "backlog_health",
+  "collection": "process_metrics",
+  "name": "Backlog Health",
+  "description": "Backlog size, average age and stale percentage by project",
+  "display": "table",
+  "query": "WITH latest AS (SELECT project_key, MAX(full_date) AS full_date FROM metrics.v_facts WHERE calc_code IN ('backlog_size', 'backlog_avg_age_days', 'backlog_stale_pct') GROUP BY project_key), scoped AS (SELECT f.project_key, f.calc_code, f.value FROM metrics.v_facts f JOIN latest l ON l.project_key = f.project_key AND l.full_date = f.full_date WHERE f.calc_code IN ('backlog_size', 'backlog_avg_age_days', 'backlog_stale_pct')) SELECT project_key, MAX(CASE WHEN calc_code = 'backlog_size' THEN value END) AS total_backlog_size, MAX(CASE WHEN calc_code = 'backlog_avg_age_days' THEN value END) AS avg_age_days, MAX(CASE WHEN calc_code = 'backlog_stale_pct' THEN value END) AS stale_percentage FROM scoped GROUP BY project_key ORDER BY total_backlog_size DESC NULLS LAST",
+  "visualization_settings": {}
+}

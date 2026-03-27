@@ -239,7 +239,7 @@ class TestMetricsLayerIntegrity:
             negative_count == 0
         ), f"Found {negative_count} records with negative lead_time"
 
-    def test_mv_velocity_completion_rate_valid(self, engine):
+    def test_velocity_completion_rate_valid(self, engine):
         """Test that completion rates derived from v_facts are between 0 and 100."""
         with engine.connect() as conn:
             result = conn.execute(
@@ -273,7 +273,7 @@ class TestMetricsLayerIntegrity:
             invalid_count == 0
         ), f"Found {invalid_count} records with invalid completion_rate"
 
-    def test_mv_velocity_consistent_counts(self, engine):
+    def test_velocity_consistent_counts(self, engine):
         """Test that velocity completed issues do not exceed planned issues."""
         with engine.connect() as conn:
             result = conn.execute(

@@ -236,10 +236,14 @@ services:
       - migration
     environment:
       METABASE_URL: http://metabase:3000
+      BI_DATABASE_NAME: Process Metrics DB
+      BI_DATABASE_ENGINE: postgres
+      BI_DATABASE_SCHEMA: metrics
     env_file:
       - .env.production
     volumes:
       - ./scripts:/app/scripts
+      - ./bi:/app/bi:ro
     depends_on:
       metabase:
         condition: service_healthy

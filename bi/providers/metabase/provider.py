@@ -1,0 +1,442 @@
+from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any
+
+from bi.providers.metabase.client import MetabaseClient
+
+logger = logging.getLogger(__name__)
+
+
+class MetabaseProvider:
+    """Provisioner for Metabase dashboard packs."""
+
+    name = "metabase"
+
+    def __init__(self) -> None:
+        self.base_url = os.getenv("METABASE_URL", "http://metabase:3000")
+        self.api_key = os.getenv("METABASE_API_KEY")
+        self.admin_email = os.getenv("MB_ADMIN_EMAIL", "admin@example.com")
+        self.admin_password = os.getenv("MB_ADMIN_PASSWORD", "StrongPassword123!")
+        self.site_name = os.getenv("MB_SITE_NAME", "Process Metrics Platform")
+
+        self.target_db_name = os.getenv("BI_DATABASE_NAME", "Process Metrics DB")
+        self.target_db_engine = os.getenv("BI_DATABASE_ENGINE", "postgres")
+        self.target_db_schema = os.getenv("BI_DATABASE_SCHEMA", "metrics")
+        self.target_db_ssl = os.getenv("BI_DATABASE_SSL", "false").lower() == "true"
+
+        self.pg_host = os.getenv("POSTGRES_HOST", "postgres")
+        self.pg_port = int(os.getenv("POSTGRES_PORT", "5432"))
+        self.pg_db = os.getenv("POSTGRES_DB", "process_metrics")
+        self.pg_user = os.getenv("POSTGRES_USER", "postgres")
+        self.pg_password = os.getenv("POSTGRES_PASSWORD", "postgres")
+
+        self.client = MetabaseClient(self.base_url)
+
+    def provision(self, pack_dir: Path) -> None:
+        """Provision collections, cards, and dashboards from a pack directory."""
+        logger.info("Provisioning Metabase from pack: %s", pack_dir)
+        self._validate_pack(pack_dir)
+        self.client.wait_for_health()
+
+        self._bootstrap_and_authenticate()
+
+        db_id = self._ensure_database()
+        collection_ids = self._ensure_collections(pack_dir)
+        card_ids = self._upsert_cards(pack_dir, db_id, collection_ids)
+        self._upsert_dashboards(pack_dir, collection_ids, card_ids)
+
+        logger.info("Metabase provisioning finished")
+
+    def _bootstrap_and_authenticate(self) -> None:
+        """Authenticate using API key, or bootstrap/login via admin credentials."""
+        if self.api_key:
+            self.client.with_api_key(self.api_key)
+            logger.info("Using METABASE_API_KEY for authentication")
+            return
+
+        setup_props = self.client.request("GET", "/api/session/properties")
+        setup_token = setup_props.get("setup-token")
+
+        if setup_token:
+            logger.info(
+                "Metabase first-run setup detected, creating admin and initial DB"
+            )
+            payload = {
+                "token": setup_token,
+                "user": {
+                    "first_name": "Admin",
+                    "last_name": "User",
+                    "email": self.admin_email,
+                    "password": self.admin_password,
+                },
+                "prefs": {
+                    "site_name": self.site_name,
+                    "allow_tracking": False,
+                },
+                "database": {
+                    "engine": self.target_db_engine,
+                    "name": self.target_db_name,
+                    "details": {
+                        "host": self.pg_host,
+                        "port": self.pg_port,
+                        "dbname": self.pg_db,
+                        "user": self.pg_user,
+                        "password": self.pg_password,
+                        "schema": self.target_db_schema,
+                        "ssl": self.target_db_ssl,
+                    },
+                },
+            }
+            self.client.request(
+                "POST",
+                "/api/setup",
+                json_body=payload,
+                expected_statuses=(200, 403),
+            )
+
+        session = self.client.request(
+            "POST",
+            "/api/session",
+            json_body={
+                "username": self.admin_email,
+                "password": self.admin_password,
+            },
+            expected_statuses=(200,),
+        )
+        self.client.with_session(session["id"])
+        logger.info("Authenticated with Metabase session")
+
+    def _ensure_database(self) -> int:
+        """Ensure a target analytics database exists in Metabase and return its id."""
+        databases = self._extract_list(self.client.request("GET", "/api/database"))
+
+        for db in databases:
+            if db.get("name") == self.target_db_name:
+                db_id = int(db["id"])
+                self._sync_database(db_id)
+                return db_id
+
+        payload = {
+            "name": self.target_db_name,
+            "engine": self.target_db_engine,
+            "details": {
+                "host": self.pg_host,
+                "port": self.pg_port,
+                "dbname": self.pg_db,
+                "user": self.pg_user,
+                "password": self.pg_password,
+                "schema": self.target_db_schema,
+                "ssl": self.target_db_ssl,
+            },
+            "is_full_sync": True,
+        }
+        created = self.client.request(
+            "POST", "/api/database", json_body=payload, expected_statuses=(200,)
+        )
+        db_id = int(created["id"])
+        self._sync_database(db_id)
+        return db_id
+
+    def _sync_database(self, db_id: int) -> None:
+        """Trigger a schema sync for a Metabase database id."""
+        self.client.request(
+            "POST",
+            f"/api/database/{db_id}/sync_schema",
+            expected_statuses=(200, 202),
+        )
+
+    def _ensure_collections(self, pack_dir: Path) -> dict[str, int | None]:
+        """Create missing collections defined by the pack and return key->id mapping."""
+        collections_by_name = {
+            c["name"]: c["id"]
+            for c in self._extract_list(self.client.request("GET", "/api/collection"))
+        }
+        collection_ids: dict[str, int | None] = {"root": None}
+
+        collections_path = pack_dir / "collections.json"
+        if not collections_path.exists():
+            return collection_ids
+
+        collections = self._load_json_list(collections_path)
+        for spec in collections:
+            key = spec["key"]
+            name = spec["name"]
+            parent_key = spec.get("parent", "root")
+            parent_id = collection_ids.get(parent_key)
+
+            existing_id = collections_by_name.get(name)
+            if existing_id is not None:
+                collection_ids[key] = int(existing_id)
+                continue
+
+            payload = {
+                "name": name,
+                "description": spec.get("description", ""),
+                "parent_id": parent_id,
+            }
+            created = self.client.request(
+                "POST", "/api/collection", json_body=payload, expected_statuses=(200,)
+            )
+            collection_ids[key] = int(created["id"])
+
+        return collection_ids
+
+    def _upsert_cards(
+        self,
+        pack_dir: Path,
+        database_id: int,
+        collection_ids: dict[str, int | None],
+    ) -> dict[str, int]:
+        """Upsert cards by name from pack specs and return key->card_id mapping."""
+        cards_dir = pack_dir / "cards"
+        card_specs = sorted(cards_dir.glob("*.json"))
+        if not card_specs:
+            return {}
+
+        existing_cards = self._extract_list(self.client.request("GET", "/api/card"))
+        existing_by_name = {card["name"]: card for card in existing_cards}
+
+        card_ids: dict[str, int] = {}
+        for path in card_specs:
+            spec = self._load_json_object(path)
+            name = spec["name"]
+            collection_key = spec.get("collection", "root")
+            collection_id = collection_ids.get(collection_key)
+
+            payload: dict[str, Any] = {
+                "name": name,
+                "description": spec.get("description", ""),
+                "display": spec.get("display", "table"),
+                "collection_id": collection_id,
+                "dataset_query": {
+                    "database": database_id,
+                    "type": "native",
+                    "native": {"query": spec["query"]},
+                },
+                "visualization_settings": spec.get("visualization_settings", {}),
+            }
+
+            if name in existing_by_name:
+                existing_id = int(existing_by_name[name]["id"])
+                self.client.request(
+                    "PUT",
+                    f"/api/card/{existing_id}",
+                    json_body=payload,
+                    expected_statuses=(200,),
+                )
+                card_ids[spec["key"]] = existing_id
+                continue
+
+            created = self.client.request(
+                "POST", "/api/card", json_body=payload, expected_statuses=(200,)
+            )
+            card_ids[spec["key"]] = int(created["id"])
+
+        return card_ids
+
+    def _upsert_dashboards(
+        self,
+        pack_dir: Path,
+        collection_ids: dict[str, int | None],
+        card_ids: dict[str, int],
+    ) -> None:
+        """Upsert dashboards and place cards according to pack layout specs."""
+        dashboards_dir = pack_dir / "dashboards"
+        dashboard_specs = sorted(dashboards_dir.glob("*.json"))
+        if not dashboard_specs:
+            return
+
+        existing_dashboards = self._extract_list(
+            self.client.request("GET", "/api/dashboard")
+        )
+        existing_by_name = {
+            dash["name"]: int(dash["id"]) for dash in existing_dashboards
+        }
+
+        for path in dashboard_specs:
+            spec = self._load_json_object(path)
+            dashboard_name = spec["name"]
+            collection_key = spec.get("collection", "root")
+            collection_id = collection_ids.get(collection_key)
+
+            dashboard_id = existing_by_name.get(dashboard_name)
+            if dashboard_id is None:
+                created = self.client.request(
+                    "POST",
+                    "/api/dashboard",
+                    json_body={
+                        "name": dashboard_name,
+                        "description": spec.get("description", ""),
+                        "collection_id": collection_id,
+                    },
+                    expected_statuses=(200,),
+                )
+                dashboard_id = int(created["id"])
+
+            current = self.client.request("GET", f"/api/dashboard/{dashboard_id}")
+            existing_dashcards = current.get("dashcards", [])
+            existing_by_card_id = {
+                int(d["card_id"]): int(d["id"])
+                for d in existing_dashcards
+                if d.get("card_id")
+            }
+
+            dashcards_payload: list[dict[str, Any]] = []
+            next_temp_dashcard_id = -1
+            for item in spec.get("layout", []):
+                key = item["card_key"]
+                if key not in card_ids:
+                    raise RuntimeError(
+                        f"Dashboard '{dashboard_name}' references unknown card key '{key}'"
+                    )
+
+                card_id = card_ids[key]
+                dashcard: dict[str, Any] = {
+                    "card_id": card_id,
+                    "row": item["row"],
+                    "col": item["col"],
+                    "size_x": item["size_x"],
+                    "size_y": item["size_y"],
+                    "parameter_mappings": item.get("parameter_mappings", []),
+                    "visualization_settings": item.get("visualization_settings", {}),
+                }
+                if card_id in existing_by_card_id:
+                    dashcard["id"] = existing_by_card_id[card_id]
+                else:
+                    dashcard["id"] = next_temp_dashcard_id
+                    next_temp_dashcard_id -= 1
+                dashcards_payload.append(dashcard)
+
+            update_payload = {
+                "name": dashboard_name,
+                "description": spec.get("description", ""),
+                "collection_id": collection_id,
+                "parameters": spec.get("parameters", []),
+                "dashcards": dashcards_payload,
+            }
+
+            try:
+                self.client.request(
+                    "PUT",
+                    f"/api/dashboard/{dashboard_id}",
+                    json_body=update_payload,
+                    expected_statuses=(200,),
+                )
+            except RuntimeError:
+                logger.warning(
+                    "Modern dashboard upsert failed for '%s', falling back to legacy card placement API",
+                    dashboard_name,
+                )
+                self._apply_legacy_dashboard_layout(
+                    dashboard_id=dashboard_id,
+                    existing_dashcards=existing_dashcards,
+                    layout_spec=spec.get("layout", []),
+                    card_ids=card_ids,
+                )
+
+    def _apply_legacy_dashboard_layout(
+        self,
+        dashboard_id: int,
+        existing_dashcards: list[dict[str, Any]],
+        layout_spec: list[dict[str, Any]],
+        card_ids: dict[str, int],
+    ) -> None:
+        """Fallback layout placement flow for older Metabase dashboard APIs."""
+        for dashcard in existing_dashcards:
+            dashcard_id = dashcard.get("id")
+            if dashcard_id is None:
+                continue
+            self.client.request(
+                "DELETE",
+                f"/api/dashboard/{dashboard_id}/cards/{dashcard_id}",
+                expected_statuses=(200, 202, 204),
+            )
+
+        for item in layout_spec:
+            key = item["card_key"]
+            if key not in card_ids:
+                raise RuntimeError(
+                    f"Dashboard references unknown card key '{key}' in legacy layout path"
+                )
+            self.client.request(
+                "POST",
+                f"/api/dashboard/{dashboard_id}/cards",
+                json_body={
+                    "cardId": card_ids[key],
+                    "row": item["row"],
+                    "col": item["col"],
+                    "sizeX": item["size_x"],
+                    "sizeY": item["size_y"],
+                },
+                expected_statuses=(200,),
+            )
+
+    @staticmethod
+    def _extract_list(payload: Any) -> list[dict[str, Any]]:
+        """Normalize Metabase list responses: either raw list or {'data': [...]}."""
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            return payload["data"]
+        return []
+
+    @staticmethod
+    def _load_json_object(path: Path) -> dict[str, Any]:
+        """Load JSON file and ensure top-level object."""
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Expected JSON object in {path}")
+        return payload
+
+    @staticmethod
+    def _load_json_list(path: Path) -> list[dict[str, Any]]:
+        """Load JSON file and ensure top-level list of objects."""
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list) or not all(
+            isinstance(item, dict) for item in payload
+        ):
+            raise ValueError(f"Expected JSON list of objects in {path}")
+        return payload
+
+    def _validate_pack(self, pack_dir: Path) -> None:
+        """Validate pack files and required schema keys before API calls."""
+        cards_dir = pack_dir / "cards"
+        dashboards_dir = pack_dir / "dashboards"
+        if not cards_dir.exists():
+            raise ValueError(f"Pack is missing cards directory: {cards_dir}")
+        if not dashboards_dir.exists():
+            raise ValueError(f"Pack is missing dashboards directory: {dashboards_dir}")
+
+        required_card_keys = {"key", "name", "query"}
+        for card_path in sorted(cards_dir.glob("*.json")):
+            card = self._load_json_object(card_path)
+            missing = required_card_keys - set(card.keys())
+            if missing:
+                raise ValueError(
+                    f"Card spec {card_path} is missing required keys: {sorted(missing)}"
+                )
+
+        required_layout_keys = {"card_key", "row", "col", "size_x", "size_y"}
+        for dashboard_path in sorted(dashboards_dir.glob("*.json")):
+            dashboard = self._load_json_object(dashboard_path)
+            for top in ("name", "layout"):
+                if top not in dashboard:
+                    raise ValueError(
+                        f"Dashboard spec {dashboard_path} is missing required key: {top}"
+                    )
+            if not isinstance(dashboard["layout"], list):
+                raise ValueError(f"Dashboard spec {dashboard_path} has non-list layout")
+            for idx, item in enumerate(dashboard["layout"]):
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        f"Dashboard spec {dashboard_path} layout[{idx}] must be an object"
+                    )
+                missing = required_layout_keys - set(item.keys())
+                if missing:
+                    raise ValueError(
+                        f"Dashboard spec {dashboard_path} layout[{idx}] missing keys: {sorted(missing)}"
+                    )

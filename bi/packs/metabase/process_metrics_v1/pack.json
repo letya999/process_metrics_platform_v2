@@ -1,0 +1,6 @@
+{
+  "name": "process_metrics_v1",
+  "provider": "metabase",
+  "version": "1.0.0",
+  "description": "Starter dashboard pack for process metrics platform"
+}

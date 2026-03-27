@@ -1,0 +1,9 @@
+{
+  "key": "avg_flow_efficiency",
+  "collection": "process_metrics",
+  "name": "Avg Flow Efficiency",
+  "description": "Average flow efficiency percentage",
+  "display": "scalar",
+  "query": "SELECT ROUND(AVG(value)::numeric, 2) AS avg_efficiency_pct FROM metrics.v_facts WHERE calc_code = 'flow_efficiency_pct' AND slice_rule_name IS NULL",
+  "visualization_settings": {}
+}

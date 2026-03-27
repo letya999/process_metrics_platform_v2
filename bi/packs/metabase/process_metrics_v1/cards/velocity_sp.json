@@ -1,0 +1,12 @@
+{
+  "key": "velocity_sp",
+  "collection": "process_metrics",
+  "name": "Velocity (Planned vs Completed Story Points)",
+  "description": "Last 10 sprints planned versus completed story points",
+  "display": "bar",
+  "query": "WITH sprint_velocity AS (SELECT COALESCE(entity_id, full_date::text) AS sprint_key, MAX(full_date) AS sprint_date, SUM(CASE WHEN calc_code = 'velocity_planned_sp' THEN value ELSE 0 END) AS planned_story_points, SUM(CASE WHEN calc_code = 'velocity_completed_sp' THEN value ELSE 0 END) AS completed_story_points FROM metrics.v_facts WHERE calc_code IN ('velocity_planned_sp', 'velocity_completed_sp') AND slice_rule_name IS NULL GROUP BY COALESCE(entity_id, full_date::text)) SELECT sprint_key AS sprint_name, planned_story_points, completed_story_points FROM sprint_velocity ORDER BY sprint_date DESC NULLS LAST LIMIT 10",
+  "visualization_settings": {
+    "graph.dimensions": ["sprint_name"],
+    "graph.metrics": ["planned_story_points", "completed_story_points"]
+  }
+}
