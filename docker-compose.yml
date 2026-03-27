@@ -46,7 +46,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health/ready" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -61,6 +61,7 @@ services:
       context: .
       dockerfile: Dockerfile.dagster
     container_name: dagster
+    command: ["dagster", "dev", "-h", "0.0.0.0", "-p", "3000", "-m", "pipelines.definitions"]
     ports:
       - "3000:3000"
     environment:

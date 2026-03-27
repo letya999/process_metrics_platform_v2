@@ -118,6 +118,7 @@ celerybeat.pid
 # Environments
 .env
 .env.production
+.env.prod
 .env.generated
 .venv
 env/
@@ -182,3 +183,4 @@ image.txt
 .agent-lock.json
 skills-lock.json
 .serena-lock.json
+/plans

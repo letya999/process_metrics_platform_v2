@@ -54,7 +54,7 @@ Summary:
 
 1. **Clone and Setup Environment**:
    ```bash
-   git clone https://github.com/your-org/process-metrics-platform-v2.git
+   git clone https://github.com/<your-github-user-or-org>/process-metrics-platform-v2.git
    cd process-metrics-platform-v2
 
    # Setup virtualenv and dependencies

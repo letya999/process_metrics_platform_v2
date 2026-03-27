@@ -1,10 +1,11 @@
 # =============================================================================
 # Caddy Configuration for Process Metrics Platform
-# Using nip.io for secure HTTPS access via IP: 134.209.90.127
+# Using nip.io for secure HTTPS access via IP: {$SERVER_IP}
+# Required env vars: SERVER_IP, DAGSTER_BASIC_AUTH_HASH
 # =============================================================================
 
 # Metabase (BI Dashboard)
-http://metrics.134.209.90.127.nip.io {
+http://metrics.{$SERVER_IP}.nip.io {
     reverse_proxy metabase:3000
 
     header {
@@ -15,14 +16,12 @@ http://metrics.134.209.90.127.nip.io {
 }
 
 # Dagster UI (ETL monitoring)
-http://dagster.134.209.90.127.nip.io {
-    # Basic Auth for security
-    # Replace the hash below with your own (generated via 'caddy hash-password')
+http://dagster.{$SERVER_IP}.nip.io {
     basicauth * {
-        admin $2a$14$PhYoC4cISk0DMibmnE7ozuiPjO18h2u26BLdnJ5FbSVzh5urqYsi6
+        admin {$DAGSTER_BASIC_AUTH_HASH}
     }
 
-    reverse_proxy dagster:3000
+    reverse_proxy dagster-webserver:3000
 
     header {
         X-Content-Type-Options "nosniff"
@@ -30,7 +29,7 @@ http://dagster.134.209.90.127.nip.io {
 }
 
 # FastAPI (Admin Panel / API)
-http://api.134.209.90.127.nip.io {
+http://api.{$SERVER_IP}.nip.io {
     reverse_proxy app:8000
 
     header {
@@ -40,7 +39,7 @@ http://api.134.209.90.127.nip.io {
 }
 
 # Streamlit Admin Studio
-http://admin.134.209.90.127.nip.io {
+http://admin.{$SERVER_IP}.nip.io {
     reverse_proxy admin-ui:8501
 
     header {

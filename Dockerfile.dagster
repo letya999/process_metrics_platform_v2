@@ -56,5 +56,7 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:3000/server_info || exit 1
 
-# Run Dagster webserver with dev mode (includes daemon)
+# Dev default - override in production via docker-compose command:
+# Production webserver: dagster-webserver -h 0.0.0.0 -p 3000 -m pipelines.definitions
+# Production daemon:    dagster-daemon run
 CMD ["dagster", "dev", "-h", "0.0.0.0", "-p", "3000", "-m", "pipelines.definitions"]

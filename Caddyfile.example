@@ -26,7 +26,7 @@ http://dagster.${SERVER_IP}.nip.io {
         admin {$DAGSTER_BASIC_AUTH_HASH}
     }
 
-    reverse_proxy dagster:3000
+    reverse_proxy dagster-webserver:3000
 
     header {
         X-Content-Type-Options "nosniff"

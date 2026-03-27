@@ -1,8 +1,9 @@
 # =============================================================================
-# Simple Production Deployment - DigitalOcean Droplet
+# Production Deployment - DigitalOcean Droplet (Split Dagster Architecture)
 # =============================================================================
 #
-# Usage: docker compose -f docker-compose.simple.yml up -d
+# Usage: docker compose -f docker-compose.prod.yml up -d
+# Required: .env.prod
 #
 # =============================================================================
 
@@ -30,7 +31,7 @@ services:
     depends_on:
       - app
       - admin-ui
-      - dagster
+      - dagster-webserver
       - metabase
 
   # ===========================================================================
@@ -53,39 +54,33 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # ports:
-    #   - "5432:5432" # TEMPORARY for debugging
     networks:
       - internal
-    # Do NOT expose port externally!
 
-    # ===========================================================================
-    # FastAPI App
-    # ===========================================================================
+  # ===========================================================================
+  # FastAPI App
+  # ===========================================================================
   app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: app
     restart: unless-stopped
-    # Do NOT expose port externally - accessed via Caddy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      DAGSTER_GRAPHQL_URL: http://dagster:3000/graphql
+      DAGSTER_GRAPHQL_URL: http://dagster-webserver:3000/graphql
       ENVIRONMENT: production
       LOG_LEVEL: ${LOG_LEVEL:-WARNING}
     env_file:
-      - .env.production
+      - .env.prod
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health/ready" ]
       interval: 30s
       timeout: 10s
       retries: 3
-    # ports:
-    #   - "${APP_PORT:-8000}:8000" # TEMPORARY via Caddy
     networks:
       - internal
     deploy:
@@ -105,7 +100,7 @@ services:
     environment:
       ADMIN_API_URL: http://app:8000/api/v1
     env_file:
-      - .env.production
+      - .env.prod
     depends_on:
       app:
         condition: service_healthy
@@ -122,15 +117,15 @@ services:
           memory: 512M
 
   # ===========================================================================
-  # Dagster
+  # Dagster Webserver (UI)
   # ===========================================================================
-  dagster:
+  dagster-webserver:
     build:
       context: .
       dockerfile: Dockerfile.dagster
-    container_name: dagster
+    container_name: dagster-webserver
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-m", "pipelines.definitions"]
     restart: unless-stopped
-    # Do NOT expose port externally - accessed via Caddy
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -144,7 +139,7 @@ services:
       DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${POSTGRES_USER}
       DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${POSTGRES_PASSWORD}
     env_file:
-      - .env.production
+      - .env.prod
     volumes:
       - dagster_home:/opt/dagster/dagster_home
       - ./config:/opt/dagster/app/config:ro
@@ -157,14 +152,49 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-    # ports:
-    #   - "${DAGSTER_PORT:-3000}:3000" # TEMPORARY via Caddy
     networks:
       - internal
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 512M
+
+  # ===========================================================================
+  # Dagster Daemon (Scheduler & Run Launcher)
+  # ===========================================================================
+  dagster-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.dagster
+    container_name: dagster-daemon
+    command: ["dagster-daemon", "run"]
+    restart: unless-stopped
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DAGSTER_POSTGRES_HOST: postgres
+      DAGSTER_POSTGRES_USER: ${POSTGRES_USER}
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DAGSTER_POSTGRES_DB: ${POSTGRES_DB}
+      DESTINATION__POSTGRES__CREDENTIALS__HOST: postgres
+      DESTINATION__POSTGRES__CREDENTIALS__PORT: 5432
+      DESTINATION__POSTGRES__CREDENTIALS__DATABASE: ${POSTGRES_DB}
+      DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${POSTGRES_USER}
+      DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${POSTGRES_PASSWORD}
+    env_file:
+      - .env.prod
+    volumes:
+      - dagster_home:/opt/dagster/dagster_home
+      - ./config:/opt/dagster/app/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
   # ===========================================================================
   # Metabase
@@ -173,7 +203,6 @@ services:
     image: metabase/metabase:v0.51.4
     container_name: metabase
     restart: unless-stopped
-    # Do NOT expose port externally - accessed via Caddy
     environment:
       MB_DB_TYPE: postgres
       MB_DB_DBNAME: ${POSTGRES_DB}
@@ -191,8 +220,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 120s
-    # ports:
-    #   - "${METABASE_PORT:-3001}:3000" # TEMPORARY via Caddy
     networks:
       - internal
     deploy:
@@ -213,7 +240,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     env_file:
-      - .env.production
+      - .env.prod
     depends_on:
       postgres:
         condition: service_healthy
@@ -240,7 +267,7 @@ services:
       BI_DATABASE_ENGINE: postgres
       BI_DATABASE_SCHEMA: metrics
     env_file:
-      - .env.production
+      - .env.prod
     volumes:
       - ./scripts:/app/scripts
       - ./bi:/app/bi:ro

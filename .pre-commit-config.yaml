@@ -18,3 +18,11 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+
+  - repo: local
+    hooks:
+      - id: repo-policy-check
+        name: repo-policy-check
+        entry: python scripts/check_repo_policy.py
+        language: system
+        pass_filenames: false
