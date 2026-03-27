@@ -12,7 +12,7 @@
 #
 # PREREQUISITES:
 #   1. Docker and Docker Compose installed on target server
-#   2. .env.production file configured
+#   2. .env.prod file configured
 #   3. config/projects.yaml configured with your projects
 #
 # =============================================================================
@@ -27,8 +27,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Default values
-COMPOSE_FILE="docker-compose.simple.yml"
-ENV_FILE=".env.production"
+COMPOSE_FILE="docker-compose.prod.yml"
+ENV_FILE=".env.prod"
 ACTION="deploy"  # deploy, build, pull, migrate
 
 # Parse arguments
@@ -70,7 +70,7 @@ fi
 
 if [ ! -f "$ENV_FILE" ]; then
     echo -e "${RED}Error: $ENV_FILE not found${NC}"
-    echo -e "${YELLOW}Hint: Copy .env.production.example to .env.production and configure it${NC}"
+    echo -e "${YELLOW}Hint: Copy .env.prod.example to .env.prod and configure it${NC}"
     exit 1
 fi
 
