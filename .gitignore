@@ -176,3 +176,12 @@ config/projects.yaml
 Thumbs.db
 .serena/*
 .serena/
+.agent/
+logs*
+logs.txt
+image.txt
+.agent-lock.json
+skills-lock.json
+.serena-lock.json
+.agent/
+.agents/
