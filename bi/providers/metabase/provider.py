@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ class MetabaseProvider:
     """Provisioner for Metabase dashboard packs."""
 
     name = "metabase"
+    _TAG_PATTERN = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 
     def __init__(self) -> None:
         self.base_url = os.getenv("METABASE_URL", "http://metabase:3000")
@@ -215,7 +217,7 @@ class MetabaseProvider:
                 "dataset_query": {
                     "database": database_id,
                     "type": "native",
-                    "native": {"query": spec["query"]},
+                    "native": self._build_native_query_payload(spec),
                 },
                 "visualization_settings": spec.get("visualization_settings", {}),
             }
@@ -262,6 +264,7 @@ class MetabaseProvider:
             dashboard_name = spec["name"]
             collection_key = spec.get("collection", "root")
             collection_id = collection_ids.get(collection_key)
+            dashboard_filters = self._normalize_filters(spec)
 
             dashboard_id = existing_by_name.get(dashboard_name)
             if dashboard_id is None:
@@ -301,7 +304,8 @@ class MetabaseProvider:
                     "col": item["col"],
                     "size_x": item["size_x"],
                     "size_y": item["size_y"],
-                    "parameter_mappings": item.get("parameter_mappings", []),
+                    "parameter_mappings": item.get("parameter_mappings")
+                    or self._build_filter_mappings(item, card_id, dashboard_filters),
                     "visualization_settings": item.get("visualization_settings", {}),
                 }
                 if card_id in existing_by_card_id:
@@ -315,7 +319,8 @@ class MetabaseProvider:
                 "name": dashboard_name,
                 "description": spec.get("description", ""),
                 "collection_id": collection_id,
-                "parameters": spec.get("parameters", []),
+                "parameters": spec.get("parameters", [])
+                or self._build_dashboard_parameters(dashboard_filters),
                 "dashcards": dashcards_payload,
             }
 
@@ -419,6 +424,11 @@ class MetabaseProvider:
                 raise ValueError(
                     f"Card spec {card_path} is missing required keys: {sorted(missing)}"
                 )
+            template_tags = card.get("template_tags")
+            if template_tags is not None and not isinstance(template_tags, dict):
+                raise ValueError(
+                    f"Card spec {card_path} template_tags must be an object"
+                )
 
         required_layout_keys = {"card_key", "row", "col", "size_x", "size_y"}
         for dashboard_path in sorted(dashboards_dir.glob("*.json")):
@@ -440,3 +450,119 @@ class MetabaseProvider:
                     raise ValueError(
                         f"Dashboard spec {dashboard_path} layout[{idx}] missing keys: {sorted(missing)}"
                     )
+            filters = dashboard.get("filters", [])
+            if filters and not isinstance(filters, list):
+                raise ValueError(
+                    f"Dashboard spec {dashboard_path} filters must be a list"
+                )
+            for filter_idx, filter_spec in enumerate(filters):
+                if not isinstance(filter_spec, dict):
+                    raise ValueError(
+                        f"Dashboard spec {dashboard_path} filters[{filter_idx}] must be an object"
+                    )
+                missing_filter = {"id", "type"} - set(filter_spec.keys())
+                if missing_filter:
+                    raise ValueError(
+                        f"Dashboard spec {dashboard_path} filters[{filter_idx}] missing keys: {sorted(missing_filter)}"
+                    )
+
+    @staticmethod
+    def _normalize_filters(spec: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = spec.get("filters", [])
+        if not isinstance(raw, list):
+            return []
+        filters: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            parameter_id = str(item["id"])
+            filters.append(
+                {
+                    "id": parameter_id,
+                    "type": item["type"],
+                    "name": item.get("name", parameter_id),
+                    "slug": item.get("slug", parameter_id),
+                    "template_tag": item.get(
+                        "template_tag", item.get("slug", parameter_id)
+                    ),
+                    "default": item.get("default"),
+                }
+            )
+        return filters
+
+    @staticmethod
+    def _build_dashboard_parameters(
+        filters: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        parameters: list[dict[str, Any]] = []
+        for item in filters:
+            payload: dict[str, Any] = {
+                "id": item["id"],
+                "name": item["name"],
+                "slug": item["slug"],
+                "type": item["type"],
+            }
+            if item.get("default") is not None:
+                payload["default"] = item["default"]
+            parameters.append(payload)
+        return parameters
+
+    @staticmethod
+    def _build_filter_mappings(
+        layout_item: dict[str, Any],
+        card_id: int,
+        filters: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not filters:
+            return []
+        filter_ids = layout_item.get("filter_ids")
+        selected = (
+            [flt for flt in filters if flt["id"] in set(filter_ids)]
+            if isinstance(filter_ids, list)
+            else filters
+        )
+        mappings: list[dict[str, Any]] = []
+        for flt in selected:
+            mappings.append(
+                {
+                    "parameter_id": flt["id"],
+                    "card_id": card_id,
+                    "target": ["variable", ["template-tag", flt["template_tag"]]],
+                }
+            )
+        return mappings
+
+    def _build_native_query_payload(self, card_spec: dict[str, Any]) -> dict[str, Any]:
+        query = str(card_spec["query"])
+        payload: dict[str, Any] = {"query": query}
+        tags = sorted(set(self._TAG_PATTERN.findall(query)))
+        if tags:
+            payload["template-tags"] = self._build_template_tags(
+                tags=tags,
+                configured=card_spec.get("template_tags", {}),
+            )
+        return payload
+
+    @staticmethod
+    def _build_template_tags(
+        tags: list[str],
+        configured: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        template_tags: dict[str, dict[str, Any]] = {}
+        for tag in tags:
+            cfg = configured.get(tag, {}) if isinstance(configured, dict) else {}
+            tag_type = cfg.get("type")
+            if tag_type is None:
+                if tag.startswith("date_") or tag.endswith("_date"):
+                    tag_type = "date"
+                elif tag.endswith("_id"):
+                    tag_type = "number"
+                else:
+                    tag_type = "text"
+            template_tags[tag] = {
+                "name": tag,
+                "display-name": cfg.get("display_name", tag.replace("_", " ").title()),
+                "type": tag_type,
+                "required": bool(cfg.get("required", False)),
+            }
+        return template_tags

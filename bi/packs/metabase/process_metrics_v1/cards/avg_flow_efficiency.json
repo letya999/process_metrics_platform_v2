@@ -4,6 +4,6 @@
   "name": "Avg Flow Efficiency",
   "description": "Average flow efficiency percentage",
   "display": "scalar",
-  "query": "SELECT ROUND(AVG(value)::numeric, 2) AS avg_efficiency_pct FROM metrics.v_facts WHERE calc_code = 'flow_efficiency_pct' AND slice_rule_name IS NULL",
+  "query": "SELECT ROUND(AVG(value)::numeric, 2) AS avg_efficiency_pct FROM metrics.v_facts WHERE calc_code = 'flow_efficiency_pct' AND slice_rule_name IS NULL [[ AND project_key = {{project_key}} ]] [[ AND full_date >= {{date_from}} ]] [[ AND full_date <= {{date_to}} ]]",
   "visualization_settings": {}
 }

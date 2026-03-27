@@ -4,7 +4,7 @@
   "name": "Weekly Throughput",
   "description": "Completed issues by week",
   "display": "line",
-  "query": "SELECT date_trunc('week', full_date)::date AS week_start_date, SUM(value) AS total_completed FROM metrics.v_facts WHERE calc_code = 'throughput_count' AND slice_rule_name IS NULL GROUP BY date_trunc('week', full_date)::date ORDER BY week_start_date",
+  "query": "SELECT date_trunc('week', full_date)::date AS week_start_date, SUM(value) AS total_completed FROM metrics.v_facts WHERE calc_code = 'throughput_count' AND slice_rule_name IS NULL [[ AND project_key = {{project_key}} ]] [[ AND full_date >= {{date_from}} ]] [[ AND full_date <= {{date_to}} ]] GROUP BY date_trunc('week', full_date)::date ORDER BY week_start_date",
   "visualization_settings": {
     "graph.dimensions": ["week_start_date"],
     "graph.metrics": ["total_completed"]

@@ -215,3 +215,68 @@ def test_validate_pack_rejects_broken_layout(tmp_path: Path) -> None:
     provider = MetabaseProvider()
     with pytest.raises(ValueError, match="layout\\[0\\] missing keys"):
         provider._validate_pack(pack_dir)
+
+
+def test_build_dashboard_parameters_from_filters() -> None:
+    filters = [
+        {
+            "id": "project_key",
+            "name": "Project Key",
+            "slug": "project_key",
+            "type": "category",
+            "template_tag": "project_key",
+        }
+    ]
+    params = MetabaseProvider._build_dashboard_parameters(filters)
+    assert params == [
+        {
+            "id": "project_key",
+            "name": "Project Key",
+            "slug": "project_key",
+            "type": "category",
+        }
+    ]
+
+
+def test_build_filter_mappings_for_card_uses_template_tags() -> None:
+    filters = [
+        {
+            "id": "project_key",
+            "name": "Project Key",
+            "slug": "project_key",
+            "type": "category",
+            "template_tag": "project_key",
+        },
+        {
+            "id": "date_from",
+            "name": "Date From",
+            "slug": "date_from",
+            "type": "date/single",
+            "template_tag": "date_from",
+        },
+    ]
+    mappings = MetabaseProvider._build_filter_mappings({}, 57, filters)
+    assert mappings == [
+        {
+            "parameter_id": "project_key",
+            "card_id": 57,
+            "target": ["variable", ["template-tag", "project_key"]],
+        },
+        {
+            "parameter_id": "date_from",
+            "card_id": 57,
+            "target": ["variable", ["template-tag", "date_from"]],
+        },
+    ]
+
+
+def test_build_native_query_payload_infers_template_tags() -> None:
+    provider = MetabaseProvider()
+    payload = provider._build_native_query_payload(
+        {
+            "query": "SELECT * FROM metrics.v_facts WHERE 1=1 [[ AND project_key = {{project_key}} ]] [[ AND full_date >= {{date_from}} ]]",
+        }
+    )
+    assert "template-tags" in payload
+    assert payload["template-tags"]["project_key"]["type"] == "text"
+    assert payload["template-tags"]["date_from"]["type"] == "date"

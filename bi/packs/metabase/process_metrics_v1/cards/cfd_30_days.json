@@ -4,7 +4,7 @@
   "name": "Cumulative Flow (30 Days)",
   "description": "Cumulative flow by status category for last 30 days",
   "display": "area",
-  "query": "SELECT full_date AS date, COALESCE(slice_value, 'all') AS status_category, SUM(value) AS total_issues FROM metrics.v_facts WHERE calc_code = 'cfd_count' AND full_date >= current_date - interval '30 days' GROUP BY full_date, COALESCE(slice_value, 'all') ORDER BY full_date",
+  "query": "SELECT full_date AS date, COALESCE(slice_value, 'all') AS status_category, SUM(value) AS total_issues FROM metrics.v_facts WHERE calc_code = 'cfd_count' AND full_date >= current_date - interval '30 days' [[ AND project_key = {{project_key}} ]] [[ AND full_date >= {{date_from}} ]] [[ AND full_date <= {{date_to}} ]] GROUP BY full_date, COALESCE(slice_value, 'all') ORDER BY full_date",
   "visualization_settings": {
     "graph.dimensions": ["date"],
     "graph.metrics": ["total_issues"],
