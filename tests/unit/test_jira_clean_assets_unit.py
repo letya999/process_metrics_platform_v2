@@ -52,6 +52,9 @@ class _Result:
         for row in self._fetchall_data:
             yield row
 
+    def __iter__(self):
+        return iter(self._fetchall_data)
+
 
 class _Row:
     def __init__(self, values, **attrs):

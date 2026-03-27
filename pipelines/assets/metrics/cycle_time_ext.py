@@ -349,6 +349,17 @@ def calculate_cycle_time_extended(
                     pl.col(event_start_col).alias("event_start_src"),
                     pl.col(event_end_col).alias("event_end_src"),
                 ]
+            ).select(
+                [
+                    "calc_id",
+                    "project_id",
+                    "commitment_rule_id",
+                    "value",
+                    "time_id_src",
+                    "entity_id_src",
+                    "event_start_src",
+                    "event_end_src",
+                ]
             )
         return pl.concat(res_list)
 

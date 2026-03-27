@@ -50,6 +50,12 @@ def test_run_jira_pipeline_sets_dlt_env_and_returns_metadata(monkeypatch):
         destination = "postgres"
         dataset_name = "raw_jira"
 
+        def sync_destination(self):
+            pass
+
+        def sync_schema(self):
+            pass
+
         def run(self, source):
             self.source = source
             return _LoadInfo()

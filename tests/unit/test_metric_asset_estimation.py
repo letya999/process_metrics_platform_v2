@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import polars as pl
 import pytest
 
@@ -35,7 +37,7 @@ def _stub_definition_id(monkeypatch):
 def test_calculate_estimation_metrics_skipped(monkeypatch):
     monkeypatch.setattr(estimation, "read_table", lambda *_a, **_k: pl.DataFrame())
     out = _asset_fn(estimation.calculate_estimation_metrics)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "skipped"
 
@@ -59,7 +61,14 @@ def test_calculate_estimation_metrics_skips_without_story_points_field(monkeypat
                 {"id": ["F1"], "external_key": ["priority"], "name": ["Priority"]}
             )
         if "FROM clean_jira.field_values" in query:
-            return pl.DataFrame({"issue_id": [], "field_key_id": [], "json_value": []})
+            return pl.DataFrame(
+                {"issue_id": [], "field_key_id": [], "json_value": []},
+                schema={
+                    "issue_id": pl.String,
+                    "field_key_id": pl.String,
+                    "json_value": pl.String,
+                },
+            )
         if "FROM clean_jira.field_value_changelog" in query:
             return pl.DataFrame(
                 {
@@ -68,13 +77,22 @@ def test_calculate_estimation_metrics_skips_without_story_points_field(monkeypat
                     "old_value": [],
                     "new_value": [],
                     "change_time": [],
-                }
+                },
+                schema={
+                    "issue_id": pl.String,
+                    "field_key_id": pl.String,
+                    "old_value": pl.String,
+                    "new_value": pl.String,
+                    "change_time": pl.String,
+                },
             )
+
         raise AssertionError(query)
 
     monkeypatch.setattr(estimation, "read_table", _read_table)
+    monkeypatch.setattr(estimation, "resolve_unit_field", lambda *_a, **_k: None)
     out = _asset_fn(estimation.calculate_estimation_metrics)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "skipped"
     assert out["reason"] == "No Story Points field found"
@@ -129,8 +147,16 @@ def test_calculate_estimation_metrics_success(monkeypatch):
         raise AssertionError(query)
 
     monkeypatch.setattr(estimation, "read_table", _read_table)
+    monkeypatch.setattr(
+        estimation,
+        "resolve_unit_field",
+        lambda *_a, **_k: {
+            "source_field_id": "SP",
+            "source_entity": "clean_jira.field_keys",
+        },
+    )
     out = _asset_fn(estimation.calculate_estimation_metrics)(
-        _DummyContext(), _DummyDatabase(object())
+        _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 1
@@ -142,7 +168,7 @@ def test_estimation_data_quality_check_fail_and_pass(monkeypatch):
         estimation, "read_table", lambda *_a, **_k: pl.DataFrame({"cnt": [2]})
     )
     failed = _asset_fn(estimation.estimation_data_quality_check)(
-        _DummyDatabase(object())
+        _DummyDatabase(MagicMock())
     )
     assert failed.passed is False
 
@@ -150,6 +176,6 @@ def test_estimation_data_quality_check_fail_and_pass(monkeypatch):
         estimation, "read_table", lambda *_a, **_k: pl.DataFrame({"cnt": [0]})
     )
     passed = _asset_fn(estimation.estimation_data_quality_check)(
-        _DummyDatabase(object())
+        _DummyDatabase(MagicMock())
     )
     assert passed.passed is True

@@ -19,6 +19,7 @@ def calculate_defect_density(
         ),
         on="issue_type_id",
         how="left",
+        coalesce=True,
     )
 
     # Map to sprints
@@ -61,7 +62,9 @@ def calculate_defect_density(
         sprints_df.select(
             ["project_id", pl.col("id").alias("iteration_id"), "start_date"]
         )
-        .join(agg, left_on="iteration_id", right_on="sprint_id", how="left")
+        .join(
+            agg, left_on="iteration_id", right_on="sprint_id", how="left", coalesce=True
+        )
         .with_columns(pl.col("density_ratio").fill_null(0.0))
     )
 
@@ -160,7 +163,7 @@ def calculate_backflow_rate(
         sprints_df.select(
             ["project_id", pl.col("id").alias("iteration_id"), "start_date"]
         )
-        .join(agg, left_on="iteration_id", right_on="id", how="left")
+        .join(agg, left_on="iteration_id", right_on="id", how="left", coalesce=True)
         .with_columns(pl.col("backflow_pct").fill_null(0.0))
     )
 

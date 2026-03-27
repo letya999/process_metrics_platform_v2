@@ -6,12 +6,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
-from app.api import health, integrations, metrics, projects
+from app.api import admin, health, integrations, metrics, projects
 from app.database import close_db, init_db
+from app.limiter import limiter
 
 # Configure logging
 logging.basicConfig(
@@ -19,9 +19,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-# Initialize Rate Limiter
-limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -76,6 +73,7 @@ if os.getenv("ENVIRONMENT") != "production":
             "http://localhost:3000",
             "http://localhost:3001",
             "http://localhost:8000",
+            "http://localhost:8501",
         ]
     )
 
@@ -93,6 +91,7 @@ app.include_router(health.router, tags=["Health"])
 app.include_router(integrations.router, prefix="/api/v1", tags=["Integrations"])
 app.include_router(projects.router, prefix="/api/v1", tags=["Projects"])
 app.include_router(metrics.router, prefix="/api/v1", tags=["Metrics"])
+app.include_router(admin.router, prefix="/api/v1")
 
 
 @app.get("/", include_in_schema=False)

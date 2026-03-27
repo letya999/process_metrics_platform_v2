@@ -38,3 +38,13 @@ http://api.134.209.90.127.nip.io {
         X-Frame-Options "DENY"
     }
 }
+
+# Streamlit Admin Studio
+http://admin.134.209.90.127.nip.io {
+    reverse_proxy admin-ui:8501
+
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+    }
+}

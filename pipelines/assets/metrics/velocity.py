@@ -21,6 +21,7 @@ from pipelines.utils.metric_registry import (
     get_calculation_id,
     get_definition_id,
     get_project_agg_id,
+    resolve_unit_field,
 )
 from pipelines.utils.polars_db import read_table, write_fact_values
 
@@ -235,6 +236,21 @@ def calculate_velocity(
         engine, boards_df, board_columns_df
     )
 
+    # Resolve story_points field keys via metrics.units, per project.
+    # Falls back to heuristic inside calculate_velocity_facts if no binding found.
+    sp_field_key_override: list[str] = []
+    for p_id in project_ids:
+        unit_info = resolve_unit_field(engine, p_id, "story_points")
+        if unit_info and unit_info.get("source_field_id"):
+            fk_id = str(unit_info["source_field_id"])
+            if fk_id not in sp_field_key_override:
+                sp_field_key_override.append(fk_id)
+
+    context.log.info(
+        "story_points field key override from metrics.units: %s",
+        sp_field_key_override or "none (using heuristic)",
+    )
+
     # 2. Calculate BASE velocity facts
     velocity_wide = velocity_logic.calculate_velocity_facts(
         sprints_df=sprints_df,
@@ -250,6 +266,7 @@ def calculate_velocity(
         issue_statuses_df=issue_statuses_df,
         done_status_ids=done_status_ids or None,
         allow_current_status_fallback=False,
+        sp_field_key_ids_override=sp_field_key_override or None,
     )
 
     if velocity_wide.is_empty():
@@ -360,6 +377,7 @@ def calculate_velocity(
             issue_statuses_df=issue_statuses_df,
             done_status_ids=done_status_ids or None,
             allow_current_status_fallback=False,
+            sp_field_key_ids_override=sp_field_key_override or None,
         )
 
     all_facts = [base_facts]

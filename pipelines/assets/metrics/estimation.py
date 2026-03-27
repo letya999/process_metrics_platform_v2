@@ -16,6 +16,7 @@ from pipelines.utils.metric_registry import (
     get_calculation_id,
     get_definition_id,
     get_project_agg_id,
+    resolve_unit_field,
 )
 from pipelines.utils.polars_db import read_table, write_fact_values
 
@@ -76,16 +77,34 @@ def calculate_estimation_metrics(
     project_ids = issues_df["project_id"].unique().to_list()
     project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
 
-    # SP field key (heuristic)
-    sp_fields = field_keys_df.filter(
-        (
-            pl.col("external_key").is_in(
-                ["customfield_10036", "customfield_10016", "story_points"]
+    # Try metrics.units unit binding first, fall back to heuristic.
+    sp_field_key_id: str | None = None
+
+    # Use first project as representative for global binding lookup
+    _sample_pid = project_ids[0] if project_ids else None
+    if _sample_pid:
+        unit_info = resolve_unit_field(engine, _sample_pid, "story_points")
+        if unit_info and unit_info.get("source_field_id"):
+            sp_field_key_id = str(unit_info["source_field_id"])
+            context.log.info(
+                "story_points field resolved from metrics.units: %s", sp_field_key_id
             )
+
+    if not sp_field_key_id:
+        # Fallback to heuristic
+        sp_fields = field_keys_df.filter(
+            (
+                pl.col("external_key").is_in(
+                    ["customfield_10036", "customfield_10016", "story_points"]
+                )
+            )
+            | (pl.col("name").str.to_lowercase().str.contains("story point"))
         )
-        | (pl.col("name").str.to_lowercase().str.contains("story point"))
-    )
-    sp_field_key_id = sp_fields["id"][0] if not sp_fields.is_empty() else None
+        sp_field_key_id = sp_fields["id"][0] if not sp_fields.is_empty() else None
+        if sp_field_key_id:
+            context.log.info(
+                "story_points field resolved via heuristic: %s", sp_field_key_id
+            )
 
     if not sp_field_key_id:
         return {"status": "skipped", "reason": "No Story Points field found"}

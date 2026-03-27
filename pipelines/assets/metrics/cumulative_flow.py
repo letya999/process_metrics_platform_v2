@@ -101,7 +101,25 @@ def calculate_cumulative_flow_diagram(
         if df_wide.is_empty():
             return pl.DataFrame()
 
-        facts = df_wide.with_columns(
+        # Enrich with board column name for better CFD context payload.
+        df_enriched = df_wide
+        if "column_id" in df_wide.columns and "id" in board_columns_df.columns:
+            board_column_names = board_columns_df.select(
+                [
+                    pl.col("id").cast(pl.Utf8).alias("column_id"),
+                    pl.col("name").cast(pl.Utf8).alias("column_name"),
+                ]
+            ).unique(subset=["column_id"], keep="first")
+            df_enriched = df_wide.join(
+                board_column_names, on="column_id", how="left", coalesce=True
+            )
+
+        def _opt_col(name: str, dtype: pl.DataType = pl.Utf8) -> pl.Expr:
+            if name in df_enriched.columns:
+                return pl.col(name).cast(dtype)
+            return pl.lit(None).cast(dtype)
+
+        facts = df_enriched.with_columns(
             [
                 pl.lit(calc_id).alias("metric_id"),
                 pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
@@ -122,6 +140,16 @@ def calculate_cumulative_flow_diagram(
                 pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
                 pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
                 pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),
+                pl.struct(
+                    [
+                        _opt_col("column_id").alias("column_id"),
+                        _opt_col("column_name").alias("column_name"),
+                        _opt_col("status_id").alias("status_id"),
+                        _opt_col("status_name").alias("status_name"),
+                        _opt_col("status_category").alias("status_category"),
+                        _opt_col("column_position", pl.Int64).alias("column_position"),
+                    ]
+                ).alias("context_json"),
             ]
         )
 
@@ -138,6 +166,7 @@ def calculate_cumulative_flow_diagram(
                 "commitment_rule_id",
                 "event_start_at",
                 "event_end_at",
+                "context_json",
             ]
         )
 
