@@ -9,24 +9,22 @@
 #   make format   - Auto-format code
 # =============================================================================
 
-.PHONY: help check dev test lint lint-local format validate migrate migrate-create migrate-down
-.PHONY: docker-build docker-up docker-down docker-logs clean install
+.PHONY: help check dev test test-unit test-integration lint lint-local format validate
+.PHONY: migrate migrate-create migrate-down docker-build docker-up docker-down docker-logs
+.PHONY: docker-reset db-reset verify setup-metabase clean install dagster-dev api-dev admin-ui-dev
+.PHONY: prod-up prod-down prod-reset prod-simple-up prod-simple-down prod-simple-reset
 
 # OS detection
 ifeq ($(OS),Windows_NT)
     PYTHON_BIN := .venv/Scripts/python
     UVICORN_BIN := .venv/Scripts/uvicorn
     DAGSTER_BIN := .venv/Scripts/dagster
-    RM := rmdir /s /q
-    MKDIR := mkdir
-    SEP := \\
+    STREAMLIT_BIN := .venv/Scripts/streamlit
 else
     PYTHON_BIN := .venv/bin/python
     UVICORN_BIN := .venv/bin/uvicorn
     DAGSTER_BIN := .venv/bin/dagster
-    RM := rm -rf
-    MKDIR := mkdir -p
-    SEP := /
+    STREAMLIT_BIN := .venv/bin/streamlit
 endif
 
 # Default target
@@ -49,6 +47,8 @@ help:
 	@echo "  make check       - Run all checks: lint + test + validate"
 	@echo "  make dev         - Start development environment (docker-compose up)"
 	@echo "  make test        - Run pytest with coverage"
+	@echo "  make test-unit   - Run only unit tests"
+	@echo "  make test-integration - Run only integration tests"
 	@echo "  make lint        - Check code style (ruff + black + policy)"
 	@echo "  make lint-local  - Check code style only for changed Python files"
 	@echo "  make format      - Auto-format code (ruff --fix + black)"
@@ -66,6 +66,9 @@ help:
 	@echo "  make docker-logs     - View service logs"
 	@echo "  make docker-reset    - Remove volumes (DESTRUCTIVE)"
 	@echo "  make db-reset        - Full DB reset + init (DESTRUCTIVE)"
+	@echo "  make prod-up         - Start production stack (docker-compose.prod.yml)"
+	@echo "  make prod-down       - Stop production stack"
+	@echo "  make prod-reset      - Reset production stack with volumes (DESTRUCTIVE)"
 	@echo "  make verify          - Verify MVP setup is correct"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
@@ -73,6 +76,7 @@ help:
 	@echo "  make clean           - Clean build artifacts"
 	@echo "  make dagster-dev     - Run Dagster locally"
 	@echo "  make api-dev         - Run FastAPI locally"
+	@echo "  make admin-ui-dev    - Run Streamlit Admin UI locally"
 
 # =============================================================================
 # Main Commands
@@ -85,7 +89,8 @@ check: lint test validate
 ## Start development environment
 dev: docker-up
 	@echo "$(GREEN)Development environment started!$(NC)"
-	@echo "  - Admin Panel: http://localhost:8000"
+	@echo "  - Admin API:   http://localhost:8000"
+	@echo "  - Admin UI:    http://localhost:8501"
 	@echo "  - Dagster UI:  http://localhost:3000"
 	@echo "  - Metabase:    http://localhost:3001"
 
@@ -102,11 +107,23 @@ test:
 	$(PYTHON_BIN) -m pytest tests/ -v --cov=app --cov=pipelines --cov-report=term-missing
 	@echo "$(GREEN)Tests passed!$(NC)"
 
+## Run only unit tests
+test-unit:
+	@echo "$(BLUE)Running unit tests...$(NC)"
+	$(PYTHON_BIN) -m pytest tests/unit -v
+	@echo "$(GREEN)Unit tests passed!$(NC)"
+
+## Run only integration tests
+test-integration:
+	@echo "$(BLUE)Running integration tests...$(NC)"
+	$(PYTHON_BIN) -m pytest tests/integration -v
+	@echo "$(GREEN)Integration tests passed!$(NC)"
+
 ## Check code style with ruff and black
 lint:
 	@echo "$(BLUE)Checking code style...$(NC)"
-	$(PYTHON_BIN) -m ruff check app/ pipelines/ tests/
-	$(PYTHON_BIN) -m black --check app/ pipelines/ tests/
+	$(PYTHON_BIN) -m ruff check app/ pipelines/ streamlit_admin/ bi/ scripts/ tests/
+	$(PYTHON_BIN) -m black --check app/ pipelines/ streamlit_admin/ bi/ scripts/ tests/
 	$(PYTHON_BIN) scripts/check_repo_policy.py
 	@echo "$(GREEN)Linting passed!$(NC)"
 
@@ -119,8 +136,8 @@ lint-local:
 ## Auto-format code with ruff and black
 format:
 	@echo "$(BLUE)Formatting code...$(NC)"
-	$(PYTHON_BIN) -m ruff check --fix app/ pipelines/ tests/
-	$(PYTHON_BIN) -m black app/ pipelines/ tests/
+	$(PYTHON_BIN) -m ruff check --fix app/ pipelines/ streamlit_admin/ bi/ scripts/ tests/
+	$(PYTHON_BIN) -m black app/ pipelines/ streamlit_admin/ bi/ scripts/ tests/
 	@echo "$(GREEN)Code formatted!$(NC)"
 
 ## Run data validation checks
@@ -141,10 +158,7 @@ migrate:
 
 ## Create new migration (use: make migrate-create MSG="description")
 migrate-create:
-	@if [ -z "$(MSG)" ]; then \
-		echo "$(RED)Error: MSG is required. Usage: make migrate-create MSG=\"description\"$(NC)"; \
-		exit 1; \
-	fi
+	$(if $(strip $(MSG)),,$(error MSG is required. Usage: make migrate-create MSG="description"))
 	@echo "$(BLUE)Creating migration: $(MSG)$(NC)"
 	docker compose --profile migration run --rm alembic revision --autogenerate -m "$(MSG)"
 	@echo "$(GREEN)Migration created!$(NC)"
@@ -177,27 +191,34 @@ docker-down:
 	docker compose down
 	@echo "$(GREEN)Services stopped!$(NC)"
 
-## Prod Simple (Local Production Test)
-prod-simple-up:
-	@echo "$(BLUE)Starting services in SIMPLE PRODUCTION mode...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production up -d
+## Start production stack
+prod-up:
+	@echo "$(BLUE)Starting services in PRODUCTION mode...$(NC)"
+	docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 	@echo "$(BLUE)Running database migrations...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production --profile migration run --rm alembic upgrade head
-	@echo "$(GREEN)Services started and migrated in SIMPLE PRODUCTION mode!$(NC)"
+	docker compose -f docker-compose.prod.yml --env-file .env.prod --profile migration run --rm alembic upgrade head
+	@echo "$(GREEN)Services started and migrated in PRODUCTION mode!$(NC)"
 
-prod-simple-down:
-	@echo "$(BLUE)Stopping SIMPLE PRODUCTION services...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production down
+## Stop production stack
+prod-down:
+	@echo "$(BLUE)Stopping PRODUCTION services...$(NC)"
+	docker compose -f docker-compose.prod.yml --env-file .env.prod down
 	@echo "$(GREEN)Services stopped!$(NC)"
 
-prod-simple-reset:
-	@echo "$(RED)WARNING: This will delete ALL data in SIMPLE PRODUCTION mode!$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production down -v --remove-orphans
+## Reset production stack with volume cleanup (DESTRUCTIVE)
+prod-reset:
+	@echo "$(RED)WARNING: This will delete ALL data in PRODUCTION mode!$(NC)"
+	docker compose -f docker-compose.prod.yml --env-file .env.prod down -v --remove-orphans
 	@echo "$(BLUE)Building and starting services...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production up -d --build
+	docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 	@echo "$(BLUE)Waiting for Postgres to be ready and running migrations...$(NC)"
-	docker compose -f docker-compose.simple.yml --env-file .env.production --profile migration run --rm alembic upgrade head
+	docker compose -f docker-compose.prod.yml --env-file .env.prod --profile migration run --rm alembic upgrade head
 	@echo "$(GREEN)Production-test environment reset and ready from scratch!$(NC)"
+
+## Backward-compatible aliases
+prod-simple-up: prod-up
+prod-simple-down: prod-down
+prod-simple-reset: prod-reset
 
 ## View service logs (follow mode)
 docker-logs:
@@ -226,7 +247,7 @@ verify:
 ## Install Python dependencies
 install:
 	@echo "$(BLUE)Installing dependencies...$(NC)"
-	pip install -e ".[dev]"
+	$(PYTHON_BIN) -m pip install -e ".[dev]"
 	@echo "$(GREEN)Installation complete!$(NC)"
 
 ## Clean build artifacts
@@ -247,3 +268,8 @@ dagster-dev:
 api-dev:
 	@echo "$(BLUE)Starting FastAPI dev server...$(NC)"
 	$(UVICORN_BIN) app.main:app --reload --host 0.0.0.0 --port 8000
+
+## Run Streamlit Admin UI locally (for development without Docker)
+admin-ui-dev:
+	@echo "$(BLUE)Starting Streamlit Admin UI...$(NC)"
+	$(STREAMLIT_BIN) run streamlit_admin/app.py --server.port=8501 --server.address=0.0.0.0
