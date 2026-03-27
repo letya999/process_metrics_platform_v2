@@ -26,7 +26,7 @@ def _to_async_database_url(database_url: str) -> str:
 def get_database_url() -> str:
     """Read database URL from environment."""
     return os.getenv(
-        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/metrics"
+        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/process_metrics"
     )
 
 
