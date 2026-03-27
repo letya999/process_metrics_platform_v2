@@ -202,6 +202,7 @@ def calculate_quality_metrics(
 
     def quality_slice_calc(df_subset):
         subset_ids = df_subset["id"].unique().to_list()
+        subset_project_ids = df_subset["project_id"].unique().to_list()
         sub_sprint_issues = sprint_issues_df.filter(
             pl.col("issue_id").is_in(subset_ids)
         )
@@ -213,7 +214,13 @@ def calculate_quality_metrics(
             cid = df["calc_id"][0]
             val_col = "density_ratio" if cid == calc_id_density else "backflow_pct"
             res_list[i] = df.rename({val_col: "value"})
-        return pl.concat(res_list, how="diagonal_relaxed")
+        combined = pl.concat(res_list, how="diagonal_relaxed")
+        # Restrict to projects present in the input subset — calculate_backflow_rate
+        # and calculate_defect_density both join against the full sprints_df, which
+        # produces 0.0-value rows for every sprint across ALL projects.  Without this
+        # filter those zero rows are written to fact_values as duplicates alongside
+        # the correct values from the project that actually owns the issues.
+        return combined.filter(pl.col("project_id").is_in(subset_project_ids))
 
     if not rules_df.is_empty():
         for rule in rules_df.to_dicts():
