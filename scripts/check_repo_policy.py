@@ -14,7 +14,13 @@ DOC_FILES = [
 COMPOSE_FILES = [
     ROOT / "docker-compose.yml",
     ROOT / "docker-compose.prod.yml",
-    ROOT / "docker-compose.simple.yml",
+]
+REQUIRED_MAKE_REFERENCES = [
+    "scripts/run_validation.py",
+]
+DISALLOWED_MAKE_REFERENCES = [
+    "docker-compose.simple.yml",
+    ".env.production",
 ]
 
 
@@ -46,10 +52,25 @@ def main() -> int:
     makefile_path = ROOT / "Makefile"
     if makefile_path.exists():
         makefile = _read(makefile_path)
-        if "scripts/run_validation.py" not in makefile:
-            failures.append(
-                "Makefile: validate target must call scripts/run_validation.py"
-            )
+        for needle in REQUIRED_MAKE_REFERENCES:
+            if needle not in makefile:
+                failures.append(f"Makefile: missing required reference '{needle}'")
+        for needle in DISALLOWED_MAKE_REFERENCES:
+            if needle in makefile:
+                failures.append(
+                    f"Makefile: disallowed stale reference '{needle}' found"
+                )
+
+        # Ensure Makefile does not reference missing compose/env manifests.
+        references = re.findall(
+            r"(docker-compose[^\s'\"]+\.yml|\.env[^\s'\"]*)",
+            makefile,
+        )
+        for ref in sorted(set(references)):
+            if ref.startswith(".env") and ref in {".env", ".env.example"}:
+                continue
+            if not (ROOT / ref).exists():
+                failures.append(f"Makefile: referenced file does not exist: {ref}")
 
     if failures:
         print("[POLICY] FAILED")

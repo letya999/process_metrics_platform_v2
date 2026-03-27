@@ -13,6 +13,7 @@
 .PHONY: migrate migrate-create migrate-down docker-build docker-up docker-down docker-logs
 .PHONY: docker-reset db-reset verify setup-metabase clean install dagster-dev api-dev admin-ui-dev
 .PHONY: prod-up prod-down prod-reset prod-simple-up prod-simple-down prod-simple-reset
+.PHONY: smoke compose-validate alembic-heads check-prepush
 
 # OS detection
 ifeq ($(OS),Windows_NT)
@@ -49,15 +50,18 @@ help:
 	@echo "  make test        - Run pytest with coverage"
 	@echo "  make test-unit   - Run only unit tests"
 	@echo "  make test-integration - Run only integration tests"
+	@echo "  make smoke       - Run minimal smoke test gate"
 	@echo "  make lint        - Check code style (ruff + black + policy)"
 	@echo "  make lint-local  - Check code style only for changed Python files"
 	@echo "  make format      - Auto-format code (ruff --fix + black)"
 	@echo "  make validate    - Run data validation checks"
+	@echo "  make check-prepush - Run pre-push quality gates"
 	@echo ""
 	@echo "$(GREEN)Database:$(NC)"
 	@echo "  make migrate         - Run Alembic migrations (upgrade head)"
 	@echo "  make migrate-create  - Create new migration (MSG required)"
 	@echo "  make migrate-down    - Rollback one migration"
+	@echo "  make alembic-heads   - Ensure a single Alembic head exists"
 	@echo ""
 	@echo "$(GREEN)Docker:$(NC)"
 	@echo "  make docker-build    - Build all Docker images"
@@ -65,6 +69,7 @@ help:
 	@echo "  make docker-down     - Stop all services"
 	@echo "  make docker-logs     - View service logs"
 	@echo "  make docker-reset    - Remove volumes (DESTRUCTIVE)"
+	@echo "  make compose-validate - Validate docker compose manifests"
 	@echo "  make db-reset        - Full DB reset + init (DESTRUCTIVE)"
 	@echo "  make prod-up         - Start production stack (docker-compose.prod.yml)"
 	@echo "  make prod-down       - Stop production stack"
@@ -119,6 +124,12 @@ test-integration:
 	$(PYTHON_BIN) -m pytest tests/integration -v
 	@echo "$(GREEN)Integration tests passed!$(NC)"
 
+## Run minimal smoke tests for fast quality gate
+smoke:
+	@echo "$(BLUE)Running smoke test gate...$(NC)"
+	$(PYTHON_BIN) scripts/run_smoke_tests.py
+	@echo "$(GREEN)Smoke tests passed!$(NC)"
+
 ## Check code style with ruff and black
 lint:
 	@echo "$(BLUE)Checking code style...$(NC)"
@@ -146,6 +157,10 @@ validate:
 	$(PYTHON_BIN) scripts/run_validation.py
 	@echo "$(GREEN)Validation complete!$(NC)"
 
+## Pre-push quality gate: fast comprehensive checks
+check-prepush: lint-local smoke compose-validate
+	@echo "$(GREEN)Pre-push checks passed!$(NC)"
+
 # =============================================================================
 # Database Commands
 # =============================================================================
@@ -169,6 +184,12 @@ migrate-down:
 	docker compose --profile migration run --rm alembic downgrade -1
 	@echo "$(GREEN)Rollback complete!$(NC)"
 
+## Ensure a single Alembic head to avoid migration divergence
+alembic-heads:
+	@echo "$(BLUE)Checking Alembic heads...$(NC)"
+	$(PYTHON_BIN) scripts/check_alembic_heads.py
+	@echo "$(GREEN)Alembic heads check complete!$(NC)"
+
 # =============================================================================
 # Docker Commands
 # =============================================================================
@@ -190,6 +211,13 @@ docker-down:
 	@echo "$(BLUE)Stopping services...$(NC)"
 	docker compose down
 	@echo "$(GREEN)Services stopped!$(NC)"
+
+## Validate docker compose manifests
+compose-validate:
+	@echo "$(BLUE)Validating docker compose manifests...$(NC)"
+	docker compose -f docker-compose.yml config -q
+	docker compose -f docker-compose.prod.yml --env-file .env.prod config -q
+	@echo "$(GREEN)Compose manifests are valid!$(NC)"
 
 ## Start production stack
 prod-up:

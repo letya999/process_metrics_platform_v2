@@ -24,14 +24,20 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Ruff
-        run: python -m ruff check app/ pipelines/ tests/
+        run: python -m ruff check app/ pipelines/ streamlit_admin/ bi/ scripts/ tests/
 
       - name: Policy checks
         run: python scripts/check_repo_policy.py
 
-      - name: Validate config
-        run: make validate
+      - name: Smoke test gate
+        run: python scripts/run_smoke_tests.py
 
-      - name: Run focused tests
+      - name: Validate docker compose manifests
+        run: make compose-validate
+
+      - name: Unit test gate with coverage threshold
         run: |
-          python -m pytest tests/unit/test_admin_auth.py tests/unit/test_api_health.py tests/integration/test_api.py -q
+          python -m pytest tests/unit -v --cov=app --cov=pipelines --cov-report=term-missing --cov-fail-under=70
+
+      - name: Alembic heads gate
+        run: make alembic-heads
