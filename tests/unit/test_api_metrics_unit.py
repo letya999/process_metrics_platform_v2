@@ -5,18 +5,21 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.api import metrics as metrics_api  # noqa: E402
 from app.schemas.metrics import MetricConfigUpdate  # noqa: E402
 
 
 def _make_db():
+    """Create a mock database object."""
     db = MagicMock()
     db.execute = AsyncMock()
     return db
 
 
 def _mappings_all_result(rows):
+    """Mock SQLAlchemy result mappings."""
     result = MagicMock()
     mappings = MagicMock()
     mappings.all.return_value = rows
@@ -26,6 +29,7 @@ def _mappings_all_result(rows):
 
 
 def _scalar_result(value):
+    """Mock SQLAlchemy scalar result."""
     result = MagicMock()
     result.scalar.return_value = value
     return result
@@ -33,6 +37,7 @@ def _scalar_result(value):
 
 @pytest.mark.asyncio
 async def test_get_and_update_metrics_config():
+    """Verify metrics configuration retrieval and updates."""
     db = _make_db()
 
     default_cfg = await metrics_api.get_metrics_config(db=db, integration_id=None)
@@ -54,6 +59,7 @@ async def test_get_and_update_metrics_config():
 
 @pytest.mark.asyncio
 async def test_get_lead_time_metrics_success_with_aggregates():
+    """Verify successful retrieval of lead time metrics with aggregates."""
     db = _make_db()
     issue_id = uuid4()
     project_id = uuid4()
@@ -109,17 +115,18 @@ async def test_get_lead_time_metrics_success_with_aggregates():
 
 @pytest.mark.asyncio
 async def test_get_lead_time_metrics_returns_empty_on_error():
+    """Verify that lead time metrics query failure raises HTTPException(500)."""
     db = _make_db()
     db.execute.side_effect = RuntimeError("db broken")
 
-    response = await metrics_api.get_lead_time_metrics(db=db)
-
-    assert response.items == []
-    assert response.total_count == 0
+    with pytest.raises(HTTPException) as exc:
+        await metrics_api.get_lead_time_metrics(db=db)
+    assert exc.value.status_code == 500
 
 
 @pytest.mark.asyncio
 async def test_get_velocity_metrics_success_and_filters():
+    """Verify successful retrieval of velocity metrics with filters."""
     db = _make_db()
     sprint_id = uuid4()
     project_id = uuid4()
@@ -166,16 +173,18 @@ async def test_get_velocity_metrics_success_and_filters():
 
 @pytest.mark.asyncio
 async def test_get_velocity_metrics_returns_empty_on_error():
+    """Verify that velocity metrics query failure raises HTTPException(500)."""
     db = _make_db()
     db.execute.side_effect = RuntimeError("db broken")
 
-    response = await metrics_api.get_velocity_metrics(db=db)
-    assert response.items == []
-    assert response.total_count == 0
+    with pytest.raises(HTTPException) as exc:
+        await metrics_api.get_velocity_metrics(db=db)
+    assert exc.value.status_code == 500
 
 
 @pytest.mark.asyncio
 async def test_get_throughput_metrics_success_and_total_fallback_issue_type():
+    """Verify successful retrieval of throughput metrics."""
     db = _make_db()
     project_id = uuid4()
     db.execute.return_value = _mappings_all_result(
@@ -220,17 +229,18 @@ async def test_get_throughput_metrics_success_and_total_fallback_issue_type():
 
 @pytest.mark.asyncio
 async def test_get_throughput_metrics_returns_empty_on_error():
+    """Verify that throughput metrics query failure raises HTTPException(500)."""
     db = _make_db()
     db.execute.side_effect = RuntimeError("db broken")
 
-    response = await metrics_api.get_throughput_metrics(db=db)
-    assert response.items == []
-    assert response.total_count == 0
-    assert response.total_issues_completed == 0
+    with pytest.raises(HTTPException) as exc:
+        await metrics_api.get_throughput_metrics(db=db)
+    assert exc.value.status_code == 500
 
 
 @pytest.mark.asyncio
 async def test_refresh_metrics_returns_accepted_message():
+    """Verify that metrics refresh trigger returns success status."""
     db = _make_db()
     response = await metrics_api.refresh_metrics(db=db)
     assert response["status"] == "success"

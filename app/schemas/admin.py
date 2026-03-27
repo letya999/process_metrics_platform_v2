@@ -1,4 +1,4 @@
-﻿"""Pydantic schemas for admin studio API."""
+"""Pydantic schemas for admin studio API."""
 
 from datetime import datetime
 from typing import Any
