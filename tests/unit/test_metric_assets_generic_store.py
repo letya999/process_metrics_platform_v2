@@ -1185,15 +1185,25 @@ def test_calculate_cfd_success(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(
-        cumulative_flow, "write_fact_values", lambda df, *_args, **_kwargs: df.height
-    )
+    captured = {}
+
+    def _write_fact_values(df, *_args, **_kwargs):
+        captured["df"] = df
+        return df.height
+
+    monkeypatch.setattr(cumulative_flow, "write_fact_values", _write_fact_values)
 
     out = _asset_fn(cumulative_flow.calculate_cumulative_flow_diagram)(
         _DummyContext(), _DummyDatabase(MagicMock())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 1
+    assert "context_json" in captured["df"].columns
+    assert captured["df"].get_column("context_json").null_count() == 0
+    context = captured["df"].get_column("context_json").to_list()[0]
+    assert context["column_id"] == "c1"
+    assert context["column_name"] == "To Do"
+    assert context["status_id"] == "s1"
 
 
 def test_calculate_backlog_growth_success(monkeypatch):

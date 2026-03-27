@@ -42,9 +42,13 @@ def test_cumulative_flow_slicing(monkeypatch):
     monkeypatch.setattr(
         cumulative_flow, "get_project_agg_id", lambda engine, pid: f"agg-{pid}"
     )
-    monkeypatch.setattr(
-        cumulative_flow, "write_fact_values", lambda df, *_a, **_k: df.height
-    )
+    captured = {}
+
+    def _write_fact_values(df, *_a, **_k):
+        captured["df"] = df
+        return df.height
+
+    monkeypatch.setattr(cumulative_flow, "write_fact_values", _write_fact_values)
 
     def _read_table(_e, query, params=None):
         if "FROM clean_jira.issues" in query:
@@ -137,6 +141,16 @@ def test_cumulative_flow_slicing(monkeypatch):
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 2
+    assert "context_json" in captured["df"].columns
+    assert captured["df"].get_column("context_json").null_count() == 0
+    contexts = captured["df"].get_column("context_json").to_list()
+    assert all(ctx["column_id"] == "c1" for ctx in contexts)
+    assert all(ctx["column_name"] == "To Do" for ctx in contexts)
+    assert all(ctx["status_id"] == "s1" for ctx in contexts)
+    slice_values = captured["df"].get_column("slice_value").to_list()
+    assert len(slice_values) == 2
+    assert "Story" in slice_values
+    assert None in slice_values
 
 
 def test_aging_extended_slicing(monkeypatch):
