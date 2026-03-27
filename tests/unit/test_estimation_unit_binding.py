@@ -49,20 +49,26 @@ def test_calculate_estimation_metrics_uses_unit_binding(mock_database):
 
     context = build_asset_context()
 
-    with patch(
-        "pipelines.assets.metrics.estimation.read_table", side_effect=side_effect
-    ), patch(
-        "pipelines.assets.metrics.estimation.get_definition_id", return_value="DEF1"
-    ), patch(
-        "pipelines.assets.metrics.estimation.get_calculation_id", return_value="CALC1"
-    ), patch(
-        "pipelines.assets.metrics.estimation.get_project_agg_id", return_value="AGG1"
-    ), patch(
-        "pipelines.assets.metrics.estimation.resolve_unit_field"
-    ) as mock_resolve, patch(
-        "pipelines.assets.metrics.estimation.estimation_logic.calculate_estimate_volatility"
-    ) as mock_calc, patch(
-        "pipelines.assets.metrics.estimation.write_fact_values", return_value=1
+    with (
+        patch(
+            "pipelines.assets.metrics.estimation.read_table", side_effect=side_effect
+        ),
+        patch(
+            "pipelines.assets.metrics.estimation.get_definition_id", return_value="DEF1"
+        ),
+        patch(
+            "pipelines.assets.metrics.estimation.get_calculation_id",
+            return_value="CALC1",
+        ),
+        patch(
+            "pipelines.assets.metrics.estimation.get_project_agg_id",
+            return_value="AGG1",
+        ),
+        patch("pipelines.assets.metrics.estimation.resolve_unit_field") as mock_resolve,
+        patch(
+            "pipelines.assets.metrics.estimation.estimation_logic.calculate_estimate_volatility"
+        ) as mock_calc,
+        patch("pipelines.assets.metrics.estimation.write_fact_values", return_value=1),
     ):
         # Scenario 1: resolve_unit_field returns a binding
         mock_resolve.return_value = {"source_field_id": "BINDING_K"}

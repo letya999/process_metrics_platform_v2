@@ -1,14 +1,14 @@
 # BI Providers
 
-`/bi` содержит поставщиков BI и версии готовых паков дашбордов.
+`/bi` contains BI providers and versions of ready-made dashboard packs.
 
-## Цели
+## Goals
 
-- Metabase является одним из провайдеров, а не единственным hardcoded вариантом.
-- Dashboard-as-code: карточки/дашборды хранятся в Git как JSON-спеки.
-- Идемпотентный provisioning через API (без зависимости на перенос ID между инстансами).
+- Metabase is one of the providers, not the only hardcoded option.
+- Dashboard-as-code: cards/dashboards are stored in Git as JSON specs.
+- Idempotent provisioning via API (no dependency on transferring IDs between instances).
 
-## Структура
+## Structure
 
 ```text
 bi/
@@ -27,29 +27,29 @@ bi/
         dashboards/*.json
 ```
 
-## Запуск
+## Running
 
 ```bash
 python -m bi.main --provider metabase --pack process_metrics_v1
 ```
 
-## Проверка карточек pack на реальном Metabase
+## Verifying pack cards on a real Metabase
 
 ```bash
 python bi/verify_metabase_pack.py --provider metabase --pack process_metrics_v1 --url http://localhost:3001
 ```
 
-## Добавление нового BI-провайдера
+## Adding a new BI provider
 
-1. Создать `bi/providers/<provider>/provider.py` с методом `provision(pack_dir: Path)`.
-2. Добавить провайдера в `bi/registry.py`.
-3. Положить pack-спеки в `bi/packs/<provider>/<pack_name>/`.
+1. Create `bi/providers/<provider>/provider.py` with a `provision(pack_dir: Path)` method.
+2. Add the provider to `bi/registry.py`.
+3. Place pack specs in `bi/packs/<provider>/<pack_name>/`.
 
-## Переменные окружения для Metabase
+## Environment Variables for Metabase
 
 - `METABASE_URL`
-- `METABASE_API_KEY` (опционально)
+- `METABASE_API_KEY` (optional)
 - `MB_ADMIN_EMAIL` / `MB_ADMIN_PASSWORD`
-- `MB_SITE_NAME` (опционально)
+- `MB_SITE_NAME` (optional)
 - `BI_DATABASE_NAME` / `BI_DATABASE_ENGINE` / `BI_DATABASE_SCHEMA` / `BI_DATABASE_SSL`
 - `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD`

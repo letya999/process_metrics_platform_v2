@@ -21,6 +21,11 @@ from pipelines.resources.database import DatabaseResource
     group_name="metrics",
     deps=["calculate_lead_time"],
     description="Summarize lead time stats from fact_values",
+    metadata={
+        "grain": "mixed",
+        "unit": "mixed",
+        "calculation_logic": "See asset implementation and referenced calculation modules.",
+    },
     compute_kind="sql",
 )
 def metrics_lead_time(
@@ -58,6 +63,11 @@ def metrics_lead_time(
     group_name="metrics",
     deps=["calculate_velocity"],
     description="Summarize velocity stats from fact_values",
+    metadata={
+        "grain": "mixed",
+        "unit": "mixed",
+        "calculation_logic": "See asset implementation and referenced calculation modules.",
+    },
     compute_kind="sql",
 )
 def metrics_velocity(
@@ -108,6 +118,11 @@ def metrics_velocity(
     group_name="metrics",
     deps=["calculate_throughput"],
     description="Summarize throughput stats from fact_values",
+    metadata={
+        "grain": "mixed",
+        "unit": "mixed",
+        "calculation_logic": "See asset implementation and referenced calculation modules.",
+    },
     compute_kind="sql",
 )
 def metrics_throughput(
@@ -159,6 +174,11 @@ def metrics_throughput(
         "calculate_aging_extended",
     ],
     description="Aggregate stats across all metrics",
+    metadata={
+        "grain": "mixed",
+        "unit": "mixed",
+        "calculation_logic": "See asset implementation and referenced calculation modules.",
+    },
     compute_kind="sql",
 )
 def metrics_all(

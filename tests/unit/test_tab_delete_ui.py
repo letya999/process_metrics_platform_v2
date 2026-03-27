@@ -13,8 +13,8 @@ def mock_st(monkeypatch):
     # columns returns context-manager-compatible mocks
     mock.columns.side_effect = lambda n: [nullcontext() for _ in range(n)]
     # selectbox must return the first option so dict lookups work
-    mock.selectbox.side_effect = (
-        lambda label, options, **kwargs: options[0] if options else ""
+    mock.selectbox.side_effect = lambda label, options, **kwargs: (
+        options[0] if options else ""
     )
     # multiselect returns empty list by default
     mock.multiselect.return_value = []

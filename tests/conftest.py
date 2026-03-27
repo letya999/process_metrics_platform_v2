@@ -6,6 +6,7 @@ This module provides fixtures for testing:
 - API test client
 """
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Generator
 from unittest.mock import MagicMock
@@ -249,9 +250,9 @@ def database_env_vars(monkeypatch):
 
     Uses credentials matching the local development environment (.env).
     """
-    # Use the complex password from .env which seems to be the one used in the environment
-    password = "woJX9+pYcU+y2JApOCcqs5HP"
-    db_name = "process_metrics_v2"
+    # Use the password from environment or default to 'postgres'
+    password = os.environ.get("POSTGRES_PASSWORD", "postgres")
+    db_name = os.environ.get("POSTGRES_DB", "process_metrics_v2")
     db_url = f"postgresql://postgres:{password}@localhost:5432/{db_name}"
 
     monkeypatch.setenv("DATABASE_URL", db_url)

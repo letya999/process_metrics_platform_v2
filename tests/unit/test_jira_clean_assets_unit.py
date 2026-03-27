@@ -1515,11 +1515,11 @@ class TestHierarchyLevelMapping:
         result = (
             "epic"
             if "epic" in name_lower
-            else "subtask"
-            if "subtask" in name_lower
-            else "story"
-            if "story" in name_lower
-            else "task"
+            else (
+                "subtask"
+                if "subtask" in name_lower
+                else "story" if "story" in name_lower else "task"
+            )
         )
         assert result == "task"
 
@@ -1810,8 +1810,22 @@ class TestSprintChangelogSqlFieldCoverage:
 class TestChangelogStatusCategoryCompleteness:
     """Regression tests for the bilingual status category inference in issue_statuses."""
 
-    DONE_NAMES = ["Done", "Closed", "Canceled", "Cancelled", "Resolved", "Отмена"]
-    TODO_NAMES = ["To Do", "К выполнению", "Open", "Backlog", "New", "Todo"]
+    DONE_NAMES = [
+        "Done",
+        "Closed",
+        "Canceled",
+        "Cancelled",
+        "Resolved",
+        "Отмена",
+    ]  # 'Отмена' means 'Cancel'
+    TODO_NAMES = [
+        "To Do",
+        "К выполнению",  # 'К выполнению' means 'To be done'
+        "Open",
+        "Backlog",
+        "New",
+        "Todo",
+    ]
     IN_PROGRESS_NAMES = [
         "In Progress",
         "In Review",
@@ -1821,30 +1835,50 @@ class TestChangelogStatusCategoryCompleteness:
     ]
 
     def _infer(self, name: str) -> str:
+        """Helper to simulate the SQL status category inference logic."""
         n = name.lower()
         if (
-            n in {"done", "canceled", "cancelled", "closed", "resolved", "отмена"}
+            n
+            in {
+                "done",
+                "canceled",
+                "cancelled",
+                "closed",
+                "resolved",
+                "отмена",
+            }  # 'отмена' means 'cancel'
             or "cancel" in n
-            or "отмен" in n
+            or "отмен" in n  # 'отмен' is root for 'cancel'
         ):
             return "done"
         if (
-            n in {"to do", "к выполнению", "open", "backlog", "new", "todo"}
+            n
+            in {
+                "to do",
+                "к выполнению",  # 'к выполнению' means 'to do'
+                "open",
+                "backlog",
+                "new",
+                "todo",
+            }
             or "to do" in n
-            or "к выполнению" in n
+            or "к выполнению" in n  # 'к выполнению' means 'to do'
         ):
             return "to_do"
         return "in_progress"
 
     def test_all_done_names(self):
+        """Test that all expected 'Done' status names are correctly mapped."""
         for name in self.DONE_NAMES:
             assert self._infer(name) == "done", f"'{name}' should be done"
 
     def test_all_todo_names(self):
+        """Test that all expected 'To Do' status names are correctly mapped."""
         for name in self.TODO_NAMES:
             assert self._infer(name) == "to_do", f"'{name}' should be to_do"
 
     def test_all_in_progress_names(self):
+        """Test that all expected 'In Progress' status names are correctly mapped."""
         for name in self.IN_PROGRESS_NAMES:
             assert self._infer(name) == "in_progress", f"'{name}' should be in_progress"
 
@@ -1853,4 +1887,5 @@ class TestChangelogStatusCategoryCompleteness:
         assert self._infer("On Review") == "in_progress"
 
     def test_unknown_status_defaults_to_in_progress(self):
+        """Unknown statuses should default to 'in_progress' category."""
         assert self._infer("Some Custom Status") == "in_progress"

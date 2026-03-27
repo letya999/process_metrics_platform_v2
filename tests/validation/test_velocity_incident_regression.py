@@ -1,4 +1,4 @@
-"""Regression checks for ADS 24-28 velocity incident."""
+"""Regression checks for SPRINT 24-28 velocity incident."""
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -20,7 +20,7 @@ def get_db_engine():
 
 
 class TestVelocityIncidentRegression:
-    """Ensure previously missing ADS 24-28 issues are present in clean layer."""
+    """Ensure previously missing SPRINT 24-28 issues are present in clean layer."""
 
     @pytest.fixture
     def engine(self):
@@ -28,14 +28,14 @@ class TestVelocityIncidentRegression:
 
     def test_problem_keys_exist_in_clean_issues(self, engine):
         keys = [
-            "TWAD-436",
-            "TWAD-438",
-            "TWAD-449",
-            "TWAD-460",
-            "TWAD-474",
-            "TWAD-482",
-            "TWAD-484",
-            "TWAD-487",
+            "PROJ-436",
+            "PROJ-438",
+            "PROJ-449",
+            "PROJ-460",
+            "PROJ-474",
+            "PROJ-482",
+            "PROJ-484",
+            "PROJ-487",
         ]
         with engine.connect() as conn:
             rows = conn.execute(
@@ -54,14 +54,14 @@ class TestVelocityIncidentRegression:
 
     def test_problem_keys_have_sprint_relationships(self, engine):
         keys = [
-            "TWAD-436",
-            "TWAD-438",
-            "TWAD-449",
-            "TWAD-460",
-            "TWAD-474",
-            "TWAD-482",
-            "TWAD-484",
-            "TWAD-487",
+            "PROJ-436",
+            "PROJ-438",
+            "PROJ-449",
+            "PROJ-460",
+            "PROJ-474",
+            "PROJ-482",
+            "PROJ-484",
+            "PROJ-487",
         ]
         with engine.connect() as conn:
             rows_sprint_issues = conn.execute(

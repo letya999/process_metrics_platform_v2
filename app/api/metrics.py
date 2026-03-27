@@ -211,12 +211,14 @@ async def get_lead_time_metrics(
         return LeadTimeResponse(
             items=items,
             total_count=total_count,
-            avg_lead_time_days=float(avg_row["avg_days"])
-            if avg_row and avg_row["avg_days"]
-            else None,
-            median_lead_time_days=float(avg_row["median_days"])
-            if avg_row and avg_row["median_days"]
-            else None,
+            avg_lead_time_days=(
+                float(avg_row["avg_days"]) if avg_row and avg_row["avg_days"] else None
+            ),
+            median_lead_time_days=(
+                float(avg_row["median_days"])
+                if avg_row and avg_row["median_days"]
+                else None
+            ),
         )
     except Exception:
         return LeadTimeResponse(items=[], total_count=0)

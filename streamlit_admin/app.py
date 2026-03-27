@@ -187,6 +187,7 @@ def _build_project_settings_matrix(
 def _project_filter(
     projects: list[dict[str, Any]], key: str, label: str = "Project Filter"
 ) -> str | None:
+    """Render a project selection filter."""
     options = {"All": None}
     for p in projects:
         options[f"{p['project_key']} - {p['project_name']}"] = p["project_id"]
@@ -194,7 +195,7 @@ def _project_filter(
         label,
         list(options.keys()),
         key=key,
-        help="Фильтр данных по проекту.",
+        help="Filter data by project.",
     )
     return options[selected]
 
@@ -202,19 +203,22 @@ def _project_filter(
 def _calc_filter(
     calc_codes: list[str], key: str, label: str = "Calculation Filter"
 ) -> str | None:
+    """Render a calculation selection filter."""
     options = ["All"] + sorted(calc_codes)
     selected = st.selectbox(
         label,
         options,
         key=key,
-        help="Фильтр данных по calc_code.",
+        help="Filter data by calc_code.",
     )
     return None if selected == "All" else selected
 
 
 def _tab_metrics_catalog(client: AdminApiClient, token: str) -> None:
+    """Render the Metrics Catalog tab, showing project configurations."""
     section_title(
-        "Metrics Catalog", "Какие метрики настроены по проектам, и что отсутствует."
+        "Metrics Catalog",
+        "Which metrics are configured by project, and what is missing.",
     )
     try:
         projects = client.request("GET", "/admin/catalog/projects", token=token)
@@ -259,9 +263,11 @@ def _tab_metrics_catalog(client: AdminApiClient, token: str) -> None:
             return
         df = pd.DataFrame(rows)
         df["matrix_status"] = df.apply(
-            lambda row: "OK"
-            if row["status"] == "OK"
-            else f"ISSUE: {row['missing_summary'] or 'configuration incomplete'}",
+            lambda row: (
+                "OK"
+                if row["status"] == "OK"
+                else f"ISSUE: {row['missing_summary'] or 'configuration incomplete'}"
+            ),
             axis=1,
         )
         matrix = df.pivot_table(
@@ -337,9 +343,13 @@ def _tab_commitment_v2(client: AdminApiClient, token: str) -> None:
     project_key_by_id = {p["project_id"]: p["project_key"] for p in projects}
     display_rules = [
         {
-            "scope": "Global (all projects)"
-            if r.get("project_id") is None
-            else project_key_by_id.get(r.get("project_id"), str(r.get("project_id"))),
+            "scope": (
+                "Global (all projects)"
+                if r.get("project_id") is None
+                else project_key_by_id.get(
+                    r.get("project_id"), str(r.get("project_id"))
+                )
+            ),
             "calc_code": r.get("calc_code"),
             "board_id": r.get("board_id"),
             "start_column_name_snapshot": r.get("start_column_name_snapshot"),
@@ -391,7 +401,7 @@ def _tab_commitment_v2(client: AdminApiClient, token: str) -> None:
         "Rule to edit",
         list(edit_options.keys()),
         key="commitment_edit_rule",
-        help="Выберите существующую запись для обновления, или оставьте Create new.",
+        help="Select an existing record to update, or leave as 'Create new'.",
     )
     edit_id = edit_options[selected_edit]
     edit_row = next((r for r in all_rules if r.get("id") == edit_id), None)
@@ -422,7 +432,7 @@ def _tab_commitment_v2(client: AdminApiClient, token: str) -> None:
         project_labels,
         index=_selectbox_index(project_labels, default_project_label),
         key="commitment_project_input",
-        help="Проект правила. All (NULL) создаст общее правило с project_id = NULL.",
+        help="Rule project. 'All (NULL)' will create a global rule with project_id = NULL.",
     )
     project_id = project_map[selected_project]
 
@@ -520,7 +530,7 @@ def _tab_commitment_v2(client: AdminApiClient, token: str) -> None:
                     edit_row.get("calc_code") if edit_row else required_calcs[0],
                 ),
                 key="commitment_calc_input_single",
-                help="Для редактирования одной записи доступен выбор одной метрики.",
+                help="Only one metric can be selected for editing a single record.",
             )
         else:
             calc_codes_multi = st.multiselect(
@@ -528,7 +538,7 @@ def _tab_commitment_v2(client: AdminApiClient, token: str) -> None:
                 required_calcs,
                 default=[],
                 key="commitment_calc_input_multi",
-                help="Можно выбрать несколько метрик и создать правила для всех сразу.",
+                help="You can select multiple metrics and create rules for all of them at once.",
             )
     if save_bar("Save Commitment Rule"):
         try:
@@ -819,9 +829,13 @@ def _tab_settings_v2(client: AdminApiClient, token: str) -> None:
     project_key_by_id = {p["project_id"]: p["project_key"] for p in projects}
     display_settings = [
         {
-            "scope": "Global (all projects)"
-            if s.get("project_id") is None
-            else project_key_by_id.get(s.get("project_id"), str(s.get("project_id"))),
+            "scope": (
+                "Global (all projects)"
+                if s.get("project_id") is None
+                else project_key_by_id.get(
+                    s.get("project_id"), str(s.get("project_id"))
+                )
+            ),
             "calc_code": s.get("calc_code"),
             "settings_type": s.get("settings_type"),
             "enabled": s.get("enabled"),
@@ -1163,7 +1177,7 @@ def _tab_units_v2(client: AdminApiClient, token: str) -> None:
             "Field Source Project",
             list(source_project_map.keys()),
             key="units_source_project_input",
-            help="Проект, из которого взять список field keys для общего (NULL) биндинга.",
+            help="Project from which to take field keys list for the global (NULL) binding.",
         )
         source_project_id = source_project_map[source_project_label]
     try:
@@ -1189,7 +1203,7 @@ def _tab_units_v2(client: AdminApiClient, token: str) -> None:
             calc_codes_for_units,
             default=[],
             key="units_calc_codes_input",
-            help="Можно выбрать несколько метрик и сохранить unit binding сразу для всех их unit_code.",
+            help="You can select multiple metrics and save unit binding for all of them at once.",
         )
     # Pre-fill display_symbol from existing binding if any
     existing_symbol = "SP"
@@ -1424,9 +1438,11 @@ def _tab_slices_v2(client: AdminApiClient, token: str) -> None:
     source_table = st.selectbox(
         "Source Table",
         source_tables,
-        index=_selectbox_index(source_tables, default_source_table)
-        if default_source_table
-        else 0,
+        index=(
+            _selectbox_index(source_tables, default_source_table)
+            if default_source_table
+            else 0
+        ),
         key="slices_table_input",
     )
     group_columns = source_map[source_table]
@@ -1434,9 +1450,9 @@ def _tab_slices_v2(client: AdminApiClient, token: str) -> None:
     group_by = st.selectbox(
         "Group By Column",
         group_columns,
-        index=_selectbox_index(group_columns, default_group_by)
-        if default_group_by
-        else 0,
+        index=(
+            _selectbox_index(group_columns, default_group_by) if default_group_by else 0
+        ),
         key="slices_group_input",
     )
     rule_name = st.text_input(
@@ -1472,7 +1488,7 @@ def _tab_slices_v2(client: AdminApiClient, token: str) -> None:
         td_labels,
         index=_selectbox_index(td_labels, default_td_label),
         key="slices_target_definition_input",
-        help="All (NULL) записывает NULL в target_definition_id и target_definition_name.",
+        help="'All (NULL)' writes NULL to target_definition_id and target_definition_name.",
     )
     target_definition_id, target_definition_name = td_options[td_label]
 

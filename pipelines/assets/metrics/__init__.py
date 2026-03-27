@@ -15,6 +15,7 @@ from .flow_efficiency import (
 )
 from .input_flow import calculate_input_flow, input_flow_data_quality_check
 from .lead_time import calculate_lead_time, lead_time_data_quality_check
+from .metadata_checks import metrics_metadata_contract_check
 from .quality import calculate_quality_metrics, quality_data_quality_check
 from .refresh import (
     check_lead_time_no_nulls,
@@ -53,6 +54,7 @@ __all__ = [
     "flow_efficiency_data_quality_check",
     "velocity_data_quality_check",
     "lead_time_data_quality_check",
+    "metrics_metadata_contract_check",
     "throughput_data_quality_check",
     "calculate_sprint_health",
     "sprint_health_data_quality_check",

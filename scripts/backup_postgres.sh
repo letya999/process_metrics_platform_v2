@@ -1,47 +1,38 @@
 #!/bin/bash
-# =============================================================================
-# PostgreSQL Backup Script
-# =============================================================================
+# Backup PostgreSQL database to a file.
+# Usage: ./backup_postgres.sh [backup_file_path]
 
-set -euo pipefail
+set -e
 
-# Конфигурация
-BACKUP_DIR="/opt/backups/postgres"
-CONTAINER_NAME="postgres"
-# Используем переменные окружения, если они установлены, иначе дефолтные
-DB_NAME="${POSTGRES_DB:-process_metrics}"
-DB_USER="${POSTGRES_USER:-postgres}"
-RETENTION_DAYS=14
-
-# Timestamp
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="${BACKUP_DIR}/backup_${TIMESTAMP}.sql.gz"
-
-# Создаём директорию если не существует
-mkdir -p "$BACKUP_DIR"
-
-echo "[$(date)] Starting PostgreSQL backup..."
-
-# Создаём backup
-# Используем docker exec для выполнения pg_dump внутри контейнера
-docker exec "$CONTAINER_NAME" pg_dump -U "$DB_USER" "$DB_NAME" | gzip > "$BACKUP_FILE"
-
-# Проверяем размер
-if [ -f "$BACKUP_FILE" ]; then
-    BACKUP_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
-    echo "[$(date)] Backup created: $BACKUP_FILE ($BACKUP_SIZE)"
-else
-    echo "[$(date)] Error: Backup file not created!"
-    exit 1
+# Load environment variables if .env exists
+if [ -f .env ]; then
+  export $(grep -v '^#' .env | xargs)
 fi
 
-# Удаляем старые backup (старше RETENTION_DAYS)
-echo "[$(date)] Cleaning backups older than $RETENTION_DAYS days..."
-find "$BACKUP_DIR" -name "backup_*.sql.gz" -mtime +$RETENTION_DAYS -delete
-echo "[$(date)] Cleanup completed"
+DB_NAME=${POSTGRES_DATABASE:-process_metrics_platform}
+DB_USER=${POSTGRES_USER:-postgres}
+DB_HOST=${POSTGRES_HOST:-localhost}
+DB_PORT=${POSTGRES_PORT:-5432}
 
-# Показываем список текущих резервных копий
-echo "[$(date)] Current backups:"
-ls -lh "$BACKUP_DIR"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+DEFAULT_BACKUP_FILE="backup_${DB_NAME}_${TIMESTAMP}.sql"
+BACKUP_FILE=${1:-$DEFAULT_BACKUP_FILE}
 
-echo "[$(date)] Backup process finished successfully!"
+echo "Starting backup of database ${DB_NAME} to ${BACKUP_FILE}..."
+
+# Ensure PGPASSWORD is set from env to avoid interactive prompt
+if [ -z "$POSTGRES_PASSWORD" ]; then
+  echo "Error: POSTGRES_PASSWORD is not set."
+  exit 1
+fi
+
+export PGPASSWORD=$POSTGRES_PASSWORD
+
+pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -F p > "$BACKUP_FILE"
+
+if [ $? -eq 0 ]; then
+  echo "Backup successfully created: ${BACKUP_FILE}"
+else
+  echo "Error occurred during backup."
+  exit 1
+fi

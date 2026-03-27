@@ -774,9 +774,9 @@ async def upsert_unit(
                 ),
                 {
                     "unit_code": unit_code,
-                    "project_id": str(payload.project_id)
-                    if payload.project_id
-                    else None,
+                    "project_id": (
+                        str(payload.project_id) if payload.project_id else None
+                    ),
                 },
             )
         )
@@ -799,9 +799,9 @@ async def upsert_unit(
         params = {
             "id": str(existing["id"]),
             "display_symbol": payload.display_symbol,
-            "source_field_id": str(payload.source_field_id)
-            if payload.source_field_id
-            else None,
+            "source_field_id": (
+                str(payload.source_field_id) if payload.source_field_id else None
+            ),
             "source_entity": payload.source_entity,
         }
     else:
@@ -819,9 +819,9 @@ async def upsert_unit(
             "project_id": str(payload.project_id) if payload.project_id else None,
             "unit_code": unit_code,
             "display_symbol": payload.display_symbol or unit_code,
-            "source_field_id": str(payload.source_field_id)
-            if payload.source_field_id
-            else None,
+            "source_field_id": (
+                str(payload.source_field_id) if payload.source_field_id else None
+            ),
             "source_entity": payload.source_entity,
         }
 
@@ -905,9 +905,11 @@ async def upsert_slice_rule(
             "id": str(payload.id),
             "project_id": str(payload.project_id) if payload.project_id else None,
             "rule_name": payload.rule_name,
-            "target_definition_id": str(payload.target_definition_id)
-            if payload.target_definition_id
-            else None,
+            "target_definition_id": (
+                str(payload.target_definition_id)
+                if payload.target_definition_id
+                else None
+            ),
             "target_definition_name": payload.target_definition_name,
             "source_table": payload.source_table,
             "group_by_source_column": payload.group_by_source_column,
@@ -933,9 +935,11 @@ async def upsert_slice_rule(
         params = {
             "project_id": str(payload.project_id) if payload.project_id else None,
             "rule_name": payload.rule_name,
-            "target_definition_id": str(payload.target_definition_id)
-            if payload.target_definition_id
-            else None,
+            "target_definition_id": (
+                str(payload.target_definition_id)
+                if payload.target_definition_id
+                else None
+            ),
             "target_definition_name": payload.target_definition_name,
             "source_table": payload.source_table,
             "group_by_source_column": payload.group_by_source_column,

@@ -114,6 +114,11 @@ def _resolve_done_status_ids_from_commitment_rules(
         "clean_jira_field_keys",
     ],
     description="Calculate Velocity facts and write to generic fact_values",
+    metadata={
+        "grain": "mixed",
+        "unit": "mixed",
+        "calculation_logic": "See asset implementation and referenced calculation modules.",
+    },
     compute_kind="python",
 )
 def calculate_velocity(

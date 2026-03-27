@@ -1,63 +1,128 @@
-# Metadata Management Strategy: Dagster-First Approach
+# Metadata Management Strategy (Pragmatic Dagster + SQL)
 
 ## Overview
-This project adopts a **Dagster-native Metadata Catalog** strategy. Following the "Simple Monolith" principle, we avoid heavy external tools (like DataHub or OpenMetadata) and leverage **Software-Defined Assets (SDA)** to serve as our primary data catalog, business glossary, and lineage tool.
+This project uses a lightweight metadata strategy aligned with the monolith architecture:
+- Dagster asset metadata is the primary catalog for metric logic.
+- PostgreSQL `COMMENT ON` is the primary catalog for schema semantics.
+- No external metadata platform (DataHub/OpenMetadata) at current scale.
 
-## Core Principles
-1. **Code as Documentation**: Metadata lives next to the code that produces the data.
-2. **English Only**: All descriptions, metadata keys, and formulas must be in English (resolving audit issue C-9).
-3. **Actionable Lineage**: Every metric must link to its visualization (Metabase) and its source.
+Goal: improve discoverability and consistency without adding operational overhead.
+
+## Principles
+1. Code-first metadata: keep metadata close to assets and schema DDL.
+2. English-only metadata: descriptions, keys, comments, formulas.
+3. No dead documentation: avoid hand-maintained docs that drift from code.
+4. Incremental rollout: enforce a small mandatory baseline, then expand.
 
 ---
 
-## Implementation Plan
+## Scope
 
-### Phase 1: Metric Asset Enrichment
-Every asset in the `metrics` group must implement the following metadata structure:
+### In scope
+- `pipelines/assets/metrics/*.py` metadata baseline
+- Metadata asset check in Dagster for required fields
+- SQL comments for critical `metrics.*` objects
+- Synchronization rules for `db/migrations` and `db/schemas/*.sql`
 
-#### Example Implementation
+### Out of scope (for now)
+- External metadata catalog (DataHub/OpenMetadata)
+- Mandatory owner model
+- Stable dashboard URLs in metadata
+- Manual `SCHEMA_REFERENCE.md` maintenance
+
+---
+
+## Target State
+
+### A) Metric Asset Metadata Baseline
+Each metrics asset must have:
+1. `description` (non-empty, meaningful)
+2. `metadata["grain"]`
+3. `metadata["unit"]`
+4. `metadata["calculation_logic"]` (short readable explanation)
+
+Recommended shape:
 ```python
 @asset(
     group_name="metrics",
-    description="Cycle Time: The time it takes for an issue to move from 'In Progress' to 'Done'.",
+    description="Cycle Time for completed issues.",
     metadata={
-        "business_value": "Measures team speed and process efficiency.",
-        "calculation_logic": MetadataValue.md("Detailed SQL or logic description here"),
-        "unit": "Days",
-        "dashboard_url": MetadataValue.url("http://localhost:3001/dashboard/5-cycle-time"),
-        "sql_source": "metrics.v_facts where calc_code = 'cycle_time_days'"
-    }
+        "grain": "issue",
+        "unit": "days",
+        "calculation_logic": MetadataValue.md(
+            "Duration between work start and completion timestamps per issue."
+        ),
+    },
 )
-def calculate_cycle_time(context, ...):
+def calculate_cycle_time(...):
     ...
 ```
 
-### Phase 2: Documentation Migration
-1. **Translate & Move**: Content from `METRICS_SCHEMA_DOCUMENTATION.md` (Russian) will be translated to English and moved into the `description` fields of respective Dagster assets.
-2. **Deprecate**: Once migrated, the Russian documentation files will be deleted to avoid "stale artifact" confusion (audit issue C-10).
+Notes:
+- Do not require `dashboard_url`.
+- Do not require `owner`.
+- Keep metadata concise and stable across dashboard refactors.
 
-### Phase 3: Quality Transparency
-Leverage `Asset Checks` to show the health of the catalog:
-- Every metric must have at least one `Data Quality` check (e.g., no negative values, no nulls in critical fields).
-- Check results must be visible in the Dagster Asset UI.
+### B) Metadata Quality Check
+Add a metadata-focused asset check that fails when required metadata keys are missing.
 
-### Phase 4: Database-Native Schema Documentation
-To support SQL-only users (Analysts, DBA) and BI tools (Metabase):
-1. **SQL Comments**: Every table and column in `db/schemas/` must have a `COMMENT ON TABLE` and `COMMENT ON COLUMN` statement in English.
-2. **Auto-Sync**: Explore automating the export of `description` fields from Dagster assets directly into PostgreSQL comments to maintain a single source of truth.
-3. **Living Schema File**: Maintain an up-to-date `db/SCHEMA_REFERENCE.md` (or similar) that contains the full DDL with comments for LLM context and quick reference.
+Minimum validation:
+1. Asset has non-empty `description`
+2. Metadata contains `grain`, `unit`, `calculation_logic`
+3. Values are non-empty strings or Dagster metadata values
+
+This check must run with the rest of asset checks and be visible in Dagster UI.
+
+### C) Database Schema Metadata
+Schema semantics must live in SQL, not Markdown:
+1. Add/maintain `COMMENT ON TABLE` and `COMMENT ON COLUMN` in English.
+2. Prioritize critical objects first:
+   - `metrics.fact_values`
+   - `metrics.v_facts`
+   - `metrics.calculations`
+   - `metrics.definitions`
+   - `metrics.dim_projects`
+   - `metrics.dim_dates`
+3. Expand to remaining objects iteratively.
+
+### D) Migration + Schema Sync Rule
+When DB schema changes:
+1. Create Alembic migration in `db/migrations/versions/`.
+2. Update the corresponding canonical SQL schema file in `db/schemas/*.sql`.
+3. Include required comments for new/changed objects.
+
+Migration without schema file update is considered incomplete.
 
 ---
 
-## Acceptance Criteria (Definition of Done)
-- [ ] 100% of assets in `pipelines/assets/metrics/` have a non-empty `description`.
-- [ ] Every Gold-layer metric has a `dashboard_url` metadata entry.
-- [ ] No Russian language documentation remains in the root directory.
-- [ ] Business formulas are documented using `MetadataValue.md` for readability in Dagster UI.
-- [ ] "Freshness Policy" is defined for all Clean (Silver) and Metrics (Gold) assets.
-- [ ] All critical tables/columns in `db/` have SQL comments mirroring Dagster descriptions.
+## Execution Plan
 
-## Why this approach?
-- **Low Overhead**: Zero new containers or databases.
-- **Developer Friendly**: No context switching between code and a separate catalog UI.
-- **Single Source of Truth**: The code *is* the catalog. If the code changes, the catalog updates automatically.
+### Phase 1 (Immediate)
+1. Update top-priority metric assets with baseline metadata (`description`, `grain`, `unit`, `calculation_logic`).
+2. Add metadata asset check and wire it in Dagster definitions.
+3. Add missing `metrics.*` comments in canonical SQL schema location.
+
+### Phase 2 (Short-term)
+1. Extend baseline metadata to all assets in `pipelines/assets/metrics/`.
+2. Normalize wording/style for units and grain names.
+3. Ensure every schema object touched by recent migrations has comments.
+
+### Phase 3 (Steady-state)
+1. Enforce CI validation for metadata baseline and schema sync.
+2. Keep changes incremental: each feature touching metrics or DB schema must include metadata updates in the same PR.
+
+---
+
+## Definition of Done
+- [ ] 100% of assets in `pipelines/assets/metrics/` have non-empty `description`.
+- [ ] 100% of metrics assets have `metadata.grain`, `metadata.unit`, `metadata.calculation_logic`.
+- [ ] Metadata asset check exists and runs in Dagster.
+- [ ] Critical `metrics.*` tables/views/columns have English SQL comments.
+- [ ] Every schema-changing migration has matching updates in `db/schemas/*.sql`.
+
+---
+
+## Why This Works
+- Low overhead: no new infrastructure.
+- Less drift: metadata stays in code/SQL where changes actually happen.
+- Clear enforcement: checks make metadata requirements explicit and testable.

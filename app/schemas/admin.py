@@ -1,4 +1,4 @@
-"""Pydantic schemas for admin studio API."""
+﻿"""Pydantic schemas for admin studio API."""
 
 from datetime import datetime
 from typing import Any
@@ -14,7 +14,7 @@ class AdminLoginRequest(BaseModel):
 
 class AdminLoginResponse(BaseModel):
     access_token: str
-    token_type: str = "bearer"
+    token_type: str = "bearer"  # noqa: S105 - OAuth token type literal
     expires_at: datetime
     user_id: UUID
     email: str

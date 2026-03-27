@@ -332,17 +332,31 @@ class TestHistoricalStatusSync:
             # Done patterns
             if (
                 name_lower
-                in ["done", "canceled", "cancelled", "closed", "resolved", "отмена"]
+                in [
+                    "done",
+                    "canceled",
+                    "cancelled",
+                    "closed",
+                    "resolved",
+                    "отмена",
+                ]  # 'отмена' means 'cancel'
                 or "cancel" in name_lower
-                or "отмен" in name_lower
+                or "отмен" in name_lower  # 'отмен' is root for 'cancel'
             ):
                 return "done"
             # To Do patterns
             if (
                 name_lower
-                in ["to do", "к выполнению", "open", "backlog", "new", "todo"]
+                in [
+                    "to do",
+                    "к выполнению",  # 'к выполнению' means 'to do'
+                    "open",
+                    "backlog",
+                    "new",
+                    "todo",
+                ]
                 or "to do" in name_lower
-                or "к выполнению" in name_lower
+                or "к выполнению" in name_lower  # 'к выполнению' means 'to do'
             ):
                 return "to_do"
             # Default
@@ -354,14 +368,16 @@ class TestHistoricalStatusSync:
         assert infer_category("Canceled") == "done"
         assert infer_category("Cancelled") == "done"
         assert infer_category("Выполнено") == "in_progress"  # Not in the SQL list yet
-        assert infer_category("Отмена") == "done"
+        assert infer_category("Отмена") == "done"  # 'Отмена' means 'Cancel'
         assert infer_category("Task Canceled") == "done"  # LIKE %cancel%
 
         # To Do cases
         assert infer_category("To Do") == "to_do"
         assert infer_category("Open") == "to_do"
         assert infer_category("Backlog") == "to_do"
-        assert infer_category("К выполнению") == "to_do"
+        assert (
+            infer_category("К выполнению") == "to_do"
+        )  # 'К выполнению' means 'To be done'
         assert infer_category("New") == "to_do"
 
         # In Progress cases

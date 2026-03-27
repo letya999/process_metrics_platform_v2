@@ -15,6 +15,7 @@ load_dotenv()
 
 
 def get_engine():
+    """Create and return a SQLAlchemy engine using environment variables."""
     db_user = os.getenv("POSTGRES_USER", "postgres")
     db_password = os.getenv("POSTGRES_PASSWORD", "postgres")
     db_host = os.getenv("POSTGRES_HOST", "localhost")
@@ -26,6 +27,7 @@ def get_engine():
 
 
 def seed_grains(conn):
+    """Populate grains table with supported levels of data granularity."""
     print("Seeding grains...")
     conn.execute(
         text(
@@ -43,6 +45,7 @@ def seed_grains(conn):
 
 
 def seed_definitions(conn):
+    """Populate basic metric definitions."""
     print("Seeding definitions...")
     conn.execute(
         text(
@@ -57,6 +60,7 @@ def seed_definitions(conn):
 
 
 def seed_calculations(conn):
+    """Populate specific metric calculation rules linked to definitions and grains."""
     print("Seeding calculations...")
     conn.execute(
         text(
@@ -99,6 +103,7 @@ def seed_calculations(conn):
 
 
 def seed_units(conn):
+    """Populate metric units table with default values."""
     print("Seeding units...")
     conn.execute(
         text(
@@ -116,6 +121,7 @@ def seed_units(conn):
 
 
 def seed_dim_dates(conn):
+    """Generate and seed a calendar dimension table (dim_dates)."""
     print("Seeding dim_dates (2024-2030)...")
     # Using Polars for efficient date generation
     start_date = date(2024, 1, 1)
@@ -167,6 +173,7 @@ def seed_dim_dates(conn):
 
 
 def sync_dim_projects(conn):
+    """Synchronize projects from raw layer to dimension table."""
     print("Syncing dim_projects...")
     conn.execute(
         text(
@@ -180,6 +187,7 @@ def sync_dim_projects(conn):
 
 
 def seed_slice_rules(conn):
+    """Populate default slicing rules."""
     print("Seeding default slice_rules...")
     conn.execute(text("DELETE FROM metrics.slice_rules"))
     conn.execute(
@@ -193,6 +201,7 @@ def seed_slice_rules(conn):
 
 
 def infer_commitment_rules(conn):
+    """Infer commitment rules from board columns using common patterns (heuristics)."""
     print("Inferring commitment_rules from board columns...")
     # Find boards and their columns
     boards = conn.execute(
@@ -224,11 +233,13 @@ def infer_commitment_rules(conn):
 
         for col_id, col_name in columns:
             name_lower = col_name.lower()
+            # Match start columns using English and Russian common terms
             if not start_col and any(
                 word in name_lower
                 for word in ["in progress", "в работе", "progress", "active"]
             ):
                 start_col = (col_id, col_name)
+            # Match end columns using English and Russian common terms
             if any(
                 word in name_lower
                 for word in ["done", "готово", "closed", "resolved", "completed"]
@@ -262,6 +273,7 @@ def infer_commitment_rules(conn):
 
 
 def main():
+    """Main execution flow for seeding the database."""
     engine = get_engine()
     with engine.begin() as conn:
         seed_grains(conn)

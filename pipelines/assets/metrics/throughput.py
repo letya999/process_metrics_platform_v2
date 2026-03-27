@@ -27,6 +27,11 @@ from pipelines.utils.polars_db import read_table, write_fact_values
         "clean_jira_issue_status_changelog",
     ],
     description="Calculate Throughput facts and write to generic fact_values",
+    metadata={
+        "grain": "mixed",
+        "unit": "mixed",
+        "calculation_logic": "See asset implementation and referenced calculation modules.",
+    },
     compute_kind="python",
 )
 def calculate_throughput(
@@ -104,9 +109,11 @@ def calculate_throughput(
                 pl.lit("week").alias("entity_type"),
                 pl.col("week_start_date").dt.strftime("%Y-%m-%d").alias("entity_id"),
                 pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
-                pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
-                if slice_value is not None
-                else pl.lit(None).cast(pl.Utf8).alias("slice_value"),
+                (
+                    pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
+                    if slice_value is not None
+                    else pl.lit(None).cast(pl.Utf8).alias("slice_value")
+                ),
                 pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
                 pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),
                 pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_end_at"),

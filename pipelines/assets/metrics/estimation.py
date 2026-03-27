@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
         "clean_jira_field_keys",
     ],
     description="Calculate Estimation metrics",
+    metadata={
+        "grain": "mixed",
+        "unit": "mixed",
+        "calculation_logic": "See asset implementation and referenced calculation modules.",
+    },
     compute_kind="python",
 )
 def calculate_estimation_metrics(
@@ -125,12 +130,14 @@ def calculate_estimation_metrics(
                 pl.lit("issue").alias("entity_type"),
                 pl.col("issue_id").alias("entity_id"),
                 pl.lit(slice_rule_id).cast(pl.Utf8).alias("slice_rule_id"),
-                pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
-                if slice_value_col
-                else (
-                    pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
-                    if slice_value is not None
-                    else pl.lit(None).cast(pl.Utf8).alias("slice_value")
+                (
+                    pl.col(slice_value_col).cast(pl.Utf8).alias("slice_value")
+                    if slice_value_col
+                    else (
+                        pl.lit(slice_value).cast(pl.Utf8).alias("slice_value")
+                        if slice_value is not None
+                        else pl.lit(None).cast(pl.Utf8).alias("slice_value")
+                    )
                 ),
                 pl.lit(None).cast(pl.Utf8).alias("commitment_rule_id"),
                 pl.lit(None).cast(pl.Datetime("us", "UTC")).alias("event_start_at"),

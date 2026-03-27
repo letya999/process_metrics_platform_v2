@@ -9,7 +9,7 @@
 #   make format   - Auto-format code
 # =============================================================================
 
-.PHONY: help check dev test lint format validate migrate migrate-create migrate-down
+.PHONY: help check dev test lint lint-local format validate migrate migrate-create migrate-down
 .PHONY: docker-build docker-up docker-down docker-logs clean install
 
 # OS detection
@@ -50,6 +50,7 @@ help:
 	@echo "  make dev         - Start development environment (docker-compose up)"
 	@echo "  make test        - Run pytest with coverage"
 	@echo "  make lint        - Check code style (ruff + black)"
+	@echo "  make lint-local  - Check code style only for changed Python files"
 	@echo "  make format      - Auto-format code (ruff --fix + black)"
 	@echo "  make validate    - Run data validation checks"
 	@echo ""
@@ -107,6 +108,12 @@ lint:
 	$(PYTHON_BIN) -m ruff check app/ pipelines/ tests/
 	$(PYTHON_BIN) -m black --check app/ pipelines/ tests/
 	@echo "$(GREEN)Linting passed!$(NC)"
+
+## Check style for changed Python files only (local workflow)
+lint-local:
+	@echo "$(BLUE)Checking changed Python files...$(NC)"
+	$(PYTHON_BIN) scripts/lint_local.py
+	@echo "$(GREEN)Local lint complete!$(NC)"
 
 ## Auto-format code with ruff and black
 format:

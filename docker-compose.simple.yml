@@ -54,10 +54,10 @@ services:
       timeout: 5s
       retries: 5
     # ports:
-    #   - "5432:5432" # ВРЕМЕННО для отладки
+    #   - "5432:5432" # TEMPORARY for debugging
     networks:
       - internal
-    # НЕ открываем порт наружу!
+    # Do NOT expose port externally!
 
     # ===========================================================================
     # FastAPI App
@@ -68,7 +68,7 @@ services:
       dockerfile: Dockerfile
     container_name: app
     restart: unless-stopped
-    # НЕ открываем порт наружу - через Caddy
+    # Do NOT expose port externally - accessed via Caddy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       DAGSTER_GRAPHQL_URL: http://dagster:3000/graphql
@@ -85,7 +85,7 @@ services:
       timeout: 10s
       retries: 3
     # ports:
-    #   - "${APP_PORT:-8000}:8000" # ВРЕМЕННО через Caddy
+    #   - "${APP_PORT:-8000}:8000" # TEMPORARY via Caddy
     networks:
       - internal
     deploy:
@@ -130,7 +130,7 @@ services:
       dockerfile: Dockerfile.dagster
     container_name: dagster
     restart: unless-stopped
-    # НЕ открываем порт наружу - через Caddy
+    # Do NOT expose port externally - accessed via Caddy
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -158,7 +158,7 @@ services:
       retries: 3
       start_period: 60s
     # ports:
-    #   - "${DAGSTER_PORT:-3000}:3000" # ВРЕМЕННО через Caddy
+    #   - "${DAGSTER_PORT:-3000}:3000" # TEMPORARY via Caddy
     networks:
       - internal
     deploy:
@@ -173,7 +173,7 @@ services:
     image: metabase/metabase:latest
     container_name: metabase
     restart: unless-stopped
-    # НЕ открываем порт наружу - через Caddy
+    # Do NOT expose port externally - accessed via Caddy
     environment:
       MB_DB_TYPE: postgres
       MB_DB_DBNAME: ${POSTGRES_DB}
@@ -192,7 +192,7 @@ services:
       retries: 5
       start_period: 120s
     # ports:
-    #   - "${METABASE_PORT:-3001}:3000" # ВРЕМЕННО через Caddy
+    #   - "${METABASE_PORT:-3001}:3000" # TEMPORARY via Caddy
     networks:
       - internal
     deploy:

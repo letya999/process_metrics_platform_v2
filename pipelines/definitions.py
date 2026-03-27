@@ -30,6 +30,7 @@ from pipelines.assets.metrics import (
     flow_efficiency_data_quality_check,
     input_flow_data_quality_check,
     lead_time_data_quality_check,
+    metrics_metadata_contract_check,
     quality_data_quality_check,
     # New metrics checks
     sprint_health_data_quality_check,
@@ -87,6 +88,7 @@ asset_checks = [
     estimation_data_quality_check,
     input_flow_data_quality_check,
     aging_extended_data_quality_check,
+    metrics_metadata_contract_check,
 ]
 
 # Create Definitions

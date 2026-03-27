@@ -211,6 +211,19 @@ def upgrade() -> None:
 ### Never modify existing migrations
 Existing migrations in `versions/` are applied to production. Only add new ones. Editing an existing migration will cause Alembic head mismatch in environments where it's already applied.
 
+### Schema sync is mandatory (`migrations` + `db/schemas`)
+If you change database schema (tables, columns, constraints, indexes, views):
+1. Add Alembic migration in `db/migrations/versions/`.
+2. Update the corresponding canonical SQL file in `db/schemas/*.sql`.
+3. Add/update `COMMENT ON TABLE` / `COMMENT ON COLUMN` in English for changed objects.
+
+A migration without matching schema file update is considered incomplete.
+
+Example workflow:
+```text
+Change DB schema -> create migration -> update db/schemas/*.sql -> verify comments exist
+```
+
 ---
 
 ## Useful PostgreSQL Patterns
