@@ -18,12 +18,9 @@ project_partitions = DynamicPartitionsDefinition(name="jira_projects")
 
 
 def get_project_partition_keys() -> list[str]:
-    """Get list of enabled project keys.
+    """Get list of enabled project keys from platform.projects DB table.
 
-    Priority:
-    1. platform.projects in DB (via tool_integrations)
-    2. config/projects.yaml (legacy fallback)
-    3. JIRA_PROJECTS env var (last resort)
+    Falls back to JIRA_PROJECTS env var when DB is unreachable.
     """
     import os
 
@@ -31,15 +28,6 @@ def get_project_partition_keys() -> list[str]:
         from pipelines.utils.db_config import get_active_projects_from_db
 
         keys = [p.project_key for p in get_active_projects_from_db()]
-        if keys:
-            return keys
-    except Exception:  # noqa: S110
-        pass
-
-    try:
-        from config import get_enabled_projects
-
-        keys = [p.key for p in get_enabled_projects()]
         if keys:
             return keys
     except Exception:  # noqa: S110

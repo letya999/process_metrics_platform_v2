@@ -698,44 +698,12 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
             "details": results,
         }
 
-    # Legacy fallback: config/projects.yaml
-    base_url = None
-    email = None
-    api_token = None
-    projects = None
-
-    try:
-        from config import get_config, get_project_keys
-
-        config = get_config()
-        project_keys = get_project_keys()
-
-        if project_keys and config.jira_instances:
-            first_project = config.get_enabled_projects()[0]
-            instance = config.get_project_instance(first_project)
-
-            base_url = instance.base_url
-            email = instance.email
-            api_token = instance.get_api_token()
-            projects = project_keys
-
-            context.log.info(
-                f"Using config file: {len(projects)} projects from "
-                f"{first_project.jira_instance} instance"
-            )
-    except Exception as e:
-        context.log.info(f"Config file not available, falling back to env: {e}")
-
-    # Last resort: env vars
-    if not base_url:
-        base_url = os.getenv("JIRA_BASE_URL", "")
-    if not email:
-        email = os.getenv("JIRA_USER_EMAIL", "")
-    if not api_token:
-        api_token = os.getenv("JIRA_API_TOKEN", "")
-    if not projects:
-        projects_str = os.getenv("JIRA_PROJECTS", "")
-        projects = [p.strip() for p in projects_str.split(",") if p.strip()] or None
+    # Fallback: env vars (for local dev without DB)
+    base_url = os.getenv("JIRA_BASE_URL", "")
+    email = os.getenv("JIRA_USER_EMAIL", "")
+    api_token = os.getenv("JIRA_API_TOKEN", "")
+    projects_str = os.getenv("JIRA_PROJECTS", "")
+    projects = [p.strip() for p in projects_str.split(",") if p.strip()] or None
 
     if not all([base_url, email, api_token]):
         context.log.warning(
@@ -821,40 +789,13 @@ try:
             api_token = creds.api_token
             context.log.info(f"Using DB credentials for {project_key} via {base_url}")
         else:
-            # Legacy fallback: config/projects.yaml
-            try:
-                from config import get_config
-
-                config = get_config()
-                project = config.get_project(project_key)
-
-                if project is None:
-                    context.log.error(
-                        f"Project {project_key} not found in config or DB"
-                    )
-                    return {
-                        "status": "error",
-                        "reason": f"project_not_found: {project_key}",
-                    }
-
-                if not project.enabled:
-                    context.log.warning(f"Project {project_key} is disabled, skipping")
-                    return {"status": "skipped", "reason": "project_disabled"}
-
-                instance = config.get_project_instance(project)
-                base_url = instance.base_url
-                email = instance.email
-                api_token = instance.get_api_token()
-
-                context.log.info(
-                    f"Using config file for '{project.jira_instance}' / {project_key}"
-                )
-
-            except Exception as e:
-                context.log.warning(f"Config not available, using env vars: {e}")
-                base_url = os.getenv("JIRA_BASE_URL", "")
-                email = os.getenv("JIRA_USER_EMAIL", "")
-                api_token = os.getenv("JIRA_API_TOKEN", "")
+            # Fallback: env vars (for local dev without DB)
+            context.log.warning(
+                f"Project {project_key} not found in DB, falling back to env vars"
+            )
+            base_url = os.getenv("JIRA_BASE_URL", "")
+            email = os.getenv("JIRA_USER_EMAIL", "")
+            api_token = os.getenv("JIRA_API_TOKEN", "")
 
         if not all([base_url, email, api_token]):
             context.log.error("Jira credentials not configured")

@@ -31,43 +31,9 @@ def test_get_project_partition_keys_db_takes_priority(monkeypatch):
     assert keys == ["DB1", "DB2"]
 
 
-def test_get_project_partition_keys_falls_back_to_config_when_db_empty(monkeypatch):
-    """Falls back to config/ when DB returns no projects."""
-    import config
-    from config.schema import ProjectConfig
-
-    monkeypatch.delenv("JIRA_PROJECTS", raising=False)
-
-    enabled_projects = [
-        ProjectConfig(
-            key="YAML1",
-            name="Yaml Project",
-            jira_instance="default",
-            enabled=True,
-        )
-    ]
-    monkeypatch.setattr(config, "get_enabled_projects", lambda: enabled_projects)
-
-    with patch(
-        "pipelines.utils.db_config.get_active_projects_from_db", return_value=[]
-    ):
-        keys = partitions.get_project_partition_keys()
-
-    assert keys == ["YAML1"]
-
-
-def test_get_project_partition_keys_falls_back_to_env_when_db_and_config_fail(
-    monkeypatch,
-):
-    """Falls back to JIRA_PROJECTS env var when both DB and config fail."""
+def test_get_project_partition_keys_falls_back_to_env_when_db_empty(monkeypatch):
+    """Falls back to JIRA_PROJECTS env var when DB returns no projects."""
     monkeypatch.setenv("JIRA_PROJECTS", " ADS , , MKT ")
-
-    import config
-
-    def _raise_config():
-        raise RuntimeError("no config")
-
-    monkeypatch.setattr(config, "get_enabled_projects", _raise_config)
 
     with patch(
         "pipelines.utils.db_config.get_active_projects_from_db", return_value=[]
@@ -77,19 +43,16 @@ def test_get_project_partition_keys_falls_back_to_env_when_db_and_config_fail(
     assert keys == ["ADS", "MKT"]
 
 
-def test_get_project_partition_keys_reads_env_fallback(monkeypatch):
+def test_get_project_partition_keys_returns_empty_when_no_source(monkeypatch):
+    """Returns empty list when DB is empty and env var is unset."""
     monkeypatch.delenv("JIRA_PROJECTS", raising=False)
-    monkeypatch.setenv("JIRA_PROJECTS", " ADS , , MKT,CORE ")
 
-    def _raise():
-        raise RuntimeError("config module unavailable")
+    with patch(
+        "pipelines.utils.db_config.get_active_projects_from_db", return_value=[]
+    ):
+        keys = partitions.get_project_partition_keys()
 
-    import config
-
-    monkeypatch.setattr(config, "get_enabled_projects", _raise)
-
-    keys = partitions.get_project_partition_keys()
-    assert keys == ["ADS", "MKT", "CORE"]
+    assert keys == []
 
 
 def test_sync_project_partitions_sensor_skips_when_no_projects(monkeypatch):

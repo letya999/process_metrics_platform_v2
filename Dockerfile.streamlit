@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml ./
 COPY app ./app
 COPY pipelines ./pipelines
-COPY config ./config
 COPY streamlit_admin ./streamlit_admin
 
 RUN pip install --no-cache-dir -e . \
