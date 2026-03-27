@@ -34,14 +34,40 @@ def _table_exists(conn: Any, schema: str, table: str) -> bool:
     return bool(result)
 
 
-def _get_platform_project_id(conn: Any) -> str:
-    """Get the platform project ID dynamically."""
-    result = conn.execute(text("SELECT id::text FROM platform.projects LIMIT 1"))
+def _get_platform_project_id(conn: Any, project_key: str | None = None) -> str:
+    """Get the platform project ID.
+
+    If project_key is given, looks up by external_key.
+    Falls back to the oldest active row for backward compatibility with
+    single-project setups.
+    """
+    if project_key:
+        result = conn.execute(
+            text(
+                "SELECT id::text FROM platform.projects"
+                " WHERE external_key = :key AND is_active = true"
+                " LIMIT 1"
+            ),
+            {"key": project_key},
+        )
+        row = result.first()
+        if row:
+            return row[0]
+
+    # Fallback: oldest active project (deterministic, avoids random LIMIT 1)
+    result = conn.execute(
+        text(
+            "SELECT id::text FROM platform.projects"
+            " WHERE is_active = true"
+            " ORDER BY created_at"
+            " LIMIT 1"
+        )
+    )
     row = result.first()
     if not row:
         raise RuntimeError(
             "Platform project not found. "
-            "Ensure platform.projects has at least one entry."
+            "Ensure platform.projects has at least one active entry."
         )
     return row[0]
 

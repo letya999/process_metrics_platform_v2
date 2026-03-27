@@ -654,10 +654,51 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
     Data is loaded into the raw_jira schema via dlt merge/upsert semantics.
 
     Configuration sources (in priority order):
-    1. Config file (config/projects.yaml)
-    2. Environment variables (JIRA_BASE_URL, JIRA_PROJECTS, etc.)
+    1. platform.projects + platform.tool_integrations (DB)
+    2. config/projects.yaml (legacy fallback)
+    3. Environment variables (last resort)
     """
-    # Try config file first
+    from pipelines.utils.db_config import get_active_projects_from_db
+
+    db_projects = get_active_projects_from_db()
+
+    if db_projects:
+        context.log.info(f"DB config: {len(db_projects)} active projects")
+        # Group by instance_url so we run one dlt pipeline per instance
+        from collections import defaultdict
+
+        by_instance: dict[str, list] = defaultdict(list)
+        for p in db_projects:
+            by_instance[p.instance_url].append(p)
+
+        results = []
+        for instance_url, instance_projects in by_instance.items():
+            first = instance_projects[0]
+            project_keys = [p.project_key for p in instance_projects]
+            context.log.info(f"Syncing {project_keys} via {instance_url}")
+            for project_key in project_keys:
+                try:
+                    result = run_jira_pipeline(
+                        base_url=first.instance_url,
+                        email=first.user_email,
+                        api_token=first.api_token,
+                        projects=[project_key],
+                        pipeline_name=f"jira_raw_{project_key}",
+                    )
+                    results.append(result)
+                    context.log.info(
+                        f"Project {project_key} sync completed: {result['load_info']}"
+                    )
+                except Exception as e:
+                    context.log.error(f"Project {project_key} sync failed: {str(e)}")
+                    raise
+        return {
+            "status": "success",
+            "projects_synced": len(results),
+            "details": results,
+        }
+
+    # Legacy fallback: config/projects.yaml
     base_url = None
     email = None
     api_token = None
@@ -670,8 +711,6 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
         project_keys = get_project_keys()
 
         if project_keys and config.jira_instances:
-            # Get first enabled project's instance for credentials
-            # (all-projects sync uses first instance)
             first_project = config.get_enabled_projects()[0]
             instance = config.get_project_instance(first_project)
 
@@ -687,7 +726,7 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
     except Exception as e:
         context.log.info(f"Config file not available, falling back to env: {e}")
 
-    # Fallback to environment variables
+    # Last resort: env vars
     if not base_url:
         base_url = os.getenv("JIRA_BASE_URL", "")
     if not email:
@@ -701,7 +740,7 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
     if not all([base_url, email, api_token]):
         context.log.warning(
             "Jira credentials not configured. "
-            "Set up config/projects.yaml or environment variables."
+            "Add an integration via the admin UI or set environment variables."
         )
         return {"status": "skipped", "reason": "credentials_not_configured"}
 
@@ -771,39 +810,51 @@ try:
         project_key = context.partition_key
         context.log.info(f"Starting sync for project partition: {project_key}")
 
-        # Get project configuration
-        try:
-            from config import get_config
+        # Get project credentials - DB first, then config fallback, then env
+        from pipelines.utils.db_config import get_project_credentials
 
-            config = get_config()
-            project = config.get_project(project_key)
+        creds = get_project_credentials(project_key)
 
-            if project is None:
-                context.log.error(f"Project {project_key} not found in config")
-                return {
-                    "status": "error",
-                    "reason": f"project_not_found: {project_key}",
-                }
+        if creds:
+            base_url = creds.instance_url
+            email = creds.user_email
+            api_token = creds.api_token
+            context.log.info(f"Using DB credentials for {project_key} via {base_url}")
+        else:
+            # Legacy fallback: config/projects.yaml
+            try:
+                from config import get_config
 
-            if not project.enabled:
-                context.log.warning(f"Project {project_key} is disabled, skipping")
-                return {"status": "skipped", "reason": "project_disabled"}
+                config = get_config()
+                project = config.get_project(project_key)
 
-            instance = config.get_project_instance(project)
+                if project is None:
+                    context.log.error(
+                        f"Project {project_key} not found in config or DB"
+                    )
+                    return {
+                        "status": "error",
+                        "reason": f"project_not_found: {project_key}",
+                    }
 
-            base_url = instance.base_url
-            email = instance.email
-            api_token = instance.get_api_token()
+                if not project.enabled:
+                    context.log.warning(f"Project {project_key} is disabled, skipping")
+                    return {"status": "skipped", "reason": "project_disabled"}
 
-            context.log.info(
-                f"Using Jira instance '{project.jira_instance}' for {project_key}"
-            )
+                instance = config.get_project_instance(project)
+                base_url = instance.base_url
+                email = instance.email
+                api_token = instance.get_api_token()
 
-        except Exception as e:
-            context.log.warning(f"Config not available, using env vars: {e}")
-            base_url = os.getenv("JIRA_BASE_URL", "")
-            email = os.getenv("JIRA_USER_EMAIL", "")
-            api_token = os.getenv("JIRA_API_TOKEN", "")
+                context.log.info(
+                    f"Using config file for '{project.jira_instance}' / {project_key}"
+                )
+
+            except Exception as e:
+                context.log.warning(f"Config not available, using env vars: {e}")
+                base_url = os.getenv("JIRA_BASE_URL", "")
+                email = os.getenv("JIRA_USER_EMAIL", "")
+                api_token = os.getenv("JIRA_API_TOKEN", "")
 
         if not all([base_url, email, api_token]):
             context.log.error("Jira credentials not configured")

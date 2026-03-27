@@ -1537,9 +1537,235 @@ def _tab_slices_v2(client: AdminApiClient, token: str) -> None:
             show_error(exc)
 
 
+def _tab_integrations(client: AdminApiClient, token: str) -> None:
+    """Manage data source integrations and imported projects."""
+    section_title(
+        "Integrations", "Connect external tools and select projects to import."
+    )
+
+    me = st.session_state.get("me") or {}
+    user_id = me.get("user_id") or me.get("id")
+
+    # ── Create new integration ────────────────────────────────────────────
+    with st.expander("Add integration", expanded=False):
+        try:
+            int_types = client.request("GET", "/integration-types", token=token)
+        except Exception as exc:
+            show_error(exc)
+            int_types = []
+
+        type_options = {t["name"]: t["id"] for t in int_types if t.get("is_active")}
+        if not type_options:
+            st.info("No active integration types available.")
+        else:
+            with st.form("new_integration"):
+                selected_type_name = st.selectbox(
+                    "Integration type", list(type_options)
+                )
+                instance_url = st.text_input(
+                    "Instance URL",
+                    placeholder="https://yourcompany.atlassian.net",
+                    help="Leave blank only for SaaS tools where URL is fixed.",
+                )
+                user_email = st.text_input("Login email")
+                api_token = st.text_input("API token", type="password")
+                submitted = st.form_submit_button("Save", type="primary")
+
+            if submitted:
+                if not api_token:
+                    st.error("API token is required.")
+                elif not user_id:
+                    st.error("Cannot determine current user ID.")
+                else:
+                    try:
+                        client.request(
+                            "POST",
+                            "/integrations",
+                            token=token,
+                            params={"user_id": user_id},
+                            json={
+                                "integration_type_id": type_options[selected_type_name],
+                                "instance_url": instance_url or None,
+                                "user_email": user_email or None,
+                                "api_token": api_token,
+                                "secret_provider": "hardcoded",
+                            },
+                        )
+                        show_success("Integration saved.")
+                        st.rerun()
+                    except Exception as exc:
+                        show_error(exc)
+
+    st.divider()
+
+    # ── List existing integrations ────────────────────────────────────────
+    try:
+        integrations = client.request("GET", "/integrations", token=token)
+    except Exception as exc:
+        show_error(exc)
+        return
+
+    if not integrations:
+        st.info("No integrations configured yet. Add one above.")
+        return
+
+    int_options = {
+        f"{i['integration_type_name']} — {i['instance_url'] or 'cloud'} (id: {i['id'][:8]}…)": i
+        for i in integrations
+    }
+    selected_label = st.selectbox(
+        "Select integration", list(int_options), key="sel_integration"
+    )
+    integration = int_options[selected_label]
+    int_id = integration["id"]
+
+    _reset_form_state_on_edit_change(
+        "integrations",
+        int_id,
+        ["discovered_projects", "sel_jira_projects"],
+    )
+
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        active_toggle = st.toggle(
+            "Active",
+            value=integration["is_active"],
+            key=f"int_active_{int_id}",
+        )
+        if active_toggle != integration["is_active"]:
+            try:
+                client.request(
+                    "PUT",
+                    f"/integrations/{int_id}",
+                    token=token,
+                    json={"is_active": active_toggle},
+                )
+                st.rerun()
+            except Exception as exc:
+                show_error(exc)
+    with col2:
+        st.caption(
+            f"**URL:** {integration['instance_url'] or '—'}  |  "
+            f"**Email:** {integration['user_email'] or '—'}  |  "
+            f"**Last sync:** {integration['last_sync_status'] or 'never'}"
+        )
+
+    st.divider()
+
+    # ── Discover Jira projects ────────────────────────────────────────────
+    section_title("Import projects", "Fetch available projects from this integration.")
+
+    if st.button("Fetch Jira projects", key="btn_fetch_jira"):
+        with st.spinner("Connecting to Jira…"):
+            try:
+                discovered = client.request(
+                    "GET",
+                    f"/integrations/{int_id}/jira-projects",
+                    token=token,
+                )
+                st.session_state["discovered_projects"] = discovered
+            except Exception as exc:
+                show_error(exc)
+
+    discovered: list[dict[str, Any]] = st.session_state.get("discovered_projects") or []
+
+    if discovered:
+        not_imported = [p for p in discovered if not p.get("already_imported")]
+        already_imported = [p for p in discovered if p.get("already_imported")]
+
+        if not_imported:
+            options = [f"{p['key']} — {p['name']}" for p in not_imported]
+            selected_labels = st.multiselect(
+                f"Projects available to import ({len(not_imported)})",
+                options,
+                key="sel_jira_projects",
+            )
+
+            if selected_labels and st.button("Import selected", type="primary"):
+                key_to_project = {f"{p['key']} — {p['name']}": p for p in not_imported}
+                errors = []
+                imported_count = 0
+                for label in selected_labels:
+                    p = key_to_project[label]
+                    try:
+                        client.request(
+                            "POST",
+                            "/projects",
+                            token=token,
+                            params={"user_id": user_id},
+                            json={
+                                "tool_integration_id": int_id,
+                                "external_key": p["key"],
+                                "external_id": p["id"],
+                                "name": p["name"],
+                                "external_url": p.get("url"),
+                            },
+                        )
+                        imported_count += 1
+                    except Exception as exc:
+                        errors.append(f"{p['key']}: {exc}")
+
+                if imported_count:
+                    show_success(f"Imported {imported_count} project(s).")
+                for err in errors:
+                    st.error(err)
+                st.session_state.pop("discovered_projects", None)
+                st.rerun()
+
+        if already_imported:
+            st.caption(
+                f"Already imported: {', '.join(p['key'] for p in already_imported)}"
+            )
+
+    st.divider()
+
+    # ── Manage imported projects ──────────────────────────────────────────
+    section_title("Imported projects")
+    try:
+        projects = client.request(
+            "GET",
+            f"/projects?integration_id={int_id}",
+            token=token,
+        )
+    except Exception as exc:
+        show_error(exc)
+        return
+
+    if not projects:
+        st.info("No projects imported yet for this integration.")
+        return
+
+    for proj in projects:
+        pid = proj["id"]
+        c1, c2, c3 = st.columns([1, 3, 6])
+        with c1:
+            is_active = st.toggle(
+                "Active",
+                value=proj["is_active"],
+                key=f"proj_active_{pid}",
+                label_visibility="collapsed",
+            )
+            if is_active != proj["is_active"]:
+                try:
+                    client.request(
+                        "PUT",
+                        f"/projects/{pid}",
+                        token=token,
+                        json={"is_active": is_active},
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    show_error(exc)
+        with c2:
+            st.write(f"**{proj['external_key']}**")
+        with c3:
+            st.caption(proj["name"])
+
+
 def _page_configuration(client: AdminApiClient, token: str) -> None:
     tabs = st.tabs(
         [
+            "Integrations",
             "Metrics catalog",
             "Commitment",
             "Calc Settings",
@@ -1550,16 +1776,18 @@ def _page_configuration(client: AdminApiClient, token: str) -> None:
     )
 
     with tabs[0]:
-        _tab_metrics_catalog(client, token)
+        _tab_integrations(client, token)
     with tabs[1]:
-        _tab_commitment_v2(client, token)
+        _tab_metrics_catalog(client, token)
     with tabs[2]:
-        _tab_settings_v2(client, token)
+        _tab_commitment_v2(client, token)
     with tabs[3]:
-        _tab_units_v2(client, token)
+        _tab_settings_v2(client, token)
     with tabs[4]:
-        _tab_slices_v2(client, token)
+        _tab_units_v2(client, token)
     with tabs[5]:
+        _tab_slices_v2(client, token)
+    with tabs[6]:
         _tab_validate(client, token, None)
 
 

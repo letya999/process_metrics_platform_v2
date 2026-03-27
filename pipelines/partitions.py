@@ -18,23 +18,37 @@ project_partitions = DynamicPartitionsDefinition(name="jira_projects")
 
 
 def get_project_partition_keys() -> list[str]:
-    """Get list of enabled project keys from configuration.
+    """Get list of enabled project keys.
 
-    Returns:
-        List of project keys that should have partitions
+    Priority:
+    1. platform.projects in DB (via tool_integrations)
+    2. config/projects.yaml (legacy fallback)
+    3. JIRA_PROJECTS env var (last resort)
     """
+    import os
+
+    try:
+        from pipelines.utils.db_config import get_active_projects_from_db
+
+        keys = [p.project_key for p in get_active_projects_from_db()]
+        if keys:
+            return keys
+    except Exception:  # noqa: S110
+        pass
+
     try:
         from config import get_enabled_projects
 
-        return [p.key for p in get_enabled_projects()]
-    except Exception:
-        # Fallback to environment variable for backward compatibility
-        import os
+        keys = [p.key for p in get_enabled_projects()]
+        if keys:
+            return keys
+    except Exception:  # noqa: S110
+        pass
 
-        projects_str = os.getenv("JIRA_PROJECTS", "")
-        if projects_str:
-            return [p.strip() for p in projects_str.split(",") if p.strip()]
-        return []
+    projects_str = os.getenv("JIRA_PROJECTS", "")
+    if projects_str:
+        return [p.strip() for p in projects_str.split(",") if p.strip()]
+    return []
 
 
 @sensor(name="sync_project_partitions_sensor")

@@ -69,6 +69,16 @@ class IntegrationResponse(BaseModel):
     updated_at: datetime
 
 
+class JiraProjectDiscovery(BaseModel):
+    """A Jira project returned by the discovery endpoint."""
+
+    key: str
+    id: str
+    name: str
+    url: Optional[str] = None
+    already_imported: bool = False
+
+
 class SyncResponse(BaseModel):
     """Response schema for sync trigger."""
 

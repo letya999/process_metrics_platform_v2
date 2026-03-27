@@ -1,10 +1,80 @@
 """Unit tests for dynamic project partition helpers."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from dagster import SensorResult, SkipReason
 
 import pipelines.partitions as partitions
+from pipelines.utils.db_config import ProjectCredentials
+
+# ── DB-first priority ─────────────────────────────────────────────────────────
+
+
+def test_get_project_partition_keys_db_takes_priority(monkeypatch):
+    """DB projects override config/ and env vars."""
+    db_projects = [
+        ProjectCredentials(
+            "DB1", "DB Project 1", "i1", "https://jira.io", "u@e.com", "tok"
+        ),
+        ProjectCredentials(
+            "DB2", "DB Project 2", "i2", "https://jira.io", "u@e.com", "tok"
+        ),
+    ]
+    monkeypatch.setenv("JIRA_PROJECTS", "ENV1,ENV2")
+
+    with patch(
+        "pipelines.utils.db_config.get_active_projects_from_db",
+        return_value=db_projects,
+    ):
+        keys = partitions.get_project_partition_keys()
+
+    assert keys == ["DB1", "DB2"]
+
+
+def test_get_project_partition_keys_falls_back_to_config_when_db_empty(monkeypatch):
+    """Falls back to config/ when DB returns no projects."""
+    import config
+    from config.schema import ProjectConfig
+
+    monkeypatch.delenv("JIRA_PROJECTS", raising=False)
+
+    enabled_projects = [
+        ProjectConfig(
+            key="YAML1",
+            name="Yaml Project",
+            jira_instance="default",
+            enabled=True,
+        )
+    ]
+    monkeypatch.setattr(config, "get_enabled_projects", lambda: enabled_projects)
+
+    with patch(
+        "pipelines.utils.db_config.get_active_projects_from_db", return_value=[]
+    ):
+        keys = partitions.get_project_partition_keys()
+
+    assert keys == ["YAML1"]
+
+
+def test_get_project_partition_keys_falls_back_to_env_when_db_and_config_fail(
+    monkeypatch,
+):
+    """Falls back to JIRA_PROJECTS env var when both DB and config fail."""
+    monkeypatch.setenv("JIRA_PROJECTS", " ADS , , MKT ")
+
+    import config
+
+    def _raise_config():
+        raise RuntimeError("no config")
+
+    monkeypatch.setattr(config, "get_enabled_projects", _raise_config)
+
+    with patch(
+        "pipelines.utils.db_config.get_active_projects_from_db", return_value=[]
+    ):
+        keys = partitions.get_project_partition_keys()
+
+    assert keys == ["ADS", "MKT"]
 
 
 def test_get_project_partition_keys_reads_env_fallback(monkeypatch):

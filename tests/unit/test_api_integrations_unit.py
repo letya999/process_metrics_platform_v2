@@ -72,7 +72,7 @@ async def test_list_integrations_maps_type_name():
     db.execute.return_value = _scalars_result([integration])
 
     result = await integrations_api.list_integrations(
-        db=db, user_id=None, is_active=True
+        db=db, _admin=MagicMock(), user_id=None, is_active=True
     )
 
     assert len(result) == 1
@@ -87,6 +87,7 @@ async def test_create_integration_user_not_found():
     with pytest.raises(HTTPException) as exc:
         await integrations_api.create_integration(
             db=db,
+            _admin=MagicMock(),
             integration_data=IntegrationCreate(
                 integration_type_id=uuid4(),
                 instance_url="https://jira.local",
@@ -109,6 +110,7 @@ async def test_create_integration_type_not_found():
     with pytest.raises(HTTPException) as exc:
         await integrations_api.create_integration(
             db=db,
+            _admin=MagicMock(),
             integration_data=IntegrationCreate(
                 integration_type_id=uuid4(),
                 instance_url="https://jira.local",
@@ -149,6 +151,7 @@ async def test_create_integration_success_hardcoded_token():
 
     result = await integrations_api.create_integration(
         db=db,
+        _admin=MagicMock(),
         integration_data=IntegrationCreate(
             integration_type_id=integration_type_id,
             instance_url="https://jira.local",
@@ -192,6 +195,7 @@ async def test_create_integration_success_secret_reference():
 
     result = await integrations_api.create_integration(
         db=db,
+        _admin=MagicMock(),
         integration_data=IntegrationCreate(
             integration_type_id=integration_type_id,
             instance_url="https://gitlab.local",
@@ -215,7 +219,9 @@ async def test_trigger_sync_inactive_integration():
     db.execute.return_value = _scalar_result(integration)
 
     with pytest.raises(HTTPException) as exc:
-        await integrations_api.trigger_sync(db=db, integration_id=integration.id)
+        await integrations_api.trigger_sync(
+            db=db, integration_id=integration.id, _admin=MagicMock()
+        )
 
     assert exc.value.status_code == 400
     assert "not active" in exc.value.detail
@@ -247,7 +253,9 @@ async def test_trigger_sync_success_for_jira(monkeypatch):
 
     monkeypatch.setattr(integrations_api, "DagsterClient", lambda: _Client())
 
-    result = await integrations_api.trigger_sync(db=db, integration_id=integration.id)
+    result = await integrations_api.trigger_sync(
+        db=db, integration_id=integration.id, _admin=MagicMock()
+    )
 
     assert result.run_id == "r1"
     assert result.status == "STARTED"
@@ -273,7 +281,9 @@ async def test_trigger_sync_returns_500_for_launch_error(monkeypatch):
     monkeypatch.setattr(integrations_api, "DagsterClient", lambda: _Client())
 
     with pytest.raises(HTTPException) as exc:
-        await integrations_api.trigger_sync(db=db, integration_id=integration.id)
+        await integrations_api.trigger_sync(
+            db=db, integration_id=integration.id, _admin=MagicMock()
+        )
 
     assert exc.value.status_code == 500
     assert "Failed to trigger sync" in exc.value.detail
@@ -303,7 +313,7 @@ async def test_get_sync_status_success(monkeypatch):
     monkeypatch.setattr(integrations_api, "DagsterClient", lambda: _Client())
 
     result = await integrations_api.get_sync_status(
-        db=db, integration_id=integration.id, run_id="run-1"
+        db=db, integration_id=integration.id, run_id="run-1", _admin=MagicMock()
     )
 
     assert result.run_id == "run-1"
@@ -324,7 +334,7 @@ async def test_get_sync_status_run_not_found(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         await integrations_api.get_sync_status(
-            db=db, integration_id=integration.id, run_id="missing"
+            db=db, integration_id=integration.id, run_id="missing", _admin=MagicMock()
         )
 
     assert exc.value.status_code == 404
@@ -346,7 +356,7 @@ async def test_get_sync_status_unexpected_error_type(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         await integrations_api.get_sync_status(
-            db=db, integration_id=integration.id, run_id="run-1"
+            db=db, integration_id=integration.id, run_id="run-1", _admin=MagicMock()
         )
 
     assert exc.value.status_code == 500
@@ -362,6 +372,7 @@ async def test_update_integration_updates_token_for_hardcoded_provider():
     result = await integrations_api.update_integration(
         db=db,
         integration_id=integration.id,
+        _admin=MagicMock(),
         update_data=IntegrationUpdate(api_token="new-secret", is_active=False),
     )
 
@@ -369,3 +380,150 @@ async def test_update_integration_updates_token_for_hardcoded_provider():
     assert integration.api_token_unsafe == "new-secret"
     db.flush.assert_called_once()
     db.refresh.assert_called_once_with(integration)
+
+
+# ── list_jira_projects ────────────────────────────────────────────────────────
+
+
+def _make_httpx_response(status_code: int, json_data: dict):
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_data
+    resp.text = str(json_data)
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_list_jira_projects_not_found():
+    db = _make_db()
+    db.execute.return_value = _scalar_result(None)
+
+    with pytest.raises(HTTPException) as exc:
+        await integrations_api.list_jira_projects(
+            db=db, integration_id=uuid4(), _admin=MagicMock()
+        )
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_jira_projects_no_token_raises_422():
+    integration = _integration_obj(
+        api_token_unsafe=None,
+        secret_reference=None,
+        secret_provider=None,
+    )
+    db = _make_db()
+    db.execute.return_value = _scalar_result(integration)
+
+    with pytest.raises(HTTPException) as exc:
+        await integrations_api.list_jira_projects(
+            db=db, integration_id=uuid4(), _admin=MagicMock()
+        )
+
+    assert exc.value.status_code == 422
+    assert "token" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_list_jira_projects_no_instance_url_raises_422():
+    integration = _integration_obj(api_token_unsafe="tok", instance_url=None)
+    db = _make_db()
+    db.execute.return_value = _scalar_result(integration)
+
+    with pytest.raises(HTTPException) as exc:
+        await integrations_api.list_jira_projects(
+            db=db, integration_id=uuid4(), _admin=MagicMock()
+        )
+
+    assert exc.value.status_code == 422
+    assert "instance_url" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_list_jira_projects_jira_api_error_raises_502():
+    from unittest.mock import patch
+
+    integration = _integration_obj(
+        api_token_unsafe="tok", instance_url="https://jira.local"
+    )
+    db = _make_db()
+    db.execute.return_value = _scalar_result(integration)
+
+    bad_resp = MagicMock()
+    bad_resp.status_code = 401
+    bad_resp.text = "Unauthorized"
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=bad_resp)
+
+    with patch("app.api.integrations.httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(HTTPException) as exc:
+            await integrations_api.list_jira_projects(
+                db=db, integration_id=uuid4(), _admin=MagicMock()
+            )
+
+    assert exc.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_list_jira_projects_returns_projects_with_already_imported_flag(
+    monkeypatch,
+):
+    from unittest.mock import patch
+    from uuid import uuid4 as _uuid4
+
+    int_id = _uuid4()
+    integration = _integration_obj(
+        id=int_id,
+        api_token_unsafe="tok",
+        instance_url="https://jira.local",
+    )
+
+    jira_page = {
+        "values": [
+            {
+                "key": "ADS",
+                "id": "10001",
+                "name": "Ads Project",
+                "self": "https://jira.local/rest/api/3/project/10001",
+            },
+            {"key": "MKT", "id": "10002", "name": "Marketing", "self": None},
+        ],
+        "isLast": True,
+    }
+
+    jira_resp = MagicMock()
+    jira_resp.status_code = 200
+    jira_resp.json.return_value = jira_page
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get = AsyncMock(return_value=jira_resp)
+
+    # Simulate ADS (id=10001) already imported
+    imported_rows = MagicMock()
+    imported_rows.fetchall.return_value = [("10001",)]
+
+    db = _make_db()
+    # 1st execute: integration lookup, 2nd: imported project IDs
+    db.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(integration),
+            imported_rows,
+        ]
+    )
+
+    with patch("app.api.integrations.httpx.AsyncClient", return_value=mock_client):
+        result = await integrations_api.list_jira_projects(
+            db=db, integration_id=int_id, _admin=MagicMock()
+        )
+
+    assert len(result) == 2
+    ads = next(r for r in result if r.key == "ADS")
+    mkt = next(r for r in result if r.key == "MKT")
+    assert ads.already_imported is True
+    assert mkt.already_imported is False

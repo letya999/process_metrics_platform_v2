@@ -3,6 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from app.schemas.integration import (
     IntegrationResponse,
     IntegrationTypeResponse,
     IntegrationUpdate,
+    JiraProjectDiscovery,
     SyncResponse,
     SyncStatusResponse,
 )
@@ -242,6 +244,103 @@ async def delete_integration(
 
     await db.delete(integration)
     return None
+
+
+@router.get(
+    "/integrations/{integration_id}/jira-projects",
+    response_model=list[JiraProjectDiscovery],
+)
+async def list_jira_projects(
+    db: DBSession,
+    integration_id: UUID,
+    _admin: AdminDependency,
+):
+    """Fetch all Jira projects accessible via the integration credentials.
+
+    Also marks which projects are already imported into platform.projects.
+    """
+    import os
+
+    from sqlalchemy import select
+
+    from app.models.orm import Project
+
+    result = await db.execute(
+        select(ToolIntegration)
+        .options(selectinload(ToolIntegration.integration_type))
+        .where(ToolIntegration.id == integration_id)
+    )
+    integration = result.scalar_one_or_none()
+    if not integration:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Integration {integration_id} not found",
+        )
+
+    # Resolve API token
+    if (
+        integration.secret_provider == "env"  # noqa: S105
+        and integration.secret_reference
+    ):
+        api_token = os.getenv(integration.secret_reference, "")
+    elif integration.api_token_unsafe:
+        api_token = integration.api_token_unsafe
+    else:
+        api_token = ""
+
+    if not api_token:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Integration has no resolvable API token",
+        )
+
+    base_url = (integration.instance_url or "").rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Integration has no instance_url configured",
+        )
+
+    # Fetch project list from Jira
+    auth = (integration.user_email or "", api_token)
+    jira_projects: list[dict] = []
+    start_at = 0
+    max_results = 100
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            resp = await client.get(
+                f"{base_url}/rest/api/3/project/search",
+                params={"startAt": start_at, "maxResults": max_results},
+                auth=auth,
+            )
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Jira API returned {resp.status_code}: {resp.text[:200]}",
+                )
+            data = resp.json()
+            jira_projects.extend(data.get("values", []))
+            if data.get("isLast", True):
+                break
+            start_at += max_results
+
+    # Find already-imported external_ids for this integration
+    imported_result = await db.execute(
+        select(Project.external_id).where(Project.tool_integration_id == integration_id)
+    )
+    imported_ids = {row[0] for row in imported_result.fetchall()}
+
+    return [
+        JiraProjectDiscovery(
+            key=p["key"],
+            id=p["id"],
+            name=p["name"],
+            url=p.get("self"),
+            already_imported=p["id"] in imported_ids,
+        )
+        for p in jira_projects
+    ]
 
 
 @router.post("/integrations/{integration_id}/sync", response_model=SyncResponse)

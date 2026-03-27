@@ -984,23 +984,53 @@ class TestDetectSprintFieldId:
 class TestGetPlatformProjectId:
     """Tests for _get_platform_project_id guard behavior."""
 
-    def test_returns_id_when_row_exists(self):
-        """Verify successful retrieval of platform project ID."""
+    def test_returns_id_when_row_exists_no_key(self):
+        """Backward-compat: no project_key falls back to oldest active row."""
         conn = _SequencedConnection([_Result(first_value=("uuid-project-1",))])
         result = clean._get_platform_project_id(conn)
         assert result == "uuid-project-1"
 
+    def test_returns_id_by_project_key_when_found(self):
+        """With project_key, first query finds matching row."""
+        conn = _SequencedConnection([_Result(first_value=("uuid-by-key",))])
+        result = clean._get_platform_project_id(conn, project_key="ADS")
+        assert result == "uuid-by-key"
+
+    def test_falls_back_to_oldest_when_key_not_found(self):
+        """If project_key lookup returns nothing, falls back to fallback query."""
+        conn = _SequencedConnection(
+            [
+                _Result(first_value=None),  # key lookup misses
+                _Result(first_value=("fallback-id",)),  # fallback returns oldest
+            ]
+        )
+        result = clean._get_platform_project_id(conn, project_key="UNKNOWN")
+        assert result == "fallback-id"
+
     def test_raises_when_no_project(self):
         """Must raise RuntimeError when platform.projects is empty."""
+        conn = _SequencedConnection(
+            [
+                _Result(first_value=None),  # key lookup misses
+                _Result(first_value=None),  # fallback also empty
+            ]
+        )
+        with pytest.raises(RuntimeError, match="Platform project not found"):
+            clean._get_platform_project_id(conn, project_key="ADS")
+
+    def test_raises_without_key_when_table_empty(self):
+        """No-key call raises when table is empty."""
         conn = _SequencedConnection([_Result(first_value=None)])
         with pytest.raises(RuntimeError, match="Platform project not found"):
             clean._get_platform_project_id(conn)
 
     def test_error_message_is_actionable(self):
         """Error message must mention platform.projects so devs know where to look."""
-        conn = _SequencedConnection([_Result(first_value=None)])
+        conn = _SequencedConnection(
+            [_Result(first_value=None), _Result(first_value=None)]
+        )
         try:
-            clean._get_platform_project_id(conn)
+            clean._get_platform_project_id(conn, project_key="X")
         except RuntimeError as e:
             assert "platform.projects" in str(e)
 

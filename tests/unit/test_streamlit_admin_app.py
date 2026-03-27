@@ -111,10 +111,13 @@ def test_main_renders_tabs_when_authenticated(monkeypatch, fake_state):
 
     # Patch tabs to return enough tabs for _page_configuration
     monkeypatch.setattr(
-        admin_app.st, "tabs", lambda _labels: [nullcontext() for _ in range(6)]
+        admin_app.st, "tabs", lambda _labels: [nullcontext() for _ in range(7)]
     )
 
     called = []
+    monkeypatch.setattr(
+        admin_app, "_tab_integrations", lambda *_args: called.append("integrations")
+    )
     monkeypatch.setattr(
         admin_app, "_tab_metrics_catalog", lambda *_args: called.append("catalog")
     )
@@ -137,6 +140,7 @@ def test_main_renders_tabs_when_authenticated(monkeypatch, fake_state):
     admin_app.main()
 
     assert called == [
+        "integrations",
         "catalog",
         "commitment",
         "settings",
