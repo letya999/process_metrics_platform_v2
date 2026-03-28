@@ -46,6 +46,7 @@ async def test_get_and_update_metrics_config():
 
     updated = await metrics_api.update_metrics_config(
         db=db,
+        _admin=MagicMock(),
         integration_id=uuid4(),
         config_data=MetricConfigUpdate(done_statuses=["Done"], estimation_field="sp"),
     )
@@ -242,5 +243,5 @@ async def test_get_throughput_metrics_returns_empty_on_error():
 async def test_refresh_metrics_returns_accepted_message():
     """Verify that metrics refresh trigger returns success status."""
     db = _make_db()
-    response = await metrics_api.refresh_metrics(db=db)
+    response = await metrics_api.refresh_metrics(db=db, _admin=MagicMock())
     assert response["status"] == "success"

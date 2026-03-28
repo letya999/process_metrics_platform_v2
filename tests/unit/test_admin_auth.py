@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import bcrypt
+import pytest
 
 from app.services.admin_auth import (
     AdminSession,
@@ -11,6 +12,11 @@ from app.services.admin_auth import (
     revoke_token,
     verify_password,
 )
+
+
+@pytest.fixture(autouse=True)
+def _set_auth_secret(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SECRET_KEY", "unit-test-secret")
 
 
 def _session() -> AdminSession:

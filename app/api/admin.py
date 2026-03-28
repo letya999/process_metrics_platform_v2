@@ -161,7 +161,13 @@ async def admin_login(request: Request, payload: AdminLoginRequest, db: DBSessio
         is_admin=True,
         expires_at=datetime.now(UTC),
     )
-    token, expires_at = create_access_token(session)
+    try:
+        token, expires_at = create_access_token(session)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Admin auth is not configured",
+        ) from exc
     save_session(token, session)
 
     return AdminLoginResponse(

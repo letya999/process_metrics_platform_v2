@@ -22,6 +22,7 @@ from app.schemas.integration import (
     SyncStatusResponse,
 )
 from app.services.dagster_client import DagsterClient
+from app.services.url_safety import validate_and_normalize_instance_url
 
 router = APIRouter()
 
@@ -129,12 +130,24 @@ async def create_integration(
             detail=f"Integration type {integration_data.integration_type_id} not found",
         )
 
+    normalized_instance_url = None
+    if integration_data.instance_url:
+        try:
+            normalized_instance_url = validate_and_normalize_instance_url(
+                integration_data.instance_url
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid instance_url: {exc}",
+            ) from exc
+
     # Create integration
     # For dev/test, store token directly (in production, use secret_reference)
     integration = ToolIntegration(
         user_id=user_id,
         integration_type_id=integration_data.integration_type_id,
-        instance_url=integration_data.instance_url,
+        instance_url=normalized_instance_url,
         user_email=integration_data.user_email,
         secret_provider=integration_data.secret_provider,
     )
@@ -202,7 +215,18 @@ async def update_integration(
 
     # Update fields if provided
     if update_data.instance_url is not None:
-        integration.instance_url = update_data.instance_url
+        if update_data.instance_url:
+            try:
+                integration.instance_url = validate_and_normalize_instance_url(
+                    update_data.instance_url
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid instance_url: {exc}",
+                ) from exc
+        else:
+            integration.instance_url = None
     if update_data.user_email is not None:
         integration.user_email = update_data.user_email
     if update_data.is_active is not None:
@@ -300,6 +324,14 @@ async def list_jira_projects(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Integration has no instance_url configured",
         )
+
+    try:
+        base_url = validate_and_normalize_instance_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid instance_url: {exc}",
+        ) from exc
 
     # Fetch project list from Jira
     auth = (integration.user_email or "", api_token)

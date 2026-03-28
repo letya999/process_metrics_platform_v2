@@ -97,6 +97,25 @@ graph TD
 - **[Contributing Guide](CONTRIBUTING.md)**: Local setup and development workflow.
 - **[Security Policy](SECURITY.md)**: How to report vulnerabilities.
 
+## Security Migration Notes
+
+If you are upgrading to this version, review these environment variables:
+
+- `ADMIN_AUTH_SECRET` or `SECRET_KEY` (required for admin token signing).
+- `ADMIN_AUTH_TTL_MINUTES` (default `120`, allowed range `5..1440`).
+- `ADMIN_TOKENS_INVALID_BEFORE` (optional global token revocation cutover; unix timestamp or ISO8601).
+- `INTEGRATION_ALLOWED_URL_SCHEMES` (default `https`).
+- `INTEGRATION_ALLOWED_HOST_PATTERNS` (optional host glob allowlist for integration URLs).
+- `INTEGRATION_ALLOW_PRIVATE_IPS` (default `true`, useful for internal networks).
+- `INTEGRATION_ALLOW_LOCALHOST` (default `false`).
+
+Recommended baseline for closed internal deployments:
+
+- Keep `INTEGRATION_ALLOWED_URL_SCHEMES=https`.
+- Define `INTEGRATION_ALLOWED_HOST_PATTERNS` for known domains where possible.
+- Keep `INTEGRATION_ALLOW_LOCALHOST=false` unless explicitly required.
+- Set a non-empty `ADMIN_AUTH_SECRET` and rotate it on incident.
+
 ## 🤝 Contributing
 
 1. Fork the Project

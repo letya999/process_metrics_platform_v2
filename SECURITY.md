@@ -28,3 +28,14 @@ Instead, please report it privately:
 
 - **No Public Disclosure**: Do not disclose vulnerabilities publicly (e.g., via GitHub issues, social media, or blogs) before we have had a chance to fix them.
 - **Responsible Testing**: Only perform security testing on instances you own and control. Do not test against any production systems or cloud services.
+
+## Operational Security Baseline
+
+For internal/closed-network deployments, we recommend at minimum:
+
+- Set `ADMIN_AUTH_SECRET` (or `SECRET_KEY`) explicitly; do not rely on defaults.
+- Keep `ADMIN_AUTH_TTL_MINUTES` reasonably short (default `120`).
+- Use `ADMIN_TOKENS_INVALID_BEFORE` to revoke all existing admin tokens after incidents.
+- Keep `INTEGRATION_ALLOWED_URL_SCHEMES=https`.
+- Configure `INTEGRATION_ALLOWED_HOST_PATTERNS` when you know allowed providers/domains.
+- Keep `INTEGRATION_ALLOW_LOCALHOST=false` unless a localhost integration is explicitly required.

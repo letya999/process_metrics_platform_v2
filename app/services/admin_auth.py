@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import bcrypt
 
-DEFAULT_ADMIN_TOKEN_TTL_MINUTES = 480
+DEFAULT_ADMIN_TOKEN_TTL_MINUTES = 120
 
 
 @dataclass
@@ -32,11 +32,42 @@ def _b64url_decode(data: str) -> bytes:
 
 
 def _get_signing_secret() -> str:
-    return (
-        os.getenv("ADMIN_AUTH_SECRET")
-        or os.getenv("SECRET_KEY")
-        or "dev-insecure-secret-change-me"
-    )
+    secret = os.getenv("ADMIN_AUTH_SECRET") or os.getenv("SECRET_KEY")
+    if not secret:
+        raise RuntimeError("ADMIN_AUTH_SECRET or SECRET_KEY must be set")
+    return secret
+
+
+def _get_ttl_minutes(default: int = DEFAULT_ADMIN_TOKEN_TTL_MINUTES) -> int:
+    raw = os.getenv("ADMIN_AUTH_TTL_MINUTES")
+    if raw is None:
+        return default
+    try:
+        ttl = int(raw)
+    except ValueError:
+        return default
+    return max(5, min(ttl, 24 * 60))
+
+
+def _parse_invalid_before() -> datetime | None:
+    raw = os.getenv("ADMIN_TOKENS_INVALID_BEFORE", "").strip()
+    if not raw:
+        return None
+
+    # Supports unix timestamp or ISO-8601 datetime.
+    try:
+        return datetime.fromtimestamp(int(raw), tz=UTC)
+    except ValueError:
+        pass
+
+    try:
+        iso = raw.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(iso)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tz=UTC)
+        return parsed.astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def _sign(data: str) -> str:
@@ -55,6 +86,7 @@ def _serialize(session: AdminSession) -> str:
         "email": session.email,
         "name": session.display_name,
         "is_admin": session.is_admin,
+        "iat": int(datetime.now(UTC).timestamp()),
         "exp": int(session.expires_at.timestamp()),
     }
     encoded_header = _b64url_encode(
@@ -75,7 +107,10 @@ def _deserialize(token: str) -> AdminSession | None:
 
     encoded_header, encoded_payload, signature = parts
     signing_input = f"{encoded_header}.{encoded_payload}"
-    expected_signature = _sign(signing_input)
+    try:
+        expected_signature = _sign(signing_input)
+    except RuntimeError:
+        return None
     if not hmac.compare_digest(signature, expected_signature):
         return None
 
@@ -89,8 +124,13 @@ def _deserialize(token: str) -> AdminSession | None:
         return None
 
     try:
+        issued_at = datetime.fromtimestamp(int(payload.get("iat", 0)), tz=UTC)
         expires_at = datetime.fromtimestamp(int(payload["exp"]), tz=UTC)
         if expires_at < datetime.now(UTC):
+            return None
+
+        invalid_before = _parse_invalid_before()
+        if invalid_before and issued_at < invalid_before:
             return None
 
         return AdminSession(
@@ -107,7 +147,8 @@ def _deserialize(token: str) -> AdminSession | None:
 def create_access_token(
     session: AdminSession, ttl_minutes: int = DEFAULT_ADMIN_TOKEN_TTL_MINUTES
 ) -> tuple[str, datetime]:
-    expires_at = datetime.now(UTC) + timedelta(minutes=ttl_minutes)
+    configured_ttl = _get_ttl_minutes(ttl_minutes)
+    expires_at = datetime.now(UTC) + timedelta(minutes=configured_ttl)
     token = _serialize(
         AdminSession(
             user_id=session.user_id,

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.dependencies import AdminDependency
 from app.database import get_db
 from app.schemas.metrics import (
     LeadTimeItem,
@@ -53,6 +54,7 @@ async def get_metrics_config(
 @router.put("/metrics/config", response_model=MetricConfigResponse)
 async def update_metrics_config(
     db: DBSession,
+    _admin: AdminDependency,
     config_data: MetricConfigUpdate,
     integration_id: Annotated[
         UUID | None, Query(description="Integration ID to update config for")
@@ -403,7 +405,7 @@ async def get_throughput_metrics(
 
 
 @router.post("/metrics/refresh", status_code=status.HTTP_202_ACCEPTED)
-async def refresh_metrics(db: DBSession):
+async def refresh_metrics(db: DBSession, _admin: AdminDependency):
     """Trigger refresh of all metrics."""
     # No-op for standard views
     return {"message": "Metrics refresh initiated", "status": "success"}
