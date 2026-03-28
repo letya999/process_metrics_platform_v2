@@ -185,6 +185,40 @@ To add a new project: add it here, then run `raw_jira_data` asset.
 
 ---
 
+## Resetting the dlt Watermark (CRITICAL — read before touching state)
+
+**dlt stores watermark in TWO places simultaneously:**
+
+| Location | Path | Precedence |
+|---|---|---|
+| PostgreSQL | `raw_jira._dlt_pipeline_state` (MAX version row) | Remote |
+| Docker container file | `/home/dagster/.dlt/pipelines/<pipeline>/state.json` | Local |
+
+On `pipeline.sync_destination()`, dlt takes **MAX(local, remote)**. If the container file has a newer watermark, it silently wins — making any DB-only reset invisible to the next run.
+
+**Always reset BOTH with the script:**
+
+```bash
+python scripts/reset_dlt_watermark.py --all --date 2026-03-18
+# --container defaults to "dagster"; pass --container "" to skip Docker reset
+```
+
+The script:
+1. Reads latest state from `_dlt_pipeline_state`, patches `last_value + unique_hashes`, inserts new version row
+2. `docker exec dagster cat/write` the local state file with the same reset
+
+**Do NOT:**
+- Edit only the host machine's `~/.dlt/` files — Dagster runs in Docker with its own home dir
+- Insert DB state rows with `_dlt_load_id = '0'` — dlt ignores them (load_id must exist in `_dlt_loads`)
+- Encode state blobs with gzip (`wbits=15+16`) — dlt decompresses with plain `zlib.decompress()` (zlib format only); gzip causes `incorrect header check`
+
+**Symptoms of a stuck watermark:**
+- `raw_jira._dlt_loads` shows recent loads with 0 rows loaded
+- `raw_jira.issues` max `fields__updated` doesn't advance despite Jira having newer data
+- `clean_jira.issues` `jira_updated_at` frozen at an old date
+
+---
+
 ## Checking Raw Data Health
 
 ```python

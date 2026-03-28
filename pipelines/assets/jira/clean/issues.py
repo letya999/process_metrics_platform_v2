@@ -242,6 +242,23 @@ def clean_jira_issues(
         resolution_col = "ir.id" if has_resolution_id else "NULL::uuid"
 
         # C-4: Count dropped issues due to missing dimensions
+        # Check for issues with null/empty project ID - these are silently dropped by the JOIN
+        null_project_result = conn.execute(
+            text(
+                """
+            SELECT COUNT(*) FROM raw_jira.issues
+            WHERE fields__project__id IS NULL OR fields__project__id = ''
+            """
+            )
+        )
+        null_project_count = null_project_result.scalar() or 0
+        if null_project_count > 0:
+            context.log.warning(
+                f"{null_project_count} issues have empty fields__project__id in raw_jira.issues "
+                f"and will be dropped by the project JOIN. "
+                f"Check that 'project' is in the Jira API fields whitelist (raw.py default_fields)."
+            )
+
         drop_count_result = conn.execute(
             text(
                 """

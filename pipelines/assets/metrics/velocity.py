@@ -146,7 +146,7 @@ def calculate_velocity(
         SELECT DISTINCT s.id, s.project_id, s.name, s.start_date, s.end_date, s.complete_date, p.external_key AS project_key
         FROM clean_jira.sprints s
         JOIN clean_jira.projects p ON s.project_id = p.id
-        INNER JOIN clean_jira.sprint_issues si ON si.sprint_id = s.id AND si.is_active = true
+        INNER JOIN clean_jira.sprint_issues si ON si.sprint_id = s.id
         INNER JOIN clean_jira.issues i ON i.id = si.issue_id
         INNER JOIN clean_jira.issue_types it ON it.id = i.type_id
         WHERE s.start_date IS NOT NULL

@@ -10,7 +10,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 import dlt
-from dagster import AssetExecutionContext, asset
+from dagster import (
+    AssetCheckExecutionContext,
+    AssetCheckResult,
+    AssetExecutionContext,
+    asset,
+    asset_check,
+)
 from dlt.pipeline.exceptions import PipelineStepFailed
 from dlt.sources.helpers import requests
 from tenacity import (
@@ -44,6 +50,44 @@ def _get_http_timeout() -> tuple[float, float]:
     except (TypeError, ValueError):
         read_timeout = 60.0
     return (connect_timeout, read_timeout)
+
+
+def validate_jira_credentials(base_url: str, email: str, api_token: str) -> None:
+    """Verify Jira credentials before starting a sync.
+
+    Atlassian returns HTTP 200 even on auth failure, with the header
+    X-Seraph-Loginreason: AUTHENTICATED_FAILED and an empty result set.
+    Without this check, a bad token causes silent zero-row loads that are
+    indistinguishable from a legitimate empty result.
+
+    Raises:
+        ValueError: if credentials are empty or authentication fails.
+    """
+    if not all([base_url, email, api_token]):
+        raise ValueError(
+            "Jira credentials incomplete: base_url, email, and api_token are required."
+        )
+
+    resp = requests.get(
+        f"{base_url}/rest/api/3/project/search",
+        params={"maxResults": 1},
+        auth=(email, api_token),
+        timeout=_get_http_timeout(),
+    )
+
+    login_reason = resp.headers.get("X-Seraph-Loginreason", "")
+    if "AUTHENTICATED_FAILED" in login_reason or resp.status_code == 401:
+        raise ValueError(
+            f"Jira authentication failed (HTTP {resp.status_code}, "
+            f"X-Seraph-Loginreason: {login_reason}). "
+            "Check JIRA_API_TOKEN and JIRA_USER_EMAIL."
+        )
+
+    if resp.status_code not in (200, 403):
+        raise ValueError(
+            f"Unexpected Jira API response: HTTP {resp.status_code}. "
+            f"Response: {resp.text[:200]}"
+        )
 
 
 @retry(
@@ -265,7 +309,7 @@ def jira_source(
             "summary,description,issuetype,status,priority,assignee,reporter,creator,"
             "created,updated,resolutiondate,resolution,parent,subtasks,issuelinks,"
             "comment,worklog,labels,fixVersions,customfield_10020,customfield_10016,"
-            "customfield_10028"
+            "customfield_10028,project"
         )
         fields_to_fetch = os.getenv("JIRA_FIELDS_OVERRIDE", default_fields)
 
@@ -676,6 +720,15 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
             first = instance_projects[0]
             project_keys = [p.project_key for p in instance_projects]
             context.log.info(f"Syncing {project_keys} via {instance_url}")
+            try:
+                validate_jira_credentials(
+                    first.instance_url, first.user_email, first.api_token
+                )
+            except ValueError as exc:
+                context.log.error(
+                    f"Jira credential validation failed for {instance_url}: {exc}"
+                )
+                raise
             for project_key in project_keys:
                 try:
                     result = run_jira_pipeline(
@@ -711,6 +764,12 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
             "Add an integration via the admin UI or set environment variables."
         )
         return {"status": "skipped", "reason": "credentials_not_configured"}
+
+    try:
+        validate_jira_credentials(base_url, email, api_token)
+    except ValueError as exc:
+        context.log.error(f"Jira credential validation failed: {exc}")
+        raise
 
     context.log.info(f"Starting Jira sync for projects: {projects or 'all'}")
 
@@ -753,6 +812,37 @@ def raw_jira_data(context: AssetExecutionContext) -> dict[str, Any]:
             raise
 
     return {"status": "success", "projects_synced": len(results), "details": results}
+
+
+@asset_check(asset=raw_jira_data)
+def check_raw_issues_project_populated(
+    context: AssetCheckExecutionContext,
+    database,
+) -> AssetCheckResult:
+    """Verify every issue in raw_jira.issues has a non-empty fields__project__id.
+
+    Missing project IDs cause the clean layer JOIN to silently drop issues,
+    which freezes jira_updated_at in clean_jira.issues.
+    Root cause is usually a missing 'project' field in the Jira API whitelist.
+    """
+    from sqlalchemy import text
+
+    engine = database.get_engine()
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+            SELECT COUNT(*) FROM raw_jira.issues
+            WHERE fields__project__id IS NULL OR fields__project__id = ''
+            """
+            )
+        )
+        null_count = result.scalar() or 0
+
+    return AssetCheckResult(
+        passed=null_count == 0,
+        metadata={"issues_missing_project_id": null_count},
+    )
 
 
 # Import partitions for optional partitioned asset
