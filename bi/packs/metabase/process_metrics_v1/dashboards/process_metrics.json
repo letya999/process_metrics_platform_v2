@@ -1,0 +1,150 @@
+{
+  "key": "process_metrics",
+  "name": "Process Metrics Portfolio",
+  "description": "Unified dashboard for Sprint Health, Cycle Time, and Flow Dynamics",
+  "collection": "process_metrics",
+  "filters": [
+    {
+      "id": "project_key",
+      "name": "Project Key",
+      "slug": "project_key",
+      "type": "category",
+      "template_tag": "project_key"
+    },
+    {
+      "id": "date_range",
+      "name": "Date Range",
+      "slug": "date_range",
+      "type": "date/range",
+      "template_tag": "date_range"
+    },
+    {
+      "id": "completion_date",
+      "name": "Completion Date",
+      "slug": "completion_date",
+      "type": "date/range",
+      "template_tag": "completion_date"
+    },
+    {
+      "id": "issue_type",
+      "name": "Issue Type",
+      "slug": "issue_type",
+      "type": "category",
+      "template_tag": "issue_type"
+    },
+    {
+      "id": "sprint_name",
+      "name": "Sprint Name",
+      "slug": "sprint_name",
+      "type": "category",
+      "template_tag": "sprint_name"
+    }
+  ],
+  "layout": [
+    {
+      "card_key": "sprint_churn_rate",
+      "row": 0, "col": 0, "size_x": 6, "size_y": 4,
+      "filter_ids": ["project_key", "sprint_name", "issue_type"]
+    },
+    {
+      "card_key": "sprint_activation_velocity",
+      "row": 0, "col": 6, "size_x": 18, "size_y": 4,
+      "filter_ids": ["project_key", "sprint_name", "issue_type"]
+    },
+    {
+      "card_key": "velocity_sp",
+      "row": 4, "col": 0, "size_x": 12, "size_y": 6,
+      "filter_ids": ["project_key", "sprint_name", "date_range", "issue_type"]
+    },
+    {
+      "card_key": "sprint_burndown",
+      "row": 4, "col": 12, "size_x": 12, "size_y": 6,
+      "filter_ids": ["project_key", "sprint_name", "issue_type"]
+    },
+    {
+      "card_key": "sprint_scope_change",
+      "row": 10, "col": 0, "size_x": 24, "size_y": 6,
+      "filter_ids": ["project_key", "sprint_name", "issue_type"]
+    },
+    {
+      "card_key": "lead_time_percentiles",
+      "row": 16, "col": 0, "size_x": 24, "size_y": 3,
+      "filter_ids": ["project_key", "completion_date", "issue_type"]
+    },
+    {
+      "card_key": "lead_time_histogram",
+      "row": 19, "col": 0, "size_x": 12, "size_y": 6,
+      "filter_ids": ["project_key", "completion_date", "issue_type"]
+    },
+    {
+      "card_key": "cycle_time_histogram",
+      "row": 19, "col": 12, "size_x": 12, "size_y": 6,
+      "filter_ids": ["project_key", "completion_date", "issue_type"]
+    },
+    {
+      "card_key": "lead_time_scatter",
+      "row": 25, "col": 0, "size_x": 12, "size_y": 7,
+      "filter_ids": ["project_key", "completion_date", "issue_type"]
+    },
+    {
+      "card_key": "lead_time_weekly_trend",
+      "row": 25, "col": 12, "size_x": 12, "size_y": 7,
+      "filter_ids": ["project_key", "completion_date", "issue_type"]
+    },
+    {
+      "card_key": "flow_time_breakdown",
+      "row": 32, "col": 0, "size_x": 14, "size_y": 6,
+      "filter_ids": ["project_key", "completion_date", "issue_type"]
+    },
+    {
+      "card_key": "flow_efficiency_weekly",
+      "row": 32, "col": 14, "size_x": 10, "size_y": 6,
+      "filter_ids": ["project_key", "completion_date", "issue_type"]
+    },
+    {
+      "card_key": "backlog_stale_kpis",
+      "row": 38, "col": 0, "size_x": 8, "size_y": 4,
+      "filter_ids": ["project_key", "date_range", "issue_type"]
+    },
+    {
+      "card_key": "avg_flow_efficiency",
+      "row": 38, "col": 8, "size_x": 6, "size_y": 4,
+      "filter_ids": ["project_key", "completion_date", "issue_type"]
+    },
+    {
+      "card_key": "throughput_weekly",
+      "row": 38, "col": 14, "size_x": 10, "size_y": 4,
+      "filter_ids": ["project_key", "date_range", "issue_type"]
+    },
+    {
+      "card_key": "backlog_size_age",
+      "row": 42, "col": 0, "size_x": 12, "size_y": 6,
+      "filter_ids": ["project_key", "date_range", "issue_type"]
+    },
+    {
+      "card_key": "backlog_dynamics_weekly",
+      "row": 42, "col": 12, "size_x": 12, "size_y": 6,
+      "filter_ids": ["project_key", "date_range", "issue_type"]
+    },
+    {
+      "card_key": "backflow_rate_weekly",
+      "row": 48, "col": 0, "size_x": 10, "size_y": 5,
+      "filter_ids": ["project_key", "date_range", "issue_type"]
+    },
+    {
+      "card_key": "cfd_30_days",
+      "row": 48, "col": 10, "size_x": 14, "size_y": 5,
+      "filter_ids": ["project_key", "date_range"]
+    },
+    {
+      "card_key": "wip_aging",
+      "row": 53, "col": 0, "size_x": 24, "size_y": 7,
+      "filter_ids": ["project_key", "date_range"]
+    },
+    {
+      "card_key": "backlog_health",
+      "row": 60, "col": 0, "size_x": 24, "size_y": 6,
+      "filter_ids": ["project_key", "date_range"]
+    }
+  ]
+}

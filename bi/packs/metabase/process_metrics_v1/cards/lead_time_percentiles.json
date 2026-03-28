@@ -1,0 +1,13 @@
+{
+  "key": "lead_time_percentiles",
+  "collection": "process_metrics",
+  "name": "Lead Time Percentiles (P50 / P75 / P90)",
+  "display": "table",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "completion_date": "metrics.v_facts.event_end_at",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "SELECT\n    ROUND(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY v_facts.value)::numeric, 1) AS p50_days,\n    ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY v_facts.value)::numeric, 1) AS p75_days,\n    ROUND(PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY v_facts.value)::numeric, 1) AS p90_days\nFROM metrics.v_facts\nWHERE v_facts.calc_code = 'lead_time_days'\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{completion_date}}]]",
+  "visualization_settings": {}
+}

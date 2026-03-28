@@ -1,0 +1,13 @@
+{
+  "key": "backlog_stale_kpis",
+  "collection": "process_metrics",
+  "name": "Backlog: Stale % & Oldest Issue",
+  "display": "table",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "date_range": "metrics.v_facts.full_date",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "WITH latest_snapshot AS (\n    SELECT MAX(v_facts.full_date) AS max_date\n    FROM metrics.v_facts\n    WHERE v_facts.calc_code IN ('backlog_stale_pct', 'backlog_oldest_days')\n      [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n      [[AND {{project_key}}]]\n      [[AND {{date_range}}]]\n)\nSELECT\n    ROUND(MAX(CASE WHEN v_facts.calc_code = 'backlog_stale_pct' THEN v_facts.value ELSE 0 END)::numeric, 1) AS stale_pct,\n    MAX(CASE WHEN v_facts.calc_code = 'backlog_oldest_days' THEN v_facts.value ELSE 0 END)::integer AS oldest_days\nFROM metrics.v_facts\nJOIN latest_snapshot ls ON v_facts.full_date = ls.max_date\nWHERE v_facts.calc_code IN ('backlog_stale_pct', 'backlog_oldest_days')\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]",
+  "visualization_settings": {}
+}

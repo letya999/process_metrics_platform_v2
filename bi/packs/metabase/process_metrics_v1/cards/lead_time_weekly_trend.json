@@ -1,0 +1,23 @@
+{
+  "key": "lead_time_weekly_trend",
+  "collection": "process_metrics",
+  "name": "Lead Time Weekly Trend (P50, P85, Geom. Mean)",
+  "display": "line",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "completion_date": "metrics.v_facts.event_end_at",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "WITH weekly_stats AS (\n    SELECT\n        DATE_TRUNC('week', v_facts.event_end_at)::date AS week_start,\n        EXP(AVG(LN(NULLIF(v_facts.value, 0)))) AS geometric_mean_days,\n        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY v_facts.value) AS median_days,\n        PERCENTILE_CONT(0.85) WITHIN GROUP (ORDER BY v_facts.value) AS p85_days\n    FROM metrics.v_facts\n    WHERE v_facts.calc_code = 'lead_time_days'\n      [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n      [[AND {{project_key}}]]\n      [[AND {{completion_date}}]]\n    GROUP BY DATE_TRUNC('week', v_facts.event_end_at)::date\n)\nSELECT\n    week_start,\n    geometric_mean_days,\n    median_days,\n    p85_days,\n    AVG(median_days) OVER (\n        ORDER BY week_start\n        ROWS BETWEEN 3 PRECEDING AND CURRENT ROW\n    ) AS rolling_4w_median\nFROM weekly_stats\nORDER BY week_start ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["week_start"],
+    "graph.metrics": ["median_days", "p85_days", "geometric_mean_days", "rolling_4w_median"],
+    "graph.colors": ["#84BB4C", "#F9CF48", "#509EE3", "#9B9B9B"],
+    "series_settings": {
+      "median_days": { "title": "P50 Median", "display": "line" },
+      "p85_days": { "title": "P85", "display": "line" },
+      "geometric_mean_days": { "title": "Geom. Mean", "display": "line" },
+      "rolling_4w_median": { "title": "4W Rolling Median", "display": "line" }
+    }
+  }
+}

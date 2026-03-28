@@ -1,0 +1,24 @@
+{
+  "key": "backlog_dynamics_weekly",
+  "collection": "process_metrics",
+  "name": "Backlog Dynamics (Created / Resolved / Net)",
+  "display": "bar",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "date_range": "metrics.v_facts.full_date",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "SELECT\n    DATE_TRUNC('week', v_facts.full_date)::date AS week_start,\n    COALESCE(SUM(CASE WHEN v_facts.calc_code = 'backlog_created' THEN v_facts.value ELSE 0 END), 0) AS created_count,\n    COALESCE(SUM(CASE WHEN v_facts.calc_code = 'backlog_resolved' THEN (v_facts.value * -1) ELSE 0 END), 0) AS resolved_count,\n    COALESCE(SUM(CASE WHEN v_facts.calc_code = 'backlog_net_growth' THEN v_facts.value ELSE 0 END), 0) AS net_growth\nFROM metrics.v_facts\nWHERE v_facts.calc_code IN ('backlog_created', 'backlog_resolved', 'backlog_net_growth')\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{date_range}}]]\nGROUP BY DATE_TRUNC('week', v_facts.full_date)::date\nORDER BY week_start ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["week_start"],
+    "graph.metrics": ["created_count", "resolved_count", "net_growth"],
+    "graph.colors": ["#84BB4C", "#EF8C8C", "#2D86D9"],
+    "graph.goal_value": 0,
+    "graph.goal_label": "Break Even",
+    "series_settings": {
+      "created_count": { "display": "bar", "title": "Created" },
+      "resolved_count": { "display": "bar", "title": "Resolved" },
+      "net_growth": { "display": "line", "title": "Net Growth" }
+    }
+  }
+}

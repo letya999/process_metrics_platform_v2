@@ -4,7 +4,16 @@
   "name": "Velocity (Planned vs Completed Story Points)",
   "description": "Last 10 sprints planned versus completed story points",
   "display": "bar",
-  "query": "WITH sprint_velocity AS (SELECT COALESCE(entity_id, full_date::text) AS sprint_key, MAX(full_date) AS sprint_date, SUM(CASE WHEN calc_code = 'velocity_planned_sp' THEN value ELSE 0 END) AS planned_story_points, SUM(CASE WHEN calc_code = 'velocity_completed_sp' THEN value ELSE 0 END) AS completed_story_points FROM metrics.v_facts WHERE calc_code IN ('velocity_planned_sp', 'velocity_completed_sp') AND slice_rule_name IS NULL [[ AND project_key = {{project_key}} ]] [[ AND full_date >= {{date_from}} ]] [[ AND full_date <= {{date_to}} ]] GROUP BY COALESCE(entity_id, full_date::text)) SELECT sprint_key AS sprint_name, planned_story_points, completed_story_points FROM sprint_velocity ORDER BY sprint_date DESC NULLS LAST LIMIT 10",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "date_range": "metrics.v_facts.full_date",
+    "issue_type": "metrics.v_facts.slice_value",
+    "sprint_name": "clean_jira.sprints.name"
+  },
+  "template_tags": {
+    "sprint_start_date": { "type": "date" }
+  },
+  "query": "WITH sprint_velocity AS (\n    SELECT\n        COALESCE(v_facts.entity_id, v_facts.full_date::text) AS sprint_key,\n        MAX(v_facts.full_date) AS sprint_date,\n        SUM(CASE WHEN v_facts.calc_code = 'velocity_planned_sp' THEN v_facts.value ELSE 0 END) AS planned_story_points,\n        SUM(CASE WHEN v_facts.calc_code = 'velocity_completed_sp' THEN v_facts.value ELSE 0 END) AS completed_story_points\n    FROM metrics.v_facts\n    LEFT JOIN clean_jira.sprints ON v_facts.entity_id = sprints.id::text AND v_facts.entity_type = 'sprint'\n    WHERE v_facts.calc_code IN ('velocity_planned_sp', 'velocity_completed_sp')\n      [[AND {{project_key}}]]\n      [[AND {{date_range}}]]\n      [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n      [[AND {{sprint_name}}]]\n      [[ AND sprints.start_date::date >= {{sprint_start_date}} ]]\n    GROUP BY COALESCE(v_facts.entity_id, v_facts.full_date::text)\n)\nSELECT\n    sprint_key AS sprint_name,\n    planned_story_points,\n    completed_story_points\nFROM sprint_velocity\nORDER BY sprint_date DESC NULLS LAST\nLIMIT 10",
   "visualization_settings": {
     "graph.dimensions": ["sprint_name"],
     "graph.metrics": ["planned_story_points", "completed_story_points"]

@@ -1,0 +1,22 @@
+{
+  "key": "flow_time_breakdown",
+  "collection": "process_metrics",
+  "name": "Flow Time: Active vs Wait per Issue (Top 20)",
+  "display": "bar",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "completion_date": "metrics.v_facts.event_end_at",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "SELECT\n    v_facts.entity_id AS issue_key,\n    COALESCE(SUM(CASE WHEN v_facts.calc_code = 'flow_active_days' THEN v_facts.value ELSE 0 END), 0) AS active_days,\n    COALESCE(SUM(CASE WHEN v_facts.calc_code = 'flow_wait_days' THEN v_facts.value ELSE 0 END), 0) AS wait_days,\n    MAX(v_facts.event_end_at) AS closed_at_sort\nFROM metrics.v_facts\nWHERE v_facts.calc_code IN ('flow_active_days', 'flow_wait_days')\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{completion_date}}]]\nGROUP BY v_facts.entity_id\nORDER BY MAX(v_facts.event_end_at) DESC\nLIMIT 20",
+  "visualization_settings": {
+    "graph.dimensions": ["issue_key"],
+    "graph.metrics": ["active_days", "wait_days"],
+    "graph.colors": ["#84BB4C", "#EF8C8C"],
+    "stackable.stack_type": "stacked",
+    "series_settings": {
+      "active_days": { "title": "Active (Work)" },
+      "wait_days": { "title": "Wait (Queue/Block)" }
+    }
+  }
+}

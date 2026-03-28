@@ -122,6 +122,7 @@ def test_provision_pack_happy_path(
             ("GET", "/api/database"): [[]],
             ("POST", "/api/database"): [{"id": 7}],
             ("POST", "/api/database/7/sync_schema"): [{"ok": True}],
+            ("GET", "/api/database/7/metadata?include_hidden=true"): [{"tables": []}],
             ("GET", "/api/collection"): [[]],
             ("POST", "/api/collection"): [{"id": 11}],
             ("GET", "/api/card"): [[]],
@@ -255,7 +256,7 @@ def test_build_filter_mappings_for_card_uses_template_tags() -> None:
             "template_tag": "date_from",
         },
     ]
-    mappings = MetabaseProvider._build_filter_mappings({}, 57, filters)
+    mappings = MetabaseProvider._build_filter_mappings({}, 57, filters, set())
     assert mappings == [
         {
             "parameter_id": "project_key",
@@ -275,7 +276,8 @@ def test_build_native_query_payload_infers_template_tags() -> None:
     payload = provider._build_native_query_payload(
         {
             "query": "SELECT * FROM metrics.v_facts WHERE 1=1 [[ AND project_key = {{project_key}} ]] [[ AND full_date >= {{date_from}} ]]",
-        }
+        },
+        field_id_map={},
     )
     assert "template-tags" in payload
     assert payload["template-tags"]["project_key"]["type"] == "text"

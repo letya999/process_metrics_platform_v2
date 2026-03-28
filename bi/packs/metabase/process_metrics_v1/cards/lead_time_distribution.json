@@ -4,7 +4,11 @@
   "name": "Lead Time Distribution",
   "description": "Lead time in days for completed work items",
   "display": "scatter",
-  "query": "SELECT full_date AS completed_date, value AS lead_time_days, COALESCE(slice_value, 'all') AS issue_type FROM metrics.v_facts WHERE calc_code = 'lead_time_days' [[ AND project_key = {{project_key}} ]] [[ AND full_date >= {{date_from}} ]] [[ AND full_date <= {{date_to}} ]] ORDER BY full_date DESC LIMIT 500",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "completion_date": "metrics.v_facts.event_end_at"
+  },
+  "query": "SELECT\n    v_facts.full_date AS completed_date,\n    v_facts.value AS lead_time_days,\n    COALESCE(v_facts.slice_value, 'all') AS issue_type\nFROM metrics.v_facts\nWHERE v_facts.calc_code = 'lead_time_days'\n  AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{completion_date}}]]\nORDER BY v_facts.full_date DESC\nLIMIT 500",
   "visualization_settings": {
     "graph.dimensions": ["completed_date"],
     "graph.metrics": ["lead_time_days"],

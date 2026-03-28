@@ -1,0 +1,19 @@
+{
+  "key": "cycle_time_histogram",
+  "collection": "process_metrics",
+  "name": "Cycle Time Distribution (Histogram)",
+  "display": "bar",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "completion_date": "metrics.v_facts.event_end_at",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "SELECT\n    FLOOR(v_facts.value)::integer AS cycle_time_days,\n    COUNT(v_facts.entity_id) AS issue_count\nFROM metrics.v_facts\nWHERE v_facts.calc_code = 'cycle_time_custom'\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{completion_date}}]]\nGROUP BY FLOOR(v_facts.value)::integer\nORDER BY cycle_time_days ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["cycle_time_days"],
+    "graph.metrics": ["issue_count"],
+    "graph.colors": ["#7172AD"],
+    "graph.x_axis.title_text": "Cycle Time (days)",
+    "graph.y_axis.title_text": "Issues"
+  }
+}

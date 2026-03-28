@@ -1,0 +1,20 @@
+{
+  "key": "flow_efficiency_weekly",
+  "collection": "process_metrics",
+  "name": "Flow Efficiency % (Weekly)",
+  "display": "line",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "completion_date": "metrics.v_facts.event_end_at",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "SELECT\n    DATE_TRUNC('week', v_facts.event_end_at)::date AS week_start,\n    ROUND(AVG(v_facts.value)::numeric, 1) AS flow_efficiency_pct\nFROM metrics.v_facts\nWHERE v_facts.calc_code = 'flow_efficiency_pct'\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{completion_date}}]]\nGROUP BY DATE_TRUNC('week', v_facts.event_end_at)::date\nORDER BY week_start ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["week_start"],
+    "graph.metrics": ["flow_efficiency_pct"],
+    "graph.colors": ["#2D86D9"],
+    "graph.goal_value": 40,
+    "graph.goal_label": "Industry Benchmark (40%)",
+    "graph.y_axis.title_text": "Flow Efficiency %"
+  }
+}

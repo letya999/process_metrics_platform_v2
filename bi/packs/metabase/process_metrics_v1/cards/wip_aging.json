@@ -1,0 +1,15 @@
+{
+  "key": "wip_aging",
+  "collection": "process_metrics",
+  "name": "WIP Aging",
+  "display": "table",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "date_range": "metrics.v_facts.full_date"
+  },
+  "template_tags": {
+    "issue_type": { "type": "text" }
+  },
+  "query": "SELECT\n    v_facts.entity_id AS issue_key,\n    v_facts.value AS age_days,\n    stat.name AS current_status,\n    itype.name AS issue_type,\n    v_facts.context_json->>'assignee' AS assignee\nFROM metrics.v_facts\nLEFT JOIN clean_jira.issues i ON v_facts.entity_id = i.external_key\nLEFT JOIN clean_jira.issue_statuses stat ON i.status_id = stat.id\nLEFT JOIN clean_jira.issue_types itype ON i.type_id = itype.id\nWHERE v_facts.calc_code = 'aging_days'\n  [[AND {{project_key}}]]\n  [[AND {{date_range}}]]\n  [[ AND itype.name = {{issue_type}} ]]\nORDER BY v_facts.value DESC",
+  "visualization_settings": {}
+}

@@ -1,0 +1,16 @@
+{
+  "key": "sprint_churn_rate",
+  "collection": "process_metrics",
+  "name": "Sprint Churn Rate %",
+  "display": "scalar",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "issue_type": "metrics.v_facts.slice_value",
+    "sprint_name": "clean_jira.sprints.name"
+  },
+  "template_tags": {
+    "sprint_start_date": { "type": "date" }
+  },
+  "query": "SELECT\n    ROUND(\n        (\n            (\n                COALESCE(SUM(CASE WHEN v_facts.calc_code = 'sprint_added_sp_sum' THEN v_facts.value ELSE 0 END), 0) +\n                COALESCE(SUM(CASE WHEN v_facts.calc_code = 'sprint_removed_sp_sum' THEN ABS(v_facts.value) ELSE 0 END), 0)\n            )\n            / NULLIF(SUM(CASE WHEN v_facts.calc_code = 'velocity_planned_sp' THEN v_facts.value ELSE 0 END), 0)\n            * 100\n        )::numeric\n    , 1) AS churn_rate_pct\nFROM metrics.v_facts\nLEFT JOIN clean_jira.sprints\n  ON v_facts.entity_id = sprints.id::text\n  AND v_facts.entity_type = 'sprint'\nWHERE v_facts.calc_code IN ('sprint_added_sp_sum', 'sprint_removed_sp_sum', 'velocity_planned_sp')\n  [[AND {{project_key}}]]\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{sprint_name}}]]\n  [[ AND sprints.start_date::date >= {{sprint_start_date}} ]]",
+  "visualization_settings": {}
+}

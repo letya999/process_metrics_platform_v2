@@ -1,0 +1,19 @@
+{
+  "key": "lead_time_scatter",
+  "collection": "process_metrics",
+  "name": "Lead Time Scatterplot",
+  "display": "scatter",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "completion_date": "metrics.v_facts.event_end_at",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "SELECT\n    v_facts.event_end_at,\n    v_facts.value AS lead_time_days,\n    v_facts.entity_id AS issue_key,\n    COALESCE(v_facts.slice_value, 'Unspecified') AS issue_type\nFROM metrics.v_facts\nWHERE v_facts.calc_code = 'lead_time_days'\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{completion_date}}]]\nORDER BY v_facts.event_end_at ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["event_end_at"],
+    "graph.metrics": ["lead_time_days"],
+    "graph.series_order_dimension": "issue_type",
+    "graph.x_axis.title_text": "Completed Date",
+    "graph.y_axis.title_text": "Lead Time (days)"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "key": "backlog_size_age",
+  "collection": "process_metrics",
+  "name": "Backlog Size & Avg Age Over Time",
+  "display": "line",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "date_range": "metrics.v_facts.full_date",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "SELECT\n    v_facts.full_date AS report_date,\n    MAX(CASE WHEN v_facts.calc_code = 'backlog_size' THEN v_facts.value ELSE 0 END) AS backlog_size,\n    MAX(CASE WHEN v_facts.calc_code = 'backlog_avg_age_days' THEN v_facts.value ELSE 0 END) AS avg_age_days\nFROM metrics.v_facts\nWHERE v_facts.calc_code IN ('backlog_size', 'backlog_avg_age_days')\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{date_range}}]]\nGROUP BY v_facts.full_date\nORDER BY v_facts.full_date ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["report_date"],
+    "graph.metrics": ["backlog_size", "avg_age_days"],
+    "graph.colors": ["#509EE3", "#F9CF48"],
+    "series_settings": {
+      "backlog_size": { "display": "area", "title": "Backlog Size" },
+      "avg_age_days": { "display": "line", "title": "Avg Age (days)", "axis": "right" }
+    }
+  }
+}

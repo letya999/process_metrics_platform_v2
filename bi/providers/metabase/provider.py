@@ -48,8 +48,12 @@ class MetabaseProvider:
 
         db_id = self._ensure_database()
         collection_ids = self._ensure_collections(pack_dir)
-        card_ids = self._upsert_cards(pack_dir, db_id, collection_ids)
-        self._upsert_dashboards(pack_dir, collection_ids, card_ids)
+        card_ids, card_field_filter_tags = self._upsert_cards(
+            pack_dir, db_id, collection_ids
+        )
+        self._upsert_dashboards(
+            pack_dir, collection_ids, card_ids, card_field_filter_tags
+        )
 
         logger.info("Metabase provisioning finished")
 
@@ -177,7 +181,7 @@ class MetabaseProvider:
 
             payload = {
                 "name": name,
-                "description": spec.get("description", ""),
+                "description": spec.get("description") or f"Collection for {name}",
                 "parent_id": parent_id,
             }
             created = self.client.request(
@@ -187,39 +191,83 @@ class MetabaseProvider:
 
         return collection_ids
 
+    @staticmethod
+    def _safe_viz_settings(viz: dict) -> dict:
+        """Filter out problematic visualization settings for Metabase API."""
+        # column_settings with arbitrary column name keys causes Metabase v0.58 500 error.
+        # All other standard keys (graph.dimensions, graph.metrics, stackable, etc.) are safe.
+        BLOCKED_KEYS = {"column_settings"}
+        return {k: v for k, v in viz.items() if k not in BLOCKED_KEYS}
+
+    def _get_field_id_map(self, db_id: int) -> dict[str, int]:
+        """Return map of 'schema.table.column' -> field_id from Metabase DB metadata."""
+        try:
+            metadata = self.client.request(
+                "GET", f"/api/database/{db_id}/metadata?include_hidden=true"
+            )
+        except Exception:
+            logger.warning("Failed to fetch metadata for database %s", db_id)
+            return {}
+
+        field_map: dict[str, int] = {}
+        for table in metadata.get("tables", []):
+            schema = table.get("schema") or "public"
+            tname = table.get("name", "")
+            for field in table.get("fields", []):
+                key = f"{schema}.{tname}.{field['name']}"
+                field_map[key] = int(field["id"])
+                # Also store without schema prefix for convenience
+                field_map[f"{tname}.{field['name']}"] = int(field["id"])
+        return field_map
+
     def _upsert_cards(
         self,
         pack_dir: Path,
         database_id: int,
         collection_ids: dict[str, int | None],
-    ) -> dict[str, int]:
-        """Upsert cards by name from pack specs and return key->card_id mapping."""
+    ) -> tuple[dict[str, int], dict[str, set[str]]]:
+        """Upsert cards by name from pack specs and return (key->card_id, key->field_filter_tags)."""
         cards_dir = pack_dir / "cards"
         card_specs = sorted(cards_dir.glob("*.json"))
         if not card_specs:
-            return {}
+            return {}, {}
 
         existing_cards = self._extract_list(self.client.request("GET", "/api/card"))
         existing_by_name = {card["name"]: card for card in existing_cards}
 
+        field_id_map = self._get_field_id_map(database_id)
         card_ids: dict[str, int] = {}
+        card_field_filter_tags: dict[str, set[str]] = {}
+
         for path in card_specs:
             spec = self._load_json_object(path)
             name = spec["name"]
+            card_key = spec["key"]
             collection_key = spec.get("collection", "root")
             collection_id = collection_ids.get(collection_key)
 
+            native_payload = self._build_native_query_payload(spec, field_id_map)
+            # Collect tags that are dimensions (field filters)
+            field_filter_tags = {
+                tag
+                for tag, tag_def in native_payload.get("template-tags", {}).items()
+                if tag_def.get("type") == "dimension"
+            }
+            card_field_filter_tags[card_key] = field_filter_tags
+
             payload: dict[str, Any] = {
                 "name": name,
-                "description": spec.get("description", ""),
+                "description": spec.get("description") or f"Metrics for {name}",
                 "display": spec.get("display", "table"),
                 "collection_id": collection_id,
                 "dataset_query": {
                     "database": database_id,
                     "type": "native",
-                    "native": self._build_native_query_payload(spec),
+                    "native": native_payload,
                 },
-                "visualization_settings": spec.get("visualization_settings", {}),
+                "visualization_settings": self._safe_viz_settings(
+                    spec.get("visualization_settings", {})
+                ),
             }
 
             if name in existing_by_name:
@@ -230,21 +278,22 @@ class MetabaseProvider:
                     json_body=payload,
                     expected_statuses=(200,),
                 )
-                card_ids[spec["key"]] = existing_id
+                card_ids[card_key] = existing_id
                 continue
 
             created = self.client.request(
                 "POST", "/api/card", json_body=payload, expected_statuses=(200,)
             )
-            card_ids[spec["key"]] = int(created["id"])
+            card_ids[card_key] = int(created["id"])
 
-        return card_ids
+        return card_ids, card_field_filter_tags
 
     def _upsert_dashboards(
         self,
         pack_dir: Path,
         collection_ids: dict[str, int | None],
         card_ids: dict[str, int],
+        card_field_filter_tags: dict[str, set[str]] | None = None,
     ) -> None:
         """Upsert dashboards and place cards according to pack layout specs."""
         dashboards_dir = pack_dir / "dashboards"
@@ -252,6 +301,7 @@ class MetabaseProvider:
         if not dashboard_specs:
             return
 
+        card_field_filter_tags = card_field_filter_tags or {}
         existing_dashboards = self._extract_list(
             self.client.request("GET", "/api/dashboard")
         )
@@ -273,7 +323,8 @@ class MetabaseProvider:
                     "/api/dashboard",
                     json_body={
                         "name": dashboard_name,
-                        "description": spec.get("description", ""),
+                        "description": spec.get("description")
+                        or f"Metrics for {dashboard_name}",
                         "collection_id": collection_id,
                     },
                     expected_statuses=(200,),
@@ -298,6 +349,7 @@ class MetabaseProvider:
                     )
 
                 card_id = card_ids[key]
+                field_filter_tags = card_field_filter_tags.get(key, set())
                 dashcard: dict[str, Any] = {
                     "card_id": card_id,
                     "row": item["row"],
@@ -305,8 +357,12 @@ class MetabaseProvider:
                     "size_x": item["size_x"],
                     "size_y": item["size_y"],
                     "parameter_mappings": item.get("parameter_mappings")
-                    or self._build_filter_mappings(item, card_id, dashboard_filters),
-                    "visualization_settings": item.get("visualization_settings", {}),
+                    or self._build_filter_mappings(
+                        item, card_id, dashboard_filters, field_filter_tags
+                    ),
+                    "visualization_settings": self._safe_viz_settings(
+                        item.get("visualization_settings", {})
+                    ),
                 }
                 if card_id in existing_by_card_id:
                     dashcard["id"] = existing_by_card_id[card_id]
@@ -317,7 +373,8 @@ class MetabaseProvider:
 
             update_payload = {
                 "name": dashboard_name,
-                "description": spec.get("description", ""),
+                "description": spec.get("description")
+                or f"Metrics for {dashboard_name}",
                 "collection_id": collection_id,
                 "parameters": spec.get("parameters", [])
                 or self._build_dashboard_parameters(dashboard_filters),
@@ -512,9 +569,11 @@ class MetabaseProvider:
         layout_item: dict[str, Any],
         card_id: int,
         filters: list[dict[str, Any]],
+        field_filter_tags: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         if not filters:
             return []
+        field_filter_tags = field_filter_tags or set()
         filter_ids = layout_item.get("filter_ids")
         selected = (
             [flt for flt in filters if flt["id"] in set(filter_ids)]
@@ -523,16 +582,23 @@ class MetabaseProvider:
         )
         mappings: list[dict[str, Any]] = []
         for flt in selected:
+            tag = flt["template_tag"]
+            if tag in field_filter_tags:
+                target = ["dimension", ["template-tag", tag]]
+            else:
+                target = ["variable", ["template-tag", tag]]
             mappings.append(
                 {
                     "parameter_id": flt["id"],
                     "card_id": card_id,
-                    "target": ["variable", ["template-tag", flt["template_tag"]]],
+                    "target": target,
                 }
             )
         return mappings
 
-    def _build_native_query_payload(self, card_spec: dict[str, Any]) -> dict[str, Any]:
+    def _build_native_query_payload(
+        self, card_spec: dict[str, Any], field_id_map: dict[str, int] | None = None
+    ) -> dict[str, Any]:
         query = str(card_spec["query"])
         payload: dict[str, Any] = {"query": query}
         tags = sorted(set(self._TAG_PATTERN.findall(query)))
@@ -540,6 +606,8 @@ class MetabaseProvider:
             payload["template-tags"] = self._build_template_tags(
                 tags=tags,
                 configured=card_spec.get("template_tags", {}),
+                field_filters=card_spec.get("field_filters", {}),
+                field_id_map=field_id_map or {},
             )
         return payload
 
@@ -547,13 +615,65 @@ class MetabaseProvider:
     def _build_template_tags(
         tags: list[str],
         configured: dict[str, Any],
+        field_filters: dict[str, str] | None = None,
+        field_id_map: dict[str, int] | None = None,
     ) -> dict[str, dict[str, Any]]:
+        field_filters = field_filters or {}
+        field_id_map = field_id_map or {}
         template_tags: dict[str, dict[str, Any]] = {}
+
         for tag in tags:
             cfg = configured.get(tag, {}) if isinstance(configured, dict) else {}
+
+            # Check if this tag should be a Field Filter (dimension type)
+            if tag in field_filters:
+                column_path = field_filters[tag]  # e.g. "metrics.v_facts.project_key"
+                field_id = field_id_map.get(column_path) or field_id_map.get(
+                    column_path.split(".", 1)[-1]
+                )
+
+                # Determine widget type from tag name
+                if tag.endswith("_date") or tag.startswith("date_") or "date" in tag:
+                    widget_type = cfg.get("widget_type", "date/range")
+                else:
+                    widget_type = cfg.get("widget_type", "category")
+
+                tag_def: dict[str, Any] = {
+                    "name": tag,
+                    "display-name": cfg.get(
+                        "display_name", tag.replace("_", " ").title()
+                    ),
+                    "type": "dimension",
+                    "widget-type": widget_type,
+                    "required": bool(cfg.get("required", False)),
+                }
+                if field_id is not None:
+                    tag_def["dimension"] = ["field", field_id, None]
+                else:
+                    # Field ID not found -> fall back to text variable with a warning
+                    logger.warning(
+                        "Field ID not found for field_filter tag '%s' -> '%s', falling back to text",
+                        tag,
+                        column_path,
+                    )
+                    tag_def = {
+                        "name": tag,
+                        "display-name": cfg.get(
+                            "display_name", tag.replace("_", " ").title()
+                        ),
+                        "type": "text",
+                        "required": bool(cfg.get("required", False)),
+                    }
+                template_tags[tag] = tag_def
+                continue
+
             tag_type = cfg.get("type")
             if tag_type is None:
-                if tag.startswith("date_") or tag.endswith("_date"):
+                if (
+                    tag.startswith("date_")
+                    or tag.endswith("_date")
+                    or ("date" in tag and tag.endswith(("_from", "_to")))
+                ):
                     tag_type = "date"
                 elif tag.endswith("_id"):
                     tag_type = "number"

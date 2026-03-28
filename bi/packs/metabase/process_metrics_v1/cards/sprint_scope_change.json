@@ -1,0 +1,22 @@
+{
+  "key": "sprint_scope_change",
+  "collection": "process_metrics",
+  "name": "Sprint Scope Change (Added / Removed)",
+  "display": "bar",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "issue_type": "metrics.v_facts.slice_value",
+    "sprint_name": "clean_jira.sprints.name"
+  },
+  "template_tags": {
+    "sprint_start_date": { "type": "date" }
+  },
+  "query": "WITH sprint_info AS (\n    SELECT\n        id::text AS sprint_id,\n        start_date::date AS s_start,\n        COALESCE(complete_date::date, end_date::date, CURRENT_DATE) AS s_end\n    FROM clean_jira.sprints\n    WHERE 1=1\n    [[AND {{sprint_name}}]]\n    [[ AND start_date::date >= {{sprint_start_date}} ]]\n),\ncalendar AS (\n    SELECT generate_series(\n        (SELECT MIN(s_start) FROM sprint_info),\n        (SELECT MAX(s_end) FROM sprint_info),\n        '1 day'::interval\n    )::date AS report_date\n)\nSELECT\n    c.report_date,\n    COALESCE(SUM(CASE WHEN v_facts.calc_code = 'sprint_added_sp_sum' THEN v_facts.value ELSE 0 END), 0) AS added_sp,\n    COALESCE(SUM(CASE WHEN v_facts.calc_code = 'sprint_removed_sp_sum' THEN (v_facts.value * -1) ELSE 0 END), 0) AS removed_sp\nFROM calendar c\nLEFT JOIN metrics.v_facts\n    ON v_facts.full_date::date = c.report_date\n    AND v_facts.entity_type = 'sprint'\n    AND v_facts.entity_id IN (SELECT sprint_id FROM sprint_info)\n    AND v_facts.calc_code IN ('sprint_added_sp_sum', 'sprint_removed_sp_sum')\n    [[AND {{project_key}}]]\n    [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\nGROUP BY c.report_date\nORDER BY c.report_date ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["report_date"],
+    "graph.metrics": ["added_sp", "removed_sp"],
+    "graph.colors": ["#F9CF48", "#EF8C8C"],
+    "graph.goal_value": 0,
+    "graph.goal_label": "No Change"
+  }
+}

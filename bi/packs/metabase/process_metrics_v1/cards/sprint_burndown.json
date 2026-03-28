@@ -1,0 +1,23 @@
+{
+  "key": "sprint_burndown",
+  "collection": "process_metrics",
+  "name": "Sprint Burndown",
+  "display": "line",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "issue_type": "metrics.v_facts.slice_value",
+    "sprint_name": "clean_jira.sprints.name"
+  },
+  "template_tags": {
+    "sprint_start_date": { "type": "date" }
+  },
+  "query": "SELECT\n    v_facts.full_date AS report_date,\n    SUM(v_facts.value) AS remaining_sp\nFROM metrics.v_facts\nLEFT JOIN clean_jira.sprints\n  ON v_facts.entity_id = sprints.id::text\n  AND v_facts.entity_type = 'sprint'\nWHERE v_facts.calc_code = 'sprint_burndown_remaining_sp'\n  [[AND {{project_key}}]]\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{sprint_name}}]]\n  [[ AND sprints.start_date::date >= {{sprint_start_date}} ]]\nGROUP BY v_facts.full_date\nORDER BY v_facts.full_date ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["report_date"],
+    "graph.metrics": ["remaining_sp"],
+    "graph.colors": ["#2D86D9"],
+    "graph.goal_value": 0,
+    "graph.goal_label": "Done",
+    "graph.y_axis.title_text": "Remaining SP"
+  }
+}

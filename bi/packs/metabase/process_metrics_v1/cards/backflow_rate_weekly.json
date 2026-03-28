@@ -1,0 +1,20 @@
+{
+  "key": "backflow_rate_weekly",
+  "collection": "process_metrics",
+  "name": "Backflow Rate % (Weekly)",
+  "display": "line",
+  "field_filters": {
+    "project_key": "metrics.v_facts.project_key",
+    "date_range": "metrics.v_facts.full_date",
+    "issue_type": "metrics.v_facts.slice_value"
+  },
+  "query": "SELECT\n    DATE_TRUNC('week', v_facts.full_date)::date AS week_start,\n    ROUND(AVG(v_facts.value)::numeric, 1) AS backflow_rate_pct\nFROM metrics.v_facts\nWHERE v_facts.calc_code = 'backflow_column_rate'\n  [[ AND {{issue_type}} -- ]] AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{date_range}}]]\nGROUP BY DATE_TRUNC('week', v_facts.full_date)::date\nORDER BY week_start ASC",
+  "visualization_settings": {
+    "graph.dimensions": ["week_start"],
+    "graph.metrics": ["backflow_rate_pct"],
+    "graph.colors": ["#EF8C8C"],
+    "graph.goal_value": 5,
+    "graph.goal_label": "Target (5%)",
+    "graph.y_axis.title_text": "Backflow Rate %"
+  }
+}
