@@ -11,6 +11,8 @@ from fastapi import HTTPException
 from app.api import projects as projects_api  # noqa: E402
 from app.schemas.project import ProjectCreate, ProjectUpdate  # noqa: E402
 
+_ADMIN = object()
+
 
 def _make_db():
     db = MagicMock()
@@ -43,7 +45,7 @@ async def test_list_projects_returns_scalars():
     db.execute.return_value = _scalars_result([SimpleNamespace(id=uuid4())])
 
     result = await projects_api.list_projects(
-        db=db, user_id=None, integration_id=None, is_active=True
+        db=db, _admin=_ADMIN, user_id=None, integration_id=None, is_active=True
     )
 
     assert len(result) == 1
@@ -65,6 +67,7 @@ async def test_create_project_user_not_found():
                 name="Ads",
             ),
             user_id=uuid4(),
+            _admin=_ADMIN,
         )
 
     assert exc.value.status_code == 404
@@ -86,6 +89,7 @@ async def test_create_project_integration_not_found():
                 name="Ads",
             ),
             user_id=uuid4(),
+            _admin=_ADMIN,
         )
 
     assert exc.value.status_code == 404
@@ -113,6 +117,7 @@ async def test_create_project_duplicate_external_id_conflict():
                 name="Ads",
             ),
             user_id=uuid4(),
+            _admin=_ADMIN,
         )
 
     assert exc.value.status_code == 409
@@ -150,6 +155,7 @@ async def test_create_project_success():
             external_url="https://example.local/ads",
         ),
         user_id=user_id,
+        _admin=_ADMIN,
     )
 
     assert result.owner_user_id == user_id
@@ -167,7 +173,10 @@ async def test_update_project_not_found():
 
     with pytest.raises(HTTPException) as exc:
         await projects_api.update_project(
-            db=db, project_id=uuid4(), update_data=ProjectUpdate(name="New")
+            db=db,
+            project_id=uuid4(),
+            _admin=_ADMIN,
+            update_data=ProjectUpdate(name="New"),
         )
 
     assert exc.value.status_code == 404
@@ -187,6 +196,7 @@ async def test_update_project_updates_selected_fields():
     result = await projects_api.update_project(
         db=db,
         project_id=project.id,
+        _admin=_ADMIN,
         update_data=ProjectUpdate(
             name="New", external_url="https://new", is_active=False
         ),
@@ -205,7 +215,7 @@ async def test_delete_project_not_found():
     db.execute.return_value = _scalar_result(None)
 
     with pytest.raises(HTTPException) as exc:
-        await projects_api.delete_project(db=db, project_id=uuid4())
+        await projects_api.delete_project(db=db, project_id=uuid4(), _admin=_ADMIN)
 
     assert exc.value.status_code == 404
 
@@ -216,7 +226,11 @@ async def test_delete_project_success():
     db = _make_db()
     db.execute.return_value = _scalar_result(project)
 
-    result = await projects_api.delete_project(db=db, project_id=project.id)
+    result = await projects_api.delete_project(
+        db=db,
+        project_id=project.id,
+        _admin=_ADMIN,
+    )
 
     assert result is None
     db.delete.assert_called_once_with(project)

@@ -58,14 +58,35 @@ class TestJiraCleanAssets:
 
     def test_clean_jira_issues_executes(self, mock_database_resource):
         """Test that clean_jira_issues asset can execute."""
+        from pipelines.assets.jira.clean import _utils as clean_utils
         from pipelines.assets.jira.clean import clean_jira_issues
 
         mock_context = MagicMock()
         mock_context.log = MagicMock()
 
-        # Mock the database execute to return empty results
+        # Keep table-exists checks deterministic and isolated for this test run.
+        clean_utils._TABLE_EXISTS_CACHE.clear()
+
+        # Mock DB responses in the same order queries are executed in asset code.
+        def _result(*, first=None, scalar=None, fetchall=None):
+            result = MagicMock()
+            result.first.return_value = first
+            result.scalar.return_value = scalar
+            result.fetchall.return_value = fetchall if fetchall is not None else []
+            return result
+
         mock_conn = MagicMock()
-        mock_conn.execute.return_value.fetchall.return_value = []
+        mock_conn.execute.side_effect = [
+            _result(first=("integration-id",)),  # system integration lookup
+            _result(),  # sync users
+            _result(scalar=True),  # history table exists check
+            _result(),  # extract users from changelog
+            _result(),  # extract users from issue fields
+            _result(fetchall=[]),  # optional columns lookup
+            _result(scalar=0),  # dropped issues count
+            _result(scalar=0),  # null created date count
+            _result(fetchall=[]),  # insert/update issues returning ids
+        ]
         mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = MagicMock(
             return_value=mock_conn
         )

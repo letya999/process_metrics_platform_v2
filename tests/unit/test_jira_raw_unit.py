@@ -126,62 +126,32 @@ def test_raw_jira_project_data_branches(monkeypatch):
     if not hasattr(raw, "raw_jira_project_data"):
         pytest.skip("Partitioned raw Jira asset is unavailable in this environment")
 
-    class _Project:
-        def __init__(self, key, enabled=True):
-            self.key = key
-            self.enabled = enabled
-            self.jira_instance = "default"
-
-    class _Instance:
-        base_url = "https://jira.local"
-        email = "user@local"
-
-        @staticmethod
-        def get_api_token():
-            return "token"
-
-    class _Config:
-        def __init__(self, project):
-            self._project = project
-
-        def get_project(self, _key):
-            return self._project
-
-        def get_project_instance(self, _project):
-            return _Instance()
-
-    fake_config = types.SimpleNamespace(get_config=lambda: _Config(None))
-    monkeypatch.setitem(__import__("sys").modules, "config", fake_config)
-
-    ctx_not_found = _DummyContext(partition_key="MISSING")
-    out_not_found = _asset_fn(raw.raw_jira_project_data)(ctx_not_found)
-    assert out_not_found["reason"].startswith("project_not_found")
-
-    fake_config.get_config = lambda: _Config(_Project("AAA", enabled=False))
-    ctx_disabled = _DummyContext(partition_key="AAA")
-    out_disabled = _asset_fn(raw.raw_jira_project_data)(ctx_disabled)
-    assert out_disabled["reason"] == "project_disabled"
-
-    fake_config.get_config = lambda: _Config(_Project("AAA", enabled=True))
+    monkeypatch.setattr(
+        "pipelines.utils.db_config.get_project_credentials",
+        lambda _key: types.SimpleNamespace(
+            instance_url="https://jira.local",
+            user_email="user@local",
+            api_token="token",
+        ),
+    )
     monkeypatch.setattr(
         raw,
         "run_jira_pipeline",
         lambda **kwargs: {"status": "ok", "pipeline_name": kwargs["pipeline_name"]},
     )
-    ctx_success = _DummyContext(partition_key="AAA")
-    out_success = _asset_fn(raw.raw_jira_project_data)(ctx_success)
-    assert out_success["status"] == "ok"
-    assert out_success["pipeline_name"] == "jira_raw_AAA"
+    out = _asset_fn(raw.raw_jira_project_data)(_DummyContext(partition_key="AAA"))
+    assert out["status"] == "ok"
+    assert out["pipeline_name"] == "jira_raw_AAA"
 
 
 def test_raw_jira_project_data_fallback_env_missing_credentials(monkeypatch):
     if not hasattr(raw, "raw_jira_project_data"):
         pytest.skip("Partitioned raw Jira asset is unavailable in this environment")
 
-    fake_config = types.SimpleNamespace(
-        get_config=lambda: (_ for _ in ()).throw(RuntimeError("no config"))
+    monkeypatch.setattr(
+        "pipelines.utils.db_config.get_project_credentials",
+        lambda _key: None,
     )
-    monkeypatch.setitem(__import__("sys").modules, "config", fake_config)
     monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.delenv("JIRA_USER_EMAIL", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
@@ -194,10 +164,10 @@ def test_raw_jira_project_data_fallback_env_pipeline_failure(monkeypatch):
     if not hasattr(raw, "raw_jira_project_data"):
         pytest.skip("Partitioned raw Jira asset is unavailable in this environment")
 
-    fake_config = types.SimpleNamespace(
-        get_config=lambda: (_ for _ in ()).throw(RuntimeError("no config"))
+    monkeypatch.setattr(
+        "pipelines.utils.db_config.get_project_credentials",
+        lambda _key: None,
     )
-    monkeypatch.setitem(__import__("sys").modules, "config", fake_config)
     monkeypatch.setenv("JIRA_BASE_URL", "https://jira.local")
     monkeypatch.setenv("JIRA_USER_EMAIL", "user@local")
     monkeypatch.setenv("JIRA_API_TOKEN", "token")
