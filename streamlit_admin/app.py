@@ -1914,6 +1914,7 @@ def _page_configuration(client: AdminApiClient, token: str) -> None:
             "Units",
             "Slices",
             "Validate",
+            "Jobs",
         ]
     )
 
@@ -1931,6 +1932,8 @@ def _page_configuration(client: AdminApiClient, token: str) -> None:
         _tab_slices_v2(client, token)
     with tabs[6]:
         _tab_validate(client, token, None)
+    with tabs[7]:
+        _tab_jobs(client, token)
 
 
 def main() -> None:
@@ -1954,17 +1957,8 @@ def main() -> None:
     with st.sidebar:
         st.markdown("### Admin")
         st.write(st.session_state.me["email"])
-        section = st.radio(
-            "Section",
-            ["Configuration", "Orchestration"],
-            index=0,
-            key="admin_section",
-        )
         if st.button("Logout"):
             _logout(client)
-    if section == "Orchestration":
-        _tab_jobs(client, st.session_state.token)
-        return
     _page_configuration(client, st.session_state.token)
 
 
