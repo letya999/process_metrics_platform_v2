@@ -8,12 +8,10 @@
     "project_key": "metrics.v_facts.project_key",
     "date_range": "metrics.v_facts.full_date"
   },
-  "query": "SELECT\n    v_facts.full_date AS date,\n    COALESCE(v_facts.slice_value, 'all') AS status_category,\n    SUM(v_facts.value) AS total_issues\nFROM metrics.v_facts\nWHERE v_facts.calc_code = 'cfd_count'\n  [[AND {{project_key}}]]\n  [[AND {{date_range}}]]\nGROUP BY v_facts.full_date, COALESCE(v_facts.slice_value, 'all')\nORDER BY v_facts.full_date",
+  "query": "SELECT\n    v_facts.full_date AS date,\n    v_facts.context_json->>'column_name' AS column_name,\n    SUM(v_facts.value) AS total_issues\nFROM metrics.v_facts\nWHERE v_facts.calc_code = 'cfd_count'\n  AND v_facts.slice_rule_id IS NULL\n  [[AND {{project_key}}]]\n  [[AND {{date_range}}]]\nGROUP BY\n    v_facts.full_date,\n    v_facts.context_json->>'column_name',\n    (v_facts.context_json->>'column_position')::int\nORDER BY\n    v_facts.full_date,\n    (v_facts.context_json->>'column_position')::int ASC",
   "visualization_settings": {
-    "graph.dimensions": ["date"],
+    "graph.dimensions": ["date", "column_name"],
     "graph.metrics": ["total_issues"],
-    "graph.series_order_dimension": "status_category",
-    "graph.colors": ["#509EE3", "#7172AD", "#84BB4C", "#EF8C8C"],
     "stackable.stack_type": "stacked"
   }
 }
