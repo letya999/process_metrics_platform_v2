@@ -217,6 +217,27 @@ The script:
 - `raw_jira.issues` max `fields__updated` doesn't advance despite Jira having newer data
 - `clean_jira.issues` `jira_updated_at` frozen at an old date
 
+### MERGE write disposition: missing child table aborts the entire load
+
+dlt's MERGE strategy generates a DELETE statement for **every** known child table before inserting new rows (e.g. `issues__fields__description__...__marks`). If any of those tables doesn't exist in the DB, the DELETE fails, the whole load package is rolled back, but the watermark state row is **still written** — advancing `last_value` without any rows being committed.
+
+Result: the next run starts from the new (wrong) watermark, and the gap is silently lost.
+
+**Diagnosis:**
+```sql
+-- Find child tables that dlt knows about but don't exist yet
+SELECT table_name FROM information_schema.tables
+WHERE table_schema = 'raw_jira' AND table_name LIKE 'issues__%'
+ORDER BY table_name;
+
+-- Check if a load had 0 rows but still advanced the watermark
+SELECT version, created_at, state::json->'sources'->'jira'->'resources'->'issues'->'incremental'->'jira_updated_at'->>'last_value' AS watermark
+FROM raw_jira._dlt_pipeline_state
+ORDER BY version DESC LIMIT 5;
+```
+
+**Fix:** create the missing table with the same column structure as its siblings. dlt will populate it on the next successful load.
+
 ---
 
 ## Checking Raw Data Health
