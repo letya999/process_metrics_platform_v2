@@ -14,9 +14,15 @@ from app.api.dependencies import AdminDependency
 from app.database import get_db
 from app.limiter import limiter
 from app.schemas.admin import (
+    AdminJobItem,
+    AdminJobLaunchRequest,
+    AdminJobLaunchResponse,
     AdminLoginRequest,
     AdminLoginResponse,
     AdminMeResponse,
+    AdminRunDetailsResponse,
+    AdminRunEvent,
+    AdminRunStepStatus,
     BoardCatalogItem,
     BoardColumnCatalogItem,
     CalculationContract,
@@ -42,11 +48,14 @@ from app.schemas.admin import (
 from app.services.admin_auth import (
     AdminSession,
     create_access_token,
+    get_session,
     hash_password,
     parse_bearer_token,
     revoke_token,
+    save_session,
     verify_password,
 )
+from app.services.dagster_client import DagsterClient
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +73,47 @@ REQUIRED_SETTINGS_BY_CALC: dict[str, list[str]] = {
     "cancellation_rate_weekly": ["cancelled_status_ids"],
     "field_value_sprint_pct": ["field_value_match"],
 }
+
+SUPPORTED_ADMIN_JOBS: list[dict[str, str]] = [
+    {
+        "job_name": "jira_sync_job",
+        "title": "Jira Sync (Raw -> Clean -> Metrics)",
+        "description": "Run full Jira ETL chain and metrics refresh.",
+    },
+    {
+        "job_name": "jira_raw_job",
+        "title": "Jira Raw",
+        "description": "Load raw Jira data only.",
+    },
+    {
+        "job_name": "jira_clean_job",
+        "title": "Jira Clean",
+        "description": "Transform raw Jira data to clean layer only.",
+    },
+    {
+        "job_name": "metrics_refresh_job",
+        "title": "Metrics Refresh",
+        "description": "Recalculate metrics layer only.",
+    },
+]
+
+
+async def _get_current_admin(
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> AdminSession:
+    token = parse_bearer_token(authorization)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+        )
+    session = get_session(token)
+    if not session or not session.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+    return session
 
 
 @router.post("/auth/login", response_model=AdminLoginResponse)
@@ -104,15 +154,15 @@ async def admin_login(request: Request, payload: AdminLoginRequest, db: DBSessio
             {"h": new_hash, "id": str(row["id"])},
         )
 
-    token, expires_at = create_access_token(
-        AdminSession(
-            user_id=str(row["id"]),
-            email=row["email"],
-            display_name=row["display_name"],
-            is_admin=True,
-            expires_at=datetime.now(UTC),
-        )
+    session = AdminSession(
+        user_id=str(row["id"]),
+        email=row["email"],
+        display_name=row["display_name"],
+        is_admin=True,
+        expires_at=datetime.now(UTC),
     )
+    token, expires_at = create_access_token(session)
+    save_session(token, session)
 
     return AdminLoginResponse(
         access_token=token,
@@ -1077,3 +1127,146 @@ async def validate_config(
                     )
 
     return ValidationResponse(issues=issues)
+
+
+@router.get("/jobs", response_model=list[AdminJobItem])
+async def list_admin_jobs(_admin: AdminDependency):
+    return [AdminJobItem(**job) for job in SUPPORTED_ADMIN_JOBS]
+
+
+@router.post("/jobs/launch", response_model=AdminJobLaunchResponse)
+async def launch_admin_job(
+    payload: AdminJobLaunchRequest,
+    _admin: AdminDependency,
+):
+    supported = {job["job_name"] for job in SUPPORTED_ADMIN_JOBS}
+    if payload.job_name not in supported:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported job_name: {payload.job_name}",
+        )
+
+    client = DagsterClient()
+    try:
+        response = await client.trigger_job(job_name=payload.job_name)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to launch Dagster job: {str(exc)}",
+        ) from exc
+
+    launch_result = response.get("data", {}).get("launchRun", {})
+    typename = launch_result.get("__typename")
+    if typename == "LaunchRunSuccess":
+        run_info = launch_result.get("run", {})
+        run_id = run_info.get("runId")
+        run_status = run_info.get("status", "UNKNOWN")
+        if not run_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Dagster launch did not return runId",
+            )
+        return AdminJobLaunchResponse(
+            job_name=payload.job_name,
+            run_id=run_id,
+            status=run_status,
+        )
+
+    error_msg = launch_result.get("message", "Unknown Dagster launch error")
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"Failed to launch job: {error_msg}",
+    )
+
+
+@router.get("/jobs/runs/{run_id}", response_model=AdminRunDetailsResponse)
+async def get_admin_job_run_details(
+    run_id: str,
+    _admin: AdminDependency,
+):
+    client = DagsterClient()
+    try:
+        response = await client.get_run_details(run_id=run_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read Dagster run details: {str(exc)}",
+        ) from exc
+
+    run_or_error = response.get("data", {}).get("runOrError", {})
+    typename = run_or_error.get("__typename")
+    if typename == "RunNotFoundError":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run {run_id} not found",
+        )
+    if typename != "Run":
+        error_msg = run_or_error.get("message", "Unknown Dagster run error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to read run details: {error_msg}",
+        )
+
+    step_rows = run_or_error.get("stepStats") or []
+    step_models = [
+        AdminRunStepStatus(
+            step_key=s.get("stepKey", ""),
+            status=s.get("status"),
+            start_time=s.get("startTime"),
+            end_time=s.get("endTime"),
+        )
+        for s in step_rows
+    ]
+    total_steps = len(step_models)
+    completed_steps = sum(
+        1
+        for s in step_models
+        if (s.status or "").upper() in {"SUCCESS", "FAILURE", "SKIPPED", "CANCELED"}
+    )
+    failed_steps = sum(1 for s in step_models if (s.status or "").upper() == "FAILURE")
+    running_steps = sum(
+        1
+        for s in step_models
+        if (s.status or "").upper() in {"STARTED", "STARTING", "IN_PROGRESS"}
+    )
+    progress_pct = round((completed_steps / total_steps) * 100, 2) if total_steps else 0
+
+    start_time = run_or_error.get("startTime")
+    end_time = run_or_error.get("endTime")
+    duration_seconds: float | None = None
+    if start_time and end_time:
+        duration_seconds = max(0.0, float(end_time) - float(start_time))
+
+    raw_events = (
+        run_or_error.get("eventConnection", {}).get("events")
+        if run_or_error.get("eventConnection")
+        else []
+    ) or []
+    error_events = []
+    for e in raw_events:
+        level = (e.get("level") or "").upper()
+        event_type = (e.get("eventType") or "").upper()
+        if level in {"ERROR", "CRITICAL"} or "FAIL" in event_type:
+            error_events.append(
+                AdminRunEvent(
+                    timestamp=e.get("timestamp"),
+                    level=e.get("level"),
+                    event_type=e.get("eventType"),
+                    message=e.get("message"),
+                )
+            )
+
+    return AdminRunDetailsResponse(
+        run_id=run_or_error.get("runId", run_id),
+        status=run_or_error.get("status", "UNKNOWN"),
+        start_time=start_time,
+        end_time=end_time,
+        duration_seconds=duration_seconds,
+        total_steps=total_steps,
+        completed_steps=completed_steps,
+        failed_steps=failed_steps,
+        running_steps=running_steps,
+        progress_pct=progress_pct,
+        steps=step_models,
+        errors=error_events,
+    )

@@ -121,7 +121,9 @@ async def test_admin_login_invalid_and_success(monkeypatch):
     # verify_password now returns (is_valid, needs_rehash)
     monkeypatch.setattr(admin_api, "verify_password", lambda *_args: (True, False))
     expires_at = datetime.now(UTC) + timedelta(hours=1)
-    monkeypatch.setattr(admin_api, "create_token", lambda: ("tok", expires_at))
+    monkeypatch.setattr(
+        admin_api, "create_access_token", lambda *_args: ("tok", expires_at)
+    )
     save_session = MagicMock()
     monkeypatch.setattr(admin_api, "save_session", save_session)
 
@@ -151,7 +153,9 @@ async def test_admin_login_lazy_rehash(monkeypatch):
     monkeypatch.setattr(admin_api, "hash_password", lambda p: "hashed_" + p)
 
     expires_at = datetime.now(UTC) + timedelta(hours=1)
-    monkeypatch.setattr(admin_api, "create_token", lambda: ("tok", expires_at))
+    monkeypatch.setattr(
+        admin_api, "create_access_token", lambda *_args: ("tok", expires_at)
+    )
     monkeypatch.setattr(admin_api, "save_session", MagicMock())
 
     request = _make_request()
@@ -669,3 +673,115 @@ async def test_validate_config_with_and_without_issues(monkeypatch):
 
     ok_res = await admin_api.validate_config(db, admin, project_id=pid)
     assert ok_res.issues == []
+
+
+@pytest.mark.asyncio
+async def test_admin_jobs_list_and_launch():
+    admin = AdminSession(
+        str(uuid4()), "a@x", "A", True, datetime.now(UTC) + timedelta(hours=1)
+    )
+    jobs = await admin_api.list_admin_jobs(admin)
+    assert any(j.job_name == "jira_sync_job" for j in jobs)
+
+    class _Dagster:
+        async def trigger_job(self, job_name, run_config=None):
+            assert job_name == "jira_raw_job"
+            assert run_config is None
+            return {
+                "data": {
+                    "launchRun": {
+                        "__typename": "LaunchRunSuccess",
+                        "run": {"runId": "r-1", "status": "STARTED"},
+                    }
+                }
+            }
+
+    old = admin_api.DagsterClient
+    admin_api.DagsterClient = lambda: _Dagster()
+    try:
+        out = await admin_api.launch_admin_job(
+            admin_api.AdminJobLaunchRequest(job_name="jira_raw_job"),
+            admin,
+        )
+    finally:
+        admin_api.DagsterClient = old
+
+    assert out.run_id == "r-1"
+    assert out.status == "STARTED"
+
+
+@pytest.mark.asyncio
+async def test_admin_job_launch_rejects_unknown_job():
+    admin = AdminSession(
+        str(uuid4()), "a@x", "A", True, datetime.now(UTC) + timedelta(hours=1)
+    )
+    with pytest.raises(HTTPException) as exc:
+        await admin_api.launch_admin_job(
+            admin_api.AdminJobLaunchRequest(job_name="unknown_job"),
+            admin,
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_admin_job_run_details_success_and_not_found():
+    admin = AdminSession(
+        str(uuid4()), "a@x", "A", True, datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    class _DagsterOk:
+        async def get_run_details(self, run_id, event_limit=100):
+            assert run_id == "run-1"
+            assert event_limit == 100
+            return {
+                "data": {
+                    "runOrError": {
+                        "__typename": "Run",
+                        "runId": "run-1",
+                        "status": "FAILURE",
+                        "startTime": 10.0,
+                        "endTime": 20.0,
+                        "stepStats": [
+                            {"stepKey": "a", "status": "SUCCESS"},
+                            {"stepKey": "b", "status": "FAILURE"},
+                        ],
+                        "eventConnection": {
+                            "events": [
+                                {
+                                    "__typename": "MessageEvent",
+                                    "timestamp": 12.0,
+                                    "level": "ERROR",
+                                    "eventType": "STEP_FAILURE",
+                                    "message": "boom",
+                                }
+                            ]
+                        },
+                    }
+                }
+            }
+
+    old = admin_api.DagsterClient
+    admin_api.DagsterClient = lambda: _DagsterOk()
+    try:
+        out = await admin_api.get_admin_job_run_details("run-1", admin)
+    finally:
+        admin_api.DagsterClient = old
+
+    assert out.status == "FAILURE"
+    assert out.total_steps == 2
+    assert out.completed_steps == 2
+    assert out.failed_steps == 1
+    assert out.progress_pct == 100.0
+    assert len(out.errors) == 1
+
+    class _DagsterMissing:
+        async def get_run_details(self, *_args, **_kwargs):
+            return {"data": {"runOrError": {"__typename": "RunNotFoundError"}}}
+
+    admin_api.DagsterClient = lambda: _DagsterMissing()
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await admin_api.get_admin_job_run_details("missing", admin)
+    finally:
+        admin_api.DagsterClient = old
+    assert exc.value.status_code == 404

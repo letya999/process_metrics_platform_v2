@@ -95,3 +95,22 @@ async def test_trigger_job_propagates_http_errors():
         client = DagsterClient("http://dagster/graphql")
         with pytest.raises(RuntimeError, match="http failed"):
             await client.trigger_job("jira_sync_job")
+
+
+@pytest.mark.asyncio
+async def test_get_run_details_posts_expected_payload():
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"data": {"runOrError": {"__typename": "Run"}}}
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+
+    with patch("app.services.dagster_client.httpx.AsyncClient") as async_client_cls:
+        async_client_cls.return_value.__aenter__.return_value = mock_client
+        client = DagsterClient("http://dagster/graphql")
+        result = await client.get_run_details("run-1", event_limit=25)
+
+    assert result["data"]["runOrError"]["__typename"] == "Run"
+    payload = mock_client.post.call_args.kwargs["json"]
+    assert payload["variables"] == {"runId": "run-1", "limit": 25}

@@ -147,3 +147,55 @@ class DagsterClient:
             )
             response.raise_for_status()
             return response.json()
+
+    async def get_run_details(
+        self, run_id: str, event_limit: int = 100
+    ) -> dict[str, Any]:
+        """Get extended Dagster run details with step stats and recent events."""
+        query = """
+        query RunDetails($runId: ID!, $limit: Int) {
+            runOrError(runId: $runId) {
+                __typename
+                ... on Run {
+                    runId
+                    status
+                    startTime
+                    endTime
+                    stepStats {
+                        stepKey
+                        status
+                        startTime
+                        endTime
+                    }
+                    eventConnection(limit: $limit) {
+                        events {
+                            __typename
+                            ... on MessageEvent {
+                                timestamp
+                                level
+                                eventType
+                                message
+                            }
+                        }
+                    }
+                }
+                ... on RunNotFoundError {
+                    message
+                }
+                ... on PythonError {
+                    message
+                    stack
+                }
+            }
+        }
+        """
+
+        variables = {"runId": run_id, "limit": event_limit}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.graphql_url,
+                json={"query": query, "variables": variables},
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()

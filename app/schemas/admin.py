@@ -191,3 +191,48 @@ class ValidationIssue(BaseModel):
 
 class ValidationResponse(BaseModel):
     issues: list[ValidationIssue]
+
+
+class AdminJobItem(BaseModel):
+    job_name: str
+    title: str
+    description: str
+
+
+class AdminJobLaunchRequest(BaseModel):
+    job_name: str
+
+
+class AdminJobLaunchResponse(BaseModel):
+    job_name: str
+    run_id: str
+    status: str
+
+
+class AdminRunStepStatus(BaseModel):
+    step_key: str
+    status: str | None = None
+    start_time: float | None = None
+    end_time: float | None = None
+
+
+class AdminRunEvent(BaseModel):
+    timestamp: float | None = None
+    level: str | None = None
+    event_type: str | None = None
+    message: str | None = None
+
+
+class AdminRunDetailsResponse(BaseModel):
+    run_id: str
+    status: str
+    start_time: float | None = None
+    end_time: float | None = None
+    duration_seconds: float | None = None
+    total_steps: int
+    completed_steps: int
+    failed_steps: int
+    running_steps: int
+    progress_pct: float
+    steps: list[AdminRunStepStatus]
+    errors: list[AdminRunEvent]

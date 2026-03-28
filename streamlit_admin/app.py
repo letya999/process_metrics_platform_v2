@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pandas as pd
@@ -55,6 +56,9 @@ def _reset_form_state_on_edit_change(
 def _ensure_state() -> None:
     st.session_state.setdefault("token", None)
     st.session_state.setdefault("me", None)
+    st.session_state.setdefault("jobs_active_run_id", None)
+    st.session_state.setdefault("jobs_active_job_name", None)
+    st.session_state.setdefault("jobs_history", [])
 
 
 def _login_view(client: AdminApiClient) -> None:
@@ -103,6 +107,144 @@ def _tab_validate(client: AdminApiClient, token: str, project_id: str | None) ->
             show_success(f"Validation completed. Issues: {len(res['issues'])}")
         except Exception as exc:
             show_error(exc)
+
+
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    total = int(round(seconds))
+    minutes, sec = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {sec}s"
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
+
+
+def _tab_jobs(client: AdminApiClient, token: str) -> None:
+    section_title(
+        "Orchestration",
+        "Run Dagster jobs from admin studio and monitor progress.",
+    )
+    try:
+        jobs = client.request("GET", "/admin/jobs", token=token)
+    except Exception as exc:
+        show_error(exc)
+        return
+
+    if not jobs:
+        st.info("No jobs available.")
+        return
+
+    cols = st.columns(min(4, len(jobs)))
+    for idx, job in enumerate(jobs):
+        with cols[idx % len(cols)]:
+            if st.button(f"Run {job['job_name']}", key=f"run_job_{job['job_name']}"):
+                try:
+                    launch = client.request(
+                        "POST",
+                        "/admin/jobs/launch",
+                        token=token,
+                        json={"job_name": job["job_name"]},
+                    )
+                    st.session_state["jobs_active_run_id"] = launch["run_id"]
+                    st.session_state["jobs_active_job_name"] = job["job_name"]
+                    history = st.session_state.get("jobs_history") or []
+                    history.insert(
+                        0,
+                        {
+                            "job_name": job["job_name"],
+                            "run_id": launch["run_id"],
+                            "status": launch["status"],
+                            "duration": None,
+                            "progress_pct": 0.0,
+                            "errors": 0,
+                        },
+                    )
+                    st.session_state["jobs_history"] = history[:20]
+                    show_success(
+                        f"Job started: {job['job_name']} (run: {launch['run_id']})"
+                    )
+                except Exception as exc:
+                    show_error(exc)
+
+    st.divider()
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        auto_poll = st.toggle("Auto refresh", value=True, key="jobs_auto_refresh")
+    with c2:
+        st.caption("Polling interval: 3 seconds while run is active.")
+    st.button("Refresh now", key="jobs_refresh_now")
+
+    run_id = st.session_state.get("jobs_active_run_id")
+    if not run_id:
+        st.info("No active run. Start a job above.")
+        return
+
+    try:
+        details = client.request("GET", f"/admin/jobs/runs/{run_id}", token=token)
+    except Exception as exc:
+        show_error(exc)
+        return
+
+    status = (details.get("status") or "UNKNOWN").upper()
+    st.markdown(
+        f"**Active run:** `{run_id}`  |  **Job:** `{st.session_state.get('jobs_active_job_name') or '-'}`"
+    )
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Status", status, border=True)
+    m2.metric("Progress", f"{details.get('progress_pct', 0)}%", border=True)
+    m3.metric(
+        "Steps",
+        f"{details.get('completed_steps', 0)}/{details.get('total_steps', 0)}",
+        border=True,
+    )
+    m4.metric(
+        "Duration",
+        _format_duration(details.get("duration_seconds")),
+        border=True,
+    )
+
+    progress_pct = float(details.get("progress_pct", 0.0))
+    st.progress(max(0.0, min(1.0, progress_pct / 100)))
+
+    step_rows = details.get("steps") or []
+    if step_rows:
+        st.markdown("#### Step Status")
+        st.dataframe(pd.DataFrame(step_rows), use_container_width=True, hide_index=True)
+
+    errors = details.get("errors") or []
+    if errors:
+        st.markdown("#### Recent Errors")
+        st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
+
+    history = st.session_state.get("jobs_history") or []
+    for row in history:
+        if row.get("run_id") == run_id:
+            row["status"] = status
+            row["duration"] = details.get("duration_seconds")
+            row["progress_pct"] = details.get("progress_pct")
+            row["errors"] = len(errors)
+            break
+    st.session_state["jobs_history"] = history
+
+    terminal = status in {"SUCCESS", "FAILURE", "CANCELED", "CANCELING"}
+    if terminal:
+        if status == "SUCCESS":
+            show_success("Run finished successfully.")
+        elif status == "FAILURE":
+            st.error("Run failed.")
+    elif auto_poll:
+        time.sleep(3)
+        st.rerun()
+
+    if history:
+        st.markdown("#### Recent Runs")
+        history_df = pd.DataFrame(history)
+        if "duration" in history_df.columns:
+            history_df["duration"] = history_df["duration"].apply(_format_duration)
+        st.dataframe(history_df, use_container_width=True, hide_index=True)
 
 
 def _build_project_settings_matrix(
@@ -1812,8 +1954,17 @@ def main() -> None:
     with st.sidebar:
         st.markdown("### Admin")
         st.write(st.session_state.me["email"])
+        section = st.radio(
+            "Section",
+            ["Configuration", "Orchestration"],
+            index=0,
+            key="admin_section",
+        )
         if st.button("Logout"):
             _logout(client)
+    if section == "Orchestration":
+        _tab_jobs(client, st.session_state.token)
+        return
     _page_configuration(client, st.session_state.token)
 
 

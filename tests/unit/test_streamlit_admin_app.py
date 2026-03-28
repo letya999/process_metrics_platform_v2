@@ -107,6 +107,9 @@ def test_main_renders_tabs_when_authenticated(monkeypatch, fake_state):
     monkeypatch.setattr(admin_app.st, "sidebar", nullcontext())
     monkeypatch.setattr(admin_app.st, "markdown", MagicMock())
     monkeypatch.setattr(admin_app.st, "write", MagicMock())
+    monkeypatch.setattr(
+        admin_app.st, "radio", lambda *_args, **_kwargs: "Configuration"
+    )
     monkeypatch.setattr(admin_app.st, "button", lambda *_args, **_kwargs: False)
 
     # Patch tabs to return enough tabs for _page_configuration
@@ -148,6 +151,30 @@ def test_main_renders_tabs_when_authenticated(monkeypatch, fake_state):
         "slices",
         "validate",
     ]
+
+
+def test_main_renders_orchestration_section(monkeypatch, fake_state):
+    fake_state.token = "tok"
+    fake_state.me = {"email": "admin@example.com"}
+    client = MagicMock()
+
+    monkeypatch.setattr(admin_app, "get_client", lambda: client)
+    monkeypatch.setattr(admin_app.st, "sidebar", nullcontext())
+    monkeypatch.setattr(admin_app.st, "markdown", MagicMock())
+    monkeypatch.setattr(admin_app.st, "write", MagicMock())
+    monkeypatch.setattr(
+        admin_app.st, "radio", lambda *_args, **_kwargs: "Orchestration"
+    )
+    monkeypatch.setattr(admin_app.st, "button", lambda *_args, **_kwargs: False)
+
+    called = []
+    monkeypatch.setattr(admin_app, "_tab_jobs", lambda *_args: called.append("jobs"))
+    monkeypatch.setattr(
+        admin_app, "_page_configuration", lambda *_args: called.append("config")
+    )
+
+    admin_app.main()
+    assert called == ["jobs"]
 
 
 def test_tab_metrics_catalog_bulk_fetch(monkeypatch):
