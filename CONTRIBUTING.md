@@ -12,7 +12,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-org/process-metrics-platform-v2.git
+   git clone https://github.com/process-metrics-platform/process-metrics-platform-v2.git
    cd process-metrics-platform-v2
    ```
 
@@ -30,7 +30,7 @@ Thank you for your interest in contributing! This document provides guidelines f
 4. **Run migrations**:
    ```bash
    # Using the migration profile
-   docker compose run --rm alembic
+   docker compose --profile migration run --rm alembic upgrade head
    ```
 
 5. **Install local development dependencies**:

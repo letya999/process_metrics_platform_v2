@@ -1,0 +1,587 @@
+тобы ты порекомендовал сделать в этом проекте?
+
+  Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Bash(git log --oneline -15)
+  ⎿  f000182 docs(dlt-skill): document MERGE missing child table failure mode
+     9ad8de3 fix(jira): fix dlt watermark reset and silent sync failures
+     b888348 fix(streamlit-admin): always show integrations and projects tabs
+     … +12 lines (ctrl+o to expand)
+
+  Read 5 files (ctrl+o to expand)
+                                                                                                                        ● Bash(git log main..HEAD --oneline 2>/dev/null || git log --oneline -5)
+  ⎿  f000182 docs(dlt-skill): document MERGE missing child table failure mode
+     9ad8de3 fix(jira): fix dlt watermark reset and silent sync failures
+     b888348 fix(streamlit-admin): always show integrations and projects tabs
+     … +16 lines (ctrl+o to expand)
+                                                                                                                        ● Вот моя оценка текущего состояния и приоритеты:
+
+  ---
+  Что есть в работе прямо сейчас
+  Ветка feat/opensource-prep уже на главной линии коммитов (нет новых коммитов поверх main), значит OSS-подготовка в      основном завершена.
+
+  ---
+  Что рекомендую делать дальше (по приоритету)
+
+  1. Незакрытые задачи в спеках (быстрый выигрыш)
+
+  update-metric-slicing-architecture — 6 задач, все открыты:
+  - Миграция: добавить slice_rule_id в 7 fact-таблиц
+  - Обновить get_slice_rules и apply_slicing в slicing_utils.py
+  - Обновить тесты
+
+  refactor-advanced-metrics-slicing — 7 задач, все открыты:
+  - Создать aging.py и flow_efficiency.py как отдельные assets
+  - Удалить advanced.py
+
+  Обе цепочки задач связаны — слайсинговая архитектура нужна для aging/flow_efficiency.
+
+  ---
+  2. Технический долг (средний приоритет)
+
+  ┌────────┬─────────────────────────────────────────────────────┬───────────┐
+  │   TD   │                        Суть                         │ Сложность │
+  ├────────┼─────────────────────────────────────────────────────┼───────────┤
+  │ TD-001 │ Инкрементальный clean layer (сейчас full-scan)      │ Средняя   │
+  ├────────┼─────────────────────────────────────────────────────┼───────────┤
+  │ TD-002 │ Стандартизация транзакций в assets                  │ Низкая    │
+  ├────────┼─────────────────────────────────────────────────────┼───────────┤
+  │ TD-003 │ Защита metrics от частично обновлённого clean layer │ Средняя   │
+  └────────┴─────────────────────────────────────────────────────┴───────────┘
+
+  ---
+  3. Архитектурная реформа (долгосрочно)
+
+  TD-005 Universal Clean Layer — самая стратегическая задача. Сейчас метрики завязаны на clean_jira.* напрямую, что
+  блокирует любые источники кроме Jira (GitLab, Linear, GitHub). Схема уже описана в techdebt.md.
+
+  ---
+  Мой конкретный совет: начать с update-metric-slicing-architecture — это разблокирует
+  refactor-advanced-metrics-slicing, и обе задачи дают видимый результат в слайсинге метрик. Что из этого тебя
+  интересует больше?
+
+✻ Baked for 47s
+
+❯ "update-metric-slicing-architecture — 6 задач, все открыты:" это вроде сделано, проверь                                                                                                                                                       " refactor-advanced-metrics-slicing — 7 задач, все открыты:" это точно сделано, может просто ты не архивировал опенспек  спеки?                                                                                                                                                                                                                                         "Инкрементальный клин слой (сейчас фулл скан)" это в @techdebt.md положи, потом сделаем                                                                                                                                                         "Стандартизация транзакций в assets" расскажи подробнее                                                                                                                                                                                         ""Защита metrics от частично обновлённого clean layer" расскажи подробнее. А что еще?                                     ⎿  Read techdebt.md (54 lines)
+
+● Давай проверю фактическое состояние кода по каждой задаче.
+                                                                                                                          Searched for 2 patterns, read 2 files (ctrl+o to expand)
+                                                                                                                        ● Обе спеки реализованы. Заархивирую их и отвечу на вопросы.
+
+● Bash(mv /c/Users/User/a_projects/process_metrics_platform_v2/spec/changes/update-metric-slicing-architecture
+      /c/Users/User/a_projects/process_metrics_platform_v2/spe…)
+  ⎿  Done
+  Searched for 9 patterns, read 4 files (ctrl+o to expand)
+
+● Теперь у меня достаточно контекста. Отвечаю по всем пунктам:
+
+  ---
+  Обе спеки — архивированы
+                                                                                                                          update-metric-slicing-architecture и refactor-advanced-metrics-slicing — код подтверждён как реализованный, спеки
+  перемещены в archive/.
+  ---
+  TD-002: Стандартизация транзакций
+
+  Проблема — два несовместимых паттерна в clean layer:
+
+  # Паттерн A (правильный — атомарный)
+  with engine.begin() as conn:
+      conn.execute(...)  # auto-commit при выходе, rollback при исключении
+
+  # Паттерн B (текущий — ручной commit)
+  with engine.connect() as conn:
+      conn.execute(...)
+      conn.commit()      # если упадёт до этого — данные не запишутся, ОК
+                         # но если несколько conn.commit() — возможна частичная запись
+
+
+  В supplementary.py строка 447 — conn.commit() внутри условного блока внутри одного engine.connect(). Если
+  sprint_field_id есть — коммит происходит в середине asset'а, до второй части работы. Если потом упадёт — половина
+  данных уже записана.
+
+  issues.py использует несколько отдельных with engine.connect() блоков — каждый независимый commit, аналогичная
+  ситуация.
+
+  Риск: не катастрофический сейчас (большинство операций идемпотентны через ON CONFLICT), но создаёт неочевидное
+  состояние при ошибках.
+
+  ---
+  TD-003: Защита metrics от partial clean layer
+
+  Проблема — два независимых расписания:
+  - 0 6 * * * — jira_sync_job (raw → clean → metrics, ~15-30 мин)
+  - 0 * * * * — metrics_refresh_job (каждый час)
+
+  В 6:00 оба могут запуститься одновременно. hourly_metrics_refresh_schedule читает clean_jira.* пока jira_sync_job ещё
+  пишет в него. Метрики за этот прогон будут посчитаны по частично обновлённым данным.
+
+  Решение: Dagster sensor на metrics_refresh_job — пропускать запуск если jira_clean_job или jira_sync_job сейчас
+  IN_PROGRESS. Это ~20 строк кода.
+
+  ---
+  Что ещё?
+
+  Открытые спеки (не заархивированы, но статус неясен):
+  - add-admin-dagster-job-orchestration — там есть маркер IMPLEMENTED, но нет галочек в tasks.md
+  - admin-studio-metrics-config — все задачи отмечены [x] но спека не заархивирована
+
+  Хочешь заархивировать их? И что из TD-002 / TD-003 берём в работу?
+
+  Основываясь на документации вашего проекта (в частности, на файле techdebt.md и архитектурных принципах из agent.md), я бы порекомендовал сосредоточиться на следующих приоритетных задачах по устранению технического долга и развитию архитектуры.
+
+Я разделил их на три основные категории:
+
+1. Архитектура: Внедрение слоя абстракции источников (Самая масштабная задача)
+Суть проблемы (TD-005): Сейчас расчет метрик («золотой» слой) жестко привязан к структуре данных Jira (clean_jira.*). Если вы захотите подключить GitLab, Linear или Asana, вам придется полностью переписывать логику расчета метрик, так как специфика Jira «протекла» в ядро системы. Что нужно сделать:
+
+Создать промежуточную схему universal с нормализованными таблицами: work_items, iterations, transitions и workflow_states.
+Написать адаптер (asset) для Jira, который будет перекладывать данные из clean_jira в universal.
+Добавить конфигурацию маппинга полей в platform.field_mappings (например, чтобы указать, какое поле отвечает за Story Points).
+Постепенно перевести все скрипты в calculations/*.py (velocity, lead_time, throughput и т.д.) на работу с таблицами universal.*.
+2. Производительность и масштабируемость: Инкрементальные обновления
+Суть проблемы (TD-001): В Clean-слое сейчас настроено полное сканирование (full re-scan) сырых данных Jira при каждом запуске. По мере роста количества задач (свыше 50 тыс.) ежечасные обновления начнут сильно тормозить или падать. Что нужно сделать:
+
+Реализовать инкрементальное обновление с использованием high-watermark (сохранение состояния последней загрузки).
+Использовать поля _dlt_load_id или fields__updated в качестве фильтров для выборки только новых или изменившихся записей с момента последнего запуска.
+3. Надежность и целостность данных
+Устранение состояний гонки (TD-003): Сейчас джоб обновления метрик работает независимо от джоба обновления Clean-слоя. Возможна ситуация, когда метрики начнут рассчитываться до того, как обновятся все очищенные данные, что приведет к неконсистентным отчетам.
+
+Решение: Добавить в Dagster сенсор (sensor), который будет задерживать запуск обновления метрик до успешного завершения пайплайна Clean-слоя.
+Атомарность транзакций (TD-002): В кодовой базе используются два разных подхода к транзакциям (например, в issues.py — один коммит в конце, а в supplementary.py — несколько).
+
+Решение: Привести архитектуру к единому стандарту: одна транзакция на ассет через engine.begin() (с автокоммитом при успехе). Нужно избавиться от ручных вызовов conn.commit().
+4. Оптимизация нагрузки на источники (TD-004)
+Сейчас процесс загрузки из Jira вытягивает тяжелые payload'ы и использует длинные окна перезагрузки по умолчанию.
+
+Если есть договоренность с продуктовой стороной, стоит разделить стратегию экстракции:
+Легкие и быстрые ежедневные (daily) запуски с коротким временным окном.
+Периодические "тяжелые" бэкфиллы (backfill) с широким временным окном для глубокой синхронизации данных.
+С чего лучше начать?
+Если вам важно расширение функционала в будущем (добавление новых трекеров задач), я рекомендую начать с TD-005 (Universal Clean Layer), применяя инкрементальный подход. Если система уже испытывает проблемы с производительностью на текущих объемах данных, приоритетом №1 должно стать TD-001 (Инкрементальный clean слой).
+
+Скажите, какая из этих задач сейчас является для вас более приоритетной, и мы можем приступить к детальному планированию или написанию кода для неё!
+
+
+
+  1. Починить нестабильность unit-gate.
+     Юниты сейчас падают (3 failed, 652 passed) и часть “unit” тестов зависит от реальной Jira-аутентификации. Это
+     главный риск для CI/CD.
+     См. /C:/Users/User/a_projects/process_metrics_platform_v2/tests/unit/test_jira_raw_unit.py, /C:/Users/User/
+     стратегия, синхронизация metrics-refresh после clean.
+     См. /C:/Users/User/a_projects/process_metrics_platform_v2/techdebt.md, /C:/Users/User/a_projects/
+     process_metrics_platform_v2/pipelines/jobs/schedules.py.
+  3. Убрать рассинхрон документации с реальностью.
+  4. Усилить CI до “одинаково локально и в GitHub”.
+     Сейчас в CI есть ruff, но нет black --check, при этом локальный make lint это требует. Нужно выровнять.
+     См. /C:/Users/User/a_projects/process_metrics_platform_v2/.github/workflows/ci.yml, /C:/Users/User/a_projects/
+     Затронуто в /C:/Users/User/a_projects/process_metrics_platform_v2/pipelines/calculations/velocity.py и /C:/Users/
+     User/a_projects/process_metrics_platform_v2/pipelines/calculations/sprint_health.py.
+  6. Декомпозировать админский Streamlit-модуль.
+     /C:/Users/User/a_projects/process_metrics_platform_v2/streamlit_admin/app.py уже большой монолит, лучше разбить по
+     табам/фичам для снижения стоимости изменений.
+
+ План (приоритетный, 2 спринта)
+
+  1. Спринт 1, день 1-2: стабилизировать unit gate.
+  2. Спринт 1, день 2-3: выровнять CI и локальные проверки (black --check в CI, одинаковые команды в Makefile/CI).
+  3. Спринт 1, день 3-4: переписать README.md по фактическому состоянию репо и командам, которые реально существуют.
+  4. Спринт 1, день 4-5: закрыть быстрые риски по Polars (join(..., coalesce=...) в критичных расчетах).
+  5. Спринт 2, день 1-3: декомпозировать streamlit_admin/app.py на модули без изменения поведения.
+  6. Спринт 2, день 3-5: TD-001/002/003 из techdebt.md (инкремент clean, единая транзакционная модель, защита от гонки
+     clean vs metrics).
+
+  1) План по стабилизации unit (детально)
+
+  1. Починить падение в /C:/Users/User/a_projects/process_metrics_platform_v2/pipelines/assets/jira/clean/issues.py:276:     безопасный drop_count = scalar() or 0.
+  2. Убрать внешнюю сеть из unit-тестов Jira в /C:/Users/User/a_projects/process_metrics_platform_v2/tests/unit/
+     test_jira_raw_unit.py: мокать validate_jira_credentials/HTTP.
+  3. Разделить “чистые unit” и “network/integration-like” через маркеры.
+  4. Цель: tests/unit проходят офлайн 100% стабильно.
+
+  3) План переписывания README
+
+  1. Пересобрать Quick Start только из существующих файлов (docker-compose.yml, docker-compose.prod.yml), убрать docker-     compose.simple.yml из /C:/Users/User/a_projects/process_metrics_platform_v2/README.md:39.
+  2. Добавить “Runbook” блок: make check, make smoke, make compose-validate, make alembic-heads.
+  3. Добавить честную карту модулей: app/, pipelines/, bi/, streamlit_admin/, db/migrations/.
+  4. Добавить раздел “Known limitations / Tech debt” ссылкой на /C:/Users/User/a_projects/process_metrics_platform_v2/
+     techdebt.md.
+  5. Финал: README должен быть воспроизводим с нуля без скрытых шагов.
+
+  4) План по CI
+
+  1. Добавить black --check в /C:/Users/User/a_projects/process_metrics_platform_v2/.github/workflows/ci.yml.
+  2. Явно запускать make compose-validate, scripts/check_repo_policy.py, make alembic-heads (у вас уже частично есть,
+     просто унифицировать порядок и сообщения).
+  3. Опционально: отдельный job для tests/integration по расписанию (nightly), чтобы не тормозить PR-gate.
+
+  5) Подробно про Polars warning
+  Проблема: в новых версиях Polars меняется дефолт для left join (coalesce), и текущая логика может тихо поменять
+  значения колонок после join.
+  Риск: метрики (Velocity/Sprint Health/Throughput) могут начать считать иначе без явной ошибки.
+  Что делать:
+
+  1. Везде, где текущая логика ожидает “старое поведение”, явно ставить coalesce=True.
+  2. Где нужно строгое null-поведение, явно ставить coalesce=False и затем fill_null/coalesce руками.
+  3. Добавить regression-тесты на чувствительные места (planned/completed points, unestimated, throughput by date).
+  4. Временно зафиксировать верхнюю границу Polars до завершения миграции.
+
+  6) План декомпозиции Streamlit Admin
+  Файл /C:/Users/User/a_projects/process_metrics_platform_v2/streamlit_admin/app.py уже ~2k строк, лучше разнести по
+  зонам ответственности:
+
+  1. streamlit_admin/main.py (entrypoint + auth flow + routing).
+  2. streamlit_admin/state.py (весь st.session_state).
+  3. streamlit_admin/tabs/jobs.py, validate.py, metrics_catalog.py, commitment.py, settings.py, units.py, slices.py,
+     integrations.py.
+  4. streamlit_admin/ui/ для переиспользуемых компонентов/таблиц/форм.
+  5. Миграция по одному табу за PR, без функциональных изменений.
+  6. После каждого шага прогон существующих тестов + добавить smoke на рендер каждого таба.
+
+  Если хочешь, следующим шагом сделаю уже рабочий execution-plan в формате задач P0/P1/P2 с оценкой в часах и
+  зависимостями для команды.
+
+
+сновываясь на документации проекта (в частности, на файле techdebt.md и целях из README.md), я бы порекомендовал
+  сфокусироваться на следующих приоритетных направлениях. Они помогут платформе масштабироваться и подготовиться к
+  подключению новых источников данных.
+
+  1. Архитектурный фундамент: Универсальный слой данных (TD-005: Universal Clean Layer) — 🌟 Высший приоритет
+  Почему это важно: На данный момент весь слой вычисления метрик жестко завязан на специфику и таблицы Jira
+  (clean_jira.*). Поскольку в планах стоит интеграция с GitLab, Linear и другими инструментами, добавление любого нового
+  источника сейчас потребует полного переписывания логики метрик.
+  Что нужно сделать:
+   - Ввести промежуточную схему universal с нормализованными таблицами (work_items, iterations, transitions,
+     workflow_states).
+   - Добавить конфигурацию маппинга полей для проектов (platform.field_mappings), чтобы абстрагировать такие вещи, как
+     Story Points и статусы "Done".
+   - Написать universal_adapter для Jira и поэтапно перевести все файлы из pipelines/calculations/ на работу со схемой
+     universal.
+
+  2. Производительность: Инкрементальное обновление слоя очистки (TD-001: Incremental clean layer)
+  Почему это важно: Сейчас ассеты clean-слоя выполняют полное сканирование "сырых" данных raw_jira.* при каждом запуске.
+  Время выполнения растет линейно, и при объемах свыше 50 000 задач ежечасное обновление начнет падать по таймаутам.
+  Что нужно сделать:
+   - Внедрить механизм high-watermark для инкрементальной загрузки, опираясь на _dlt_load_id или updated_at, чтобы
+     каждый запуск обрабатывал только новые или измененные данные.
+
+  3. Надежность конвейера данных (Pipeline Reliability)
+   - Устранение состояния гонки (TD-003): Сейчас джоб обновления метрик независим от очистки (clean layer). Если
+     обновление метрик запустится во время работы слоя очистки, метрики посчитаются по частично обновленным данным.
+     Нужно добавить Dagster Sensor, который задержит расчет метрик до успешного завершения работы clean-слоя.
+   - Атомарность транзакций (TD-002): Привести все ассеты к единому паттерну работы с базой: одна транзакция на ассет
+     (через engine.begin()), чтобы в случае ошибки исключить возможность частичной записи данных.
+
+  4. Добавление нового коннектора (GitLab)
+  После реализации "Универсального слоя данных" логичным следующим шагом будет подключение GitLab в качестве нового
+  источника (с использованием dlt), так как платформа концептуально уже будет готова переваривать задачи/MR из любых
+  систем без изменения логики в Metabase.
+
+  ---
+
+  С чего бы ты хотел начать?
+  Мы можем заняться рефакторингом и внедрить Universal Clean Layer (TD-005), чтобы открыть дорогу к новым интеграциям,
+  или исправить производительность пайплайнов через инкрементальное обновление (TD-001). Если выберешь задачу, я могу
+  подготовить подробный план изменений (OpenSpec proposal) и приступить к реализации.
+
+ℹ Gemini CLI update available! 0.35.2 → 0.35.3
+  Installed with npm. Attempting to automatically update now...
+
+ℹ Update successful! The new version will be used on your next run.
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ > Понял, а что еще?
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓  list_directory (filesystem MCP Server) {"path":"C:\\Users\\User\\a_projects\\process_metrics_platform_v2\\pi… │
+│                                                                                                                  │
+│ [FILE] aging.py                                                                                                  │
+│ [FILE] backlog_growth.py                                                                                         │
+│ [FILE] commitment_resolver.py                                                                                    │
+│ [FILE] control_chart.py                                                                                          │
+│ [FILE] cumulative_flow.py                                                                                        │
+│ [FILE] cycle_time_ext.py                                                                                         │
+│ [FILE] delivery.py                                                                                               │
+│ [FILE] estimation.py                                                                                             │
+│ [FILE] flow_dynamics.py                                                                                          │
+│ [FILE] flow_efficiency.py                                                                                        │
+│ [FILE] input_flow.py                                                                                             │
+│ [FILE] lead_time.py                                                                                              │
+│ [FILE] quality.py                                                                                                │
+│ [FILE] slicing_utils.py                                                                                          │
+│ [FILE] sprint_health.py                                                                                          │
+│ [FILE] throughput.py                                                                                             │
+│ [FILE] time_to_market.py                                                                                         │
+│                                                                                                                  │
+│ ✓  list_directory (filesystem MCP Server) {"path":"C:\\Users\\User\\a_projects\\process_metrics_platform_v2\\te… │
+│                                                                                                                  │
+│ [FILE] test_admin_auth.py                                                                                        │
+│ [FILE] test_admin_schemas.py                                                                                     │
+│ [FILE] test_aging.py                                                                                             │
+│ [FILE] test_aging_extended.py                                                                                    │
+│ [FILE] test_api_admin_unit.py                                                                                    │
+│ [FILE] test_api_health.py                                                                                        │
+│ [FILE] test_api_integrations_unit.py                                                                             │
+│ [FILE] test_api_metrics_unit.py                                                                                  │
+│ [FILE] test_api_projects_unit.py                                                                                 │
+│ [FILE] test_app_main.py                                                                                          │
+│ [FILE] test_app_main_admin_router.py                                                                             │
+│ [FILE] test_backlog_growth.py                                                                                    │
+│ [FILE] test_bi_cards.py                                                                                          │
+│ [FILE] test_commitment_resolver.py                                                                               │▄▄▄▄
+│ [FILE] test_commitment_resolver_extra.py                                                                         │del
+│ [FILE] test_control_chart.py                                                                                     │ 3)
+│ [FILE] test_cumulative_flow.py                                                                                   │
+│ [FILE] test_cycle_time_ext.py                                                                                    │
+│ [FILE] test_dagster_client.py                                                                                    │
+│ [FILE] test_database.py                                                                                          │
+│ [FILE] test_db_config.py                                                                                         │
+│ [FILE] test_definitions.py                                                                                       │
+│ [FILE] test_delivery.py                                                                                          │
+│ [FILE] test_estimation.py                                                                                        │
+│ [FILE] test_estimation_unit_binding.py                                                                           │
+│ [FILE] test_flow_dynamics.py                                                                                     │
+│ [FILE] test_flow_efficiency.py                                                                                   │
+│ [FILE] test_flow_efficiency_asset.py                                                                             │
+│ [FILE] test_input_flow.py                                                                                        │
+│ [FILE] test_jira_clean.py                                                                                        │
+│ [FILE] test_jira_clean_assets_unit.py                                                                            │
+│ [FILE] test_jira_client.py                                                                                       │
+│ [FILE] test_jira_credentials.py                                                                                  │
+│ [FILE] test_jira_raw_unit.py                                                                                     │
+│ [FILE] test_jira_source_resources_unit.py                                                                        │
+│ [FILE] test_lead_time_logic.py                                                                                   │
+│ [FILE] test_metrics_calc.py                                                                                      │
+│ [FILE] test_metric_assets_aging_flow.py                                                                          │
+│ [FILE] test_metric_assets_generic_store.py                                                                       │
+│ [FILE] test_metric_assets_slicing_verification.py                                                                │
+│ [FILE] test_metric_asset_aging_extended.py                                                                       │
+│ [FILE] test_metric_asset_cycle_time_ext.py                                                                       │
+│ [FILE] test_metric_asset_delivery.py                                                                             │
+│ [FILE] test_metric_asset_estimation.py                                                                           │
+│ [FILE] test_metric_asset_flow_dynamics.py                                                                        │
+│ [FILE] test_metric_asset_input_flow.py                                                                           │
+│ [FILE] test_metric_asset_quality.py                                                                              │
+│ [FILE] test_metric_asset_sprint_health.py                                                                        │
+│ [FILE] test_metric_asset_time_to_market.py                                                                       │
+│ [FILE] test_metric_asset_waste.py                                                                                │
+│ [FILE] test_metric_registry.py                                                                                   │
+│ [FILE] test_no_inplace_rename_usage.py                                                                           │
+│ [FILE] test_partitions.py                                                                                        │
+│ [FILE] test_polars_db.py                                                                                         │
+│ [FILE] test_polars_db_extra.py                                                                                   │
+│ [FILE] test_quality.py                                                                                           │
+│                                                                                                                  │
+│ ✓  list_directory (filesystem MCP Server) {"path":"C:\\Users\\User\\a_projects\\process_metrics_platform_v2\\ap… │
+│                                                                                                                  │
+│ [FILE] admin.py                                                                                                  │
+│ [FILE] dependencies.py                                                                                           │
+│ [FILE] health.py                                                                                                 │
+│ [FILE] integrations.py                                                                                           │
+│ [FILE] metrics.py                                                                                                │
+│ [FILE] projects.py                                                                                               │
+│ [FILE] __init__.py                                                                                               │
+│ [DIR] __pycache__                                                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+│                                                                                                                  │
+│ ✓  read_text_file (filesystem MCP Server) {"path":"C:\\Users\\User\\a_projects\\process_metrics_platform_v2\\py… │
+│                                                                                                                  │
+│ [build-system]                                                                                                   │
+│ requires = ["setuptools>=68.0", "wheel"]                                                                         │
+│ build-backend = "setuptools.build_meta"                                                                          │
+│                                                                                                                  │
+│ [project]                                                                                                        │
+│ name = "process-metrics-platform"                                                                                │
+│ version = "0.1.0"                                                                                                │
+│ description = "Self-hosted ETL + BI platform for calculating and visualizing software development team metrics"  │
+│ requires-python = ">=3.11,<3.13"                                                                                 │
+│ dependencies = [                                                                                                 │
+│ Orchestration                                                                                                    │
+│     "dagster>=1.9.0,<2.0.0",                                                                                     │
+│     "dagster-webserver>=1.9.0,<2.0.0",                                                                           │
+│     "dagster-postgres>=0.25.0,<1.0.0",                                                                           │
+│ Data ingestion                                                                                                   │
+│     "dlt[postgres]>=1.4.0,<2.0.0",                                                                               │
+│ API                                                                                                              │
+│     "fastapi>=0.115.0,<1.0.0",                                                                                   │
+│     "uvicorn[standard]>=0.32.0,<1.0.0",                                                                          │
+│     "bcrypt>=4.0.0,<5.0.0",                                                                                      │
+│     "slowapi>=0.1.9",                                                                                            │
+│ Database                                                                                                         │
+│     "sqlalchemy>=2.0.0,<3.0.0",                                                                                  │
+│     "alembic>=1.14.0,<2.0.0",                                                                                    │
+│     "psycopg2-binary>=2.9.0,<3.0.0",                                                                             │
+│     "asyncpg>=0.30.0,<1.0.0",                                                                                    │
+│ Utilities                                                                                                        │
+│     "pydantic>=2.9.0,<3.0.0",                                                                                    │
+│     "pydantic-settings>=2.6.0,<3.0.0",                                                                           │
+│     "python-dotenv>=1.0.0,<2.0.0",                                                                               │
+│     "requests>=2.32.0,<3.0.0",                                                                                   │
+│     "httpx>=0.28.0,<1.0.0",                                                                                      │
+│ Data processing                                                                                                  │
+│     "polars>=0.20.0,<1.0.0",                                                                                     │
+│     "pandas>=2.0.0,<3.0.0",  # For Polars bridge to SQLAlchemy                                                   │
+│     "pyarrow>=17.0.0",  # Required for Polars <-> Pandas conversion                                              │
+│ Configuration                                                                                                    │
+│     "pyyaml>=6.0.0,<7.0.0",  # YAML config file parsing                                                          │
+│     "adbc-driver-postgresql>=1.10.0",                                                                            │
+│     "tenacity>=8.5.0",                                                                                           │
+│ ]                                                                                                                │
+│                                                                                                                  │
+│ [project.optional-dependencies]                                                                                  │
+│ dev = [                                                                                                          │
+│ Testing                                                                                                          │
+│     "pytest>=8.0.0,<9.0.0",                                                                                      │
+│     "pytest-cov>=6.0.0,<7.0.0",                                                                                  │
+│     "pytest-asyncio>=0.24.0,<1.0.0",                                                                             │
+│     "responses>=0.25.0,<1.0.0",                                                                                  │
+│     "httpx>=0.28.0,<1.0.0",                                                                                      │
+│ Linting                                                                                                          │
+│     "ruff>=0.8.0,<1.0.0",                                                                                        │
+│     "black>=26.3.1",                                                                                             │
+│ Pre-commit                                                                                                       │
+│     "pre-commit>=4.0.0,<5.0.0",                                                                                  │
+│ ]                                                                                                                │
+│                                                                                                                  │
+│ [tool.setuptools.packages.find]                                                                                  │
+│ where = ["."]                                                                                                    │
+│ include = ["app*", "pipelines*", "config*", "common*"]                                                           │
+│                                                                                                                  │
+│ [tool.black]                                                                                                     │
+│ line-length = 88                                                                                                 │
+│ target-version = ["py311"]                                                                                       │
+│ include = '\.pyi?$'                                                                                              │
+│ exclude = '''                                                                                                    │
+│ /(                                                                                                               │
+│     \.git                                                                                                        │
+│     | \.venv                                                                                                     │
+│     | __pycache__                                                                                                │
+│     | \.dagster                                                                                                  │
+│     | build                                                                                                      │
+│     | dist                                                                                                       │
+│ )/                                                                                                               │
+│ '''                                                                                                              │
+│                                                                                                                  │
+│ [tool.ruff]                                                                                                      │
+│ line-length = 88                                                                                                 │
+│ target-version = "py311"                                                                                         │
+│                                                                                                                  │
+│ [tool.ruff.lint]                                                                                                 │
+│ select = ["E", "F", "W", "I", "B", "S"]                                                                          │
+│ ignore = ["S101", "E501"]  # Allow assert in tests, ignore line length                                           │
+│                                                                                                                  │
+│ [tool.ruff.lint.per-file-ignores]                                                                                │
+│ "tests/*" = ["S101", "S105", "S106"]                                                                             │
+│ "scripts/*" = ["S608", "E402"]                                                                                   │
+│                                                                                                                  │
+│ [tool.pytest.ini_options]                                                                                        │
+│ testpaths = ["tests"]                                                                                            │
+│ python_files = ["test_*.py", "_test_*.py"]                                                                       │
+│ python_functions = ["test_*"]                                                                                    │
+│ addopts = "-v"                                                                                                   │
+│ asyncio_mode = "auto"                                                                                            │
+│                                                                                                                  │
+│ [tool.coverage.run]                                                                                              │
+│ source = ["app", "pipelines"]                                                                                    │
+│ omit = ["/__pycache__/", "/tests/"]                                                                              │
+│                                                                                                                  │
+│ [tool.coverage.report]                                                                                           │
+│ exclude_lines = [                                                                                                │
+│     "pragma: no cover",                                                                                          │
+│     "def __repr__",                                                                                              │
+│     "raise NotImplementedError",                                                                                 │
+│     "if TYPE_CHECKING:",                                                                                         │
+│ ]                                                                                                                │
+│                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+✦ Если смотреть за пределы уже упомянутого технического долга, я бы порекомендовал обратить внимание на следующие
+  аспекты, которые сделают платформу более зрелой и удобной для эксплуатации:
+
+  1. DORA Metrics (Завершение реализации)
+  В README.md указано, что метрики DORA (Deployment Frequency, Lead Time for Changes) находятся в статусе "in progress".
+   * Рекомендация: Интегрировать данные из GitLab (через dlt) для отслеживания пайплайнов и релизов. Это позволит
+     считать честный Lead Time for Changes (от коммита до продакшена), а не только Cycle Time задачи в Jira.
+
+  2. Оптимизация обработки данных (Polars-first)
+  В pyproject.toml уже есть polars, но во многих местах всё ещё может использоваться pandas или чистый SQL.
+   * Рекомендация: Полностью перевести тяжелые вычисления в pipelines/calculations/ на Polars. Это даст кратный прирост
+     скорости на больших объемах данных и снизит нагрузку на память.
+
+  3. Расширение Admin API и UI
+  Сейчас проект выглядит как мощный бэкенд с Metabase сверху, но управление ими может быть разрозненным.
+   * Рекомендация:
+       * Добавить в FastAPI эндпоинты для управления расписаниями Dagster (через dagster-graphql или клиент).
+       * Реализовать "Health Dashboard" прямо в админке, который будет показывать статус свежести данных (Data
+         Freshness) — когда в последний раз успешно обновлялась каждая метрика.
+
+  4. Улучшение Observability (Наблюдаемость)
+   * Рекомендация: Внедрить структурированное логирование (например, через structlog) и интегрировать его с Dagster.
+     Сейчас при падении ассета может быть сложно быстро понять, на каком именно ID задачи в Jira произошла ошибка, без
+     глубокого копания в логах контейнера.
+
+  5. Безопасность и Multi-tenancy
+  Поскольку проект позиционируется как self-hosted для организаций:
+   * Рекомендация: Реализовать поддержку нескольких организаций или департаментов (Row Level Security в Postgres). Это
+     позволит одной инсталляции платформы обслуживать разные команды, гарантируя, что менеджеры одной команды не видят
+     детальные данные другой (если это требуется политикой компании).
+
+  6. Документация метрик ("Data Dictionary")
+  Для пользователей (менеджеров) часто важно понимать, как именно считается "Cycle Time" или "Velocity" (учитываются ли
+  выходные, что считается за "Done").
+   * Рекомендация: Создать в интерфейсе или в отдельном docs/metrics.md живой справочник определений, который
+     автоматически обновляется на основе метаданных из кода расчетов.
+
+Если смотреть за пределы уже упомянутого технического долга, я бы порекомендовал обратить внимание на следующие
+  аспекты, которые сделают платформу более зрелой и удобной для эксплуатации:
+
+  1. DORA Metrics (Завершение реализации)
+  В README.md указано, что метрики DORA (Deployment Frequency, Lead Time for Changes) находятся в статусе "in progress".
+   * Рекомендация: Интегрировать данные из GitLab (через dlt) для отслеживания пайплайнов и релизов. Это позволит
+     считать честный Lead Time for Changes (от коммита до продакшена), а не только Cycle Time задачи в Jira.
+
+  2. Оптимизация обработки данных (Polars-first)
+  В pyproject.toml уже есть polars, но во многих местах всё ещё может использоваться pandas или чистый SQL.
+   * Рекомендация: Полностью перевести тяжелые вычисления в pipelines/calculations/ на Polars. Это даст кратный прирост
+     скорости на больших объемах данных и снизит нагрузку на память.
+
+  3. Расширение Admin API и UI
+  Сейчас проект выглядит как мощный бэкенд с Metabase сверху, но управление ими может быть разрозненным.
+   * Рекомендация:
+       * Добавить в FastAPI эндпоинты для управления расписаниями Dagster (через dagster-graphql или клиент).
+       * Реализовать "Health Dashboard" прямо в админке, который будет показывать статус свежести данных (Data
+         Freshness) — когда в последний раз успешно обновлялась каждая метрика.
+
+  4. Улучшение Observability (Наблюдаемость)
+   * Рекомендация: Внедрить структурированное логирование (например, через structlog) и интегрировать его с Dagster.
+     Сейчас при падении ассета может быть сложно быстро понять, на каком именно ID задачи в Jira произошла ошибка, без
+     глубокого копания в логах контейнера.
+
+  5. Безопасность и Multi-tenancy
+  Поскольку проект позиционируется как self-hosted для организаций:
+   * Рекомендация: Реализовать поддержку нескольких организаций или департаментов (Row Level Security в Postgres). Это
+     позволит одной инсталляции платформы обслуживать разные команды, гарантируя, что менеджеры одной команды не видят
+     детальные данные другой (если это требуется политикой компании).
+
+  6. Документация метрик ("Data Dictionary")
+  Для пользователей (менеджеров) часто важно понимать, как именно считается "Cycle Time" или "Velocity" (учитываются ли
+  выходные, что считается за "Done").
+   * Рекомендация: Создать в интерфейсе или в отдельном docs/metrics.md живой справочник определений, который
+     автоматически обновляется на основе метаданных из кода расчетов.
+
+Да, есть ещё несколько сильных направлений сверх этих 6:
+
+  1. Ввести SLO/SLI для пайплайна.
+     Минимум: freshness, % успешных раннов, длительность sync по проектам.
+  2. Нормальный observability-стек.
+     Структурные логи + метрики + алерты (хотя бы на падение jira_raw/jira_clean и stale-данные).
+  3. Контракты данных на уровне схем.
+     Проверки “обязательные поля/типы/уникальность” как обязательный gate перед расчётом метрик.
+  4. Резервное копирование и DR-процедура.
+     Автобэкапы Postgres + документированный restore drill (не только “backup есть”, а проверенный restore).
+  5. Версионирование BI-пака и миграций как release-процесс.
+     Явный changelog: “какие метрики/срезы изменились и с какого релиза”.
+  6. Нагрузочный профиль.
+     Регулярный synthetic-benchmark на 10k/50k/200k issues, чтобы видеть деградацию до прод-инцидента.
+  7. Безопасность секретов.
+     Уйти от plaintext/env где возможно: централизованный secret provider + ротация токенов + аудит.
+  8. Дорожная карта multi-source заранее (TD-005).
+     Даже до полной реализации — зафиксировать интерфейс universal.* и правила маппинга, чтобы не множить Jira-specific
+     логику.

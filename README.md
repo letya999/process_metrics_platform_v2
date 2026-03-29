@@ -33,8 +33,9 @@ Steps:
 1. Clone and install dependencies:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/process-metrics-platform/process-metrics-platform-v2.git
 cd process-metrics-platform-v2
+cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\Activate
 pip install -e ".[dev]"
@@ -96,6 +97,10 @@ See [`techdebt.md`](techdebt.md) for prioritized debt and roadmap.
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Community
+
+See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## License
 

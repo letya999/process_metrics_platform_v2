@@ -273,7 +273,7 @@ def clean_jira_issues(
         """
             )
         )
-        drop_count = drop_count_result.scalar()
+        drop_count = drop_count_result.scalar() or 0
         if drop_count > 0:
             context.log.warning(
                 f"{drop_count} issues dropped due to missing type_id or status_id in dimension tables"
@@ -283,7 +283,7 @@ def clean_jira_issues(
         null_date_result = conn.execute(
             text("SELECT COUNT(*) FROM raw_jira.issues WHERE fields__created IS NULL")
         )
-        null_date_count = null_date_result.scalar()
+        null_date_count = null_date_result.scalar() or 0
         if null_date_count > 0:
             context.log.warning(
                 f"{null_date_count} issues dropped due to NULL fields__created"

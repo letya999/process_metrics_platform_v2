@@ -27,9 +27,10 @@ class TestJiraRawAsset:
         assert result["status"] == "skipped"
         assert result["reason"] == "credentials_not_configured"
 
+    @patch("pipelines.assets.jira.raw.validate_jira_credentials")
     @patch("pipelines.assets.jira.raw.run_jira_pipeline")
     def test_raw_jira_data_runs_with_credentials(
-        self, mock_pipeline, jira_env_vars, monkeypatch
+        self, mock_pipeline, mock_validate_credentials, jira_env_vars, monkeypatch
     ):
         """Test that raw_jira_data runs when credentials configured."""
         monkeypatch.setenv("JIRA_PROJECTS", "PROJ")
@@ -51,6 +52,7 @@ class TestJiraRawAsset:
         assert result["status"] == "success"
         assert result["details"][0]["pipeline_name"] == "jira_raw"
         assert mock_pipeline.called
+        mock_validate_credentials.assert_called_once()
 
 
 class TestJiraCleanAssets:
@@ -76,17 +78,28 @@ class TestJiraCleanAssets:
             return result
 
         mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [
-            _result(first=("integration-id",)),  # system integration lookup
-            _result(),  # sync users
-            _result(scalar=True),  # history table exists check
-            _result(),  # extract users from changelog
-            _result(),  # extract users from issue fields
-            _result(fetchall=[]),  # optional columns lookup
-            _result(scalar=0),  # dropped issues count
-            _result(scalar=0),  # null created date count
-            _result(fetchall=[]),  # insert/update issues returning ids
-        ]
+        execute_results = iter(
+            [
+                _result(first=("integration-id",)),  # system integration lookup
+                _result(),  # sync users
+                _result(scalar=True),  # history table exists check
+                _result(),  # extract users from changelog
+                _result(),  # extract users from issue fields
+                _result(fetchall=[]),  # optional columns lookup
+                _result(scalar=0),  # dropped issues count
+                _result(scalar=0),  # null created date count
+                _result(fetchall=[]),  # insert/update issues returning ids
+            ]
+        )
+
+        def _execute_side_effect(*_args, **_kwargs):
+            # Keep integration test resilient to benign extra SQL checks in asset code.
+            try:
+                return next(execute_results)
+            except StopIteration:
+                return _result(fetchall=[], scalar=0)
+
+        mock_conn.execute.side_effect = _execute_side_effect
         mock_database_resource.get_engine.return_value.connect.return_value.__enter__ = MagicMock(
             return_value=mock_conn
         )

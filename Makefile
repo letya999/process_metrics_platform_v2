@@ -216,7 +216,7 @@ docker-down:
 compose-validate:
 	@echo "$(BLUE)Validating docker compose manifests...$(NC)"
 	docker compose -f docker-compose.yml config -q
-	docker compose -f docker-compose.prod.yml --env-file .env.prod config -q
+	docker compose -f docker-compose.prod.yml --env-file .env.prod.example config -q
 	@echo "$(GREEN)Compose manifests are valid!$(NC)"
 
 ## Start production stack
