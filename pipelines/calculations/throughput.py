@@ -119,6 +119,7 @@ def calculate_generic_throughput(
                 left_on="id",
                 right_on="issue_id",
                 how="left",
+                coalesce=True,
             )
             .with_columns(
                 [

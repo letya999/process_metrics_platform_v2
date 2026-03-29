@@ -151,6 +151,7 @@ def calculate_cumulative_flow_diagram(
                 left_on="id",
                 right_on="issue_id",
                 how="left",
+                coalesce=True,
             )
             .filter(pl.col("first_done_date").is_null())
             .select(
@@ -166,7 +167,9 @@ def calculate_cumulative_flow_diagram(
         )
 
         daily_statuses = (
-            daily_statuses.join(first_done_per_issue, on="issue_id", how="left")
+            daily_statuses.join(
+                first_done_per_issue, on="issue_id", how="left", coalesce=True
+            )
             .filter(
                 # Keep non-done issues always
                 pl.col("status_id").is_in(done_status_ids).not_()
@@ -266,6 +269,7 @@ def _calculate_issue_status_on_dates(
             left_on="id",
             right_on="issue_id",
             how="left",
+            coalesce=True,
         )
         # Keep only changelog entries before or on the date
         .filter(
@@ -362,6 +366,8 @@ def calculate_cfd_aggregates(cfd_df: pl.DataFrame) -> pl.DataFrame:
     )
 
     # Join aggregates with trends
-    result = aggregates.join(trends, on=["project_id", "status_name"], how="left")
+    result = aggregates.join(
+        trends, on=["project_id", "status_name"], how="left", coalesce=True
+    )
 
     return result

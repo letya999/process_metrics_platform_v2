@@ -1,129 +1,102 @@
 # Process Metrics Platform v2
 
-**Open-source, self-hosted ETL + BI platform for software development teams.**
+Open-source self-hosted ETL + BI platform for engineering metrics.
 
-[![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green.svg)](https://fastapi.tiangolo.com)
-[![Dagster](https://img.shields.io/badge/Dagster-1.9-purple.svg)](https://dagster.io)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## What it does
 
-Calculate and visualize key engineering metrics (Velocity, Lead Time, DORA) from your tools (Jira, GitLab) without sending data to the cloud.
+- Ingests data from Jira into PostgreSQL using `dlt`.
+- Builds clean and metrics layers with Dagster assets.
+- Exposes admin APIs via FastAPI.
+- Renders dashboards in Metabase.
 
----
+Current source in production path: Jira.
+Multi-source abstraction and enterprise hardening are tracked in `techdebt.md`.
 
-## 🚀 Key Features
+## Stack
 
-- **Self-Hosted & Private**: Your data never leaves your server (100% on-premise/VPS).
-- **Modern Stack**:
-  - **Ingestion**: [dlt](https://dlthub.com) for robust data extraction (Jira, GitLab, Slack).
-  - **Orchestration**: [Dagster](https://dagster.io) for reliable data pipelines and asset management.
-  - **API**: [FastAPI](https://fastapi.tiangolo.com) for admin management.
-  - **BI & Dashboards**: [Metabase](https://www.metabase.com) for visualization.
-  - **Infrastructure**: Docker Compose + Caddy (automatic HTTPS) + PostgreSQL.
-- **Pre-built Metrics**:
-  - **Scrum**: Velocity, Sprint Burndown, Predictability.
-  - **Kanban**: Lead Time, Cycle Time, Throughput, CFD.
-  - **DORA**: Deployment Frequency, Lead Time for Changes (in progress).
+- Python 3.11
+- FastAPI
+- Dagster
+- PostgreSQL
+- Metabase
+- Docker Compose
 
-## 🛠️ Quick Start (Production)
+## Quick Start (local/dev)
 
-For a simple robust deployment on a single server (e.g., DigitalOcean Droplet):
+Prerequisites:
 
-👉 **[Read the Contributing Guide](CONTRIBUTING.md)**
-
-Summary:
-1. **Clone** the repo.
-2. **Configure** `.env` (generated secure passwords + Jira credentials).
-3. **Run**:
-   ```bash
-   docker compose -f docker-compose.simple.yml up -d
-   ```
-4. **Access**:
-   - 📊 **Dashboards (Metabase)**: `https://metrics.your-domain.com`
-   - ⚙️ **Pipelines (Dagster)**: `https://dagster.your-domain.com`
-   - 🔧 **Admin API**: `https://api.your-domain.com`
-
-## 💻 Development Setup
-
-### Prerequisites
+- Docker + Docker Compose
 - Python 3.11+
-- Docker & Docker Compose
-- `make` (optional, for convenience)
 
-### Installation
+Steps:
 
-1. **Clone and Setup Environment**:
-   ```bash
-   git clone https://github.com/<your-github-user-or-org>/process-metrics-platform-v2.git
-   cd process-metrics-platform-v2
+1. Clone and install dependencies:
 
-   # Setup virtualenv and dependencies
-   python -m venv .venv
-   source .venv/bin/activate  # or .venv\Scripts\Activate on Windows
-   pip install -e ".[dev]"
-   ```
-
-2. **Start Dev Stack**:
-   ```bash
-   # Starts Postgres, Dagster, Metabase locally
-   docker compose up -d
-   ```
-
-3. **Run Checks**:
-   ```bash
-   make check  # Runs Lint + Test + Validate
-   ```
-
-## 🏗️ Architecture
-
-```mermaid
-graph TD
-    Sources[Jira / GitLab / Slack] -->|dlt| Raw[Raw Layer (Bronze)]
-    Raw -->|Dagster| Clean[Clean Layer (Silver)]
-    Clean -->|SQL/dbt| Metrics[Metrics Layer (Gold)]
-    Metrics -->|SQL| Metabase[Metabase Dashboards]
-
-    subgraph "Docker Compose Host"
-        Raw
-        Clean
-        Metrics
-        Metabase
-        FastAPI[Admin API]
-    end
+```bash
+git clone <repository-url>
+cd process-metrics-platform-v2
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\\Scripts\\Activate
+pip install -e ".[dev]"
 ```
 
-## 📚 Documentation
+2. Start services:
 
-- **[Contributing Guide](CONTRIBUTING.md)**: Local setup and development workflow.
-- **[Security Policy](SECURITY.md)**: How to report vulnerabilities.
+```bash
+docker compose -f docker-compose.yml up -d
+```
 
-## Security Migration Notes
+3. Run migrations:
 
-If you are upgrading to this version, review these environment variables:
+```bash
+docker compose --profile migration run --rm alembic upgrade head
+```
 
-- `ADMIN_AUTH_SECRET` or `SECRET_KEY` (required for admin token signing).
-- `ADMIN_AUTH_TTL_MINUTES` (default `120`, allowed range `5..1440`).
-- `ADMIN_TOKENS_INVALID_BEFORE` (optional global token revocation cutover; unix timestamp or ISO8601).
-- `INTEGRATION_ALLOWED_URL_SCHEMES` (default `https`).
-- `INTEGRATION_ALLOWED_HOST_PATTERNS` (optional host glob allowlist for integration URLs).
-- `INTEGRATION_ALLOW_PRIVATE_IPS` (default `true`, useful for internal networks).
-- `INTEGRATION_ALLOW_LOCALHOST` (default `false`).
+4. Open services:
 
-Recommended baseline for closed internal deployments:
+- Dagster UI: `http://localhost:3000`
+- Metabase: `http://localhost:3001`
+- Admin API: `http://localhost:8000`
+- Admin UI (Streamlit): `http://localhost:8501`
 
-- Keep `INTEGRATION_ALLOWED_URL_SCHEMES=https`.
-- Define `INTEGRATION_ALLOWED_HOST_PATTERNS` for known domains where possible.
-- Keep `INTEGRATION_ALLOW_LOCALHOST=false` unless explicitly required.
-- Set a non-empty `ADMIN_AUTH_SECRET` and rotate it on incident.
+## Quick Start (production compose)
 
-## 🤝 Contributing
+Use `docker-compose.prod.yml` with `.env.prod`:
 
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+docker compose -f docker-compose.prod.yml --env-file .env.prod --profile migration run --rm alembic upgrade head
+```
 
-## 📄 License
+## Runbook
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Use these commands as the default quality/deploy gates:
+
+```bash
+make check
+make smoke
+make compose-validate
+make alembic-heads
+```
+
+## Repository map
+
+- `app/`: FastAPI app, admin and integration endpoints
+- `pipelines/`: Dagster assets/jobs/schedules/calculations
+- `bi/`: Metabase BI pack and metadata
+- `streamlit_admin/`: admin UI
+- `db/migrations/`: Alembic migrations
+- `scripts/`: repo checks, smoke/validation helpers
+- `tests/`: unit/integration/validation tests
+
+## Known limitations / tech debt
+
+See [`techdebt.md`](techdebt.md) for prioritized debt and roadmap.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

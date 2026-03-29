@@ -66,6 +66,7 @@ def calculate_backlog_growth(
         left_on="status_id",
         right_on="id",
         how="left",
+        coalesce=True,
     )
 
     # 2. Collect ALL Events for Backlog Size and Age
@@ -121,7 +122,7 @@ def calculate_backlog_growth(
 
     # 5. History with Cumulative Sums
     history = (
-        grid.join(daily_deltas, on=["project_id", "date"], how="left")
+        grid.join(daily_deltas, on=["project_id", "date"], how="left", coalesce=True)
         .with_columns(
             [
                 pl.col("size_delta").fill_null(0),
@@ -209,6 +210,7 @@ def calculate_backlog_growth(
                 left_on="from_status_id",
                 right_on="id",
                 how="left",
+                coalesce=True,
             )
             .rename({"category": "from_cat"})
             .join(
@@ -216,6 +218,7 @@ def calculate_backlog_growth(
                 left_on="to_status_id",
                 right_on="id",
                 how="left",
+                coalesce=True,
             )
             .rename({"category": "to_cat"})
         )
@@ -251,10 +254,12 @@ def calculate_backlog_growth(
     final_df = history.filter(pl.col("date") >= start_date_requested)
 
     final_df = (
-        final_df.join(created_daily, on=["project_id", "date"], how="left")
-        .join(closed_daily, on=["project_id", "date"], how="left")
-        .join(entered_daily, on=["project_id", "date"], how="left")
-        .join(exited_daily, on=["project_id", "date"], how="left")
+        final_df.join(
+            created_daily, on=["project_id", "date"], how="left", coalesce=True
+        )
+        .join(closed_daily, on=["project_id", "date"], how="left", coalesce=True)
+        .join(entered_daily, on=["project_id", "date"], how="left", coalesce=True)
+        .join(exited_daily, on=["project_id", "date"], how="left", coalesce=True)
         .with_columns(
             [
                 pl.col("total_backlog_size").fill_null(0),
@@ -300,7 +305,7 @@ def calculate_backlog_growth(
         )
 
         final_df = (
-            final_df.join(current_stale, on="project_id", how="left")
+            final_df.join(current_stale, on="project_id", how="left", coalesce=True)
             .with_columns(
                 [
                     pl.when(pl.col("date") == latest_date)
@@ -483,8 +488,15 @@ def calculate_backlog_growth_trends(
     ).unique()
 
     growth_df = (
-        all_periods.join(created_counts, on=["project_id", "period_start"], how="left")
-        .join(completed_counts, on=["project_id", "period_start"], how="left")
+        all_periods.join(
+            created_counts, on=["project_id", "period_start"], how="left", coalesce=True
+        )
+        .join(
+            completed_counts,
+            on=["project_id", "period_start"],
+            how="left",
+            coalesce=True,
+        )
         .with_columns(
             [
                 pl.col("created_count").fill_null(0),
@@ -530,6 +542,7 @@ def calculate_backlog_distribution(
         left_on="type_id",
         right_on="id",
         how="left",
+        coalesce=True,
     ).rename({"name": "issue_type"})
 
     # Extract priority
@@ -554,7 +567,7 @@ def calculate_backlog_distribution(
             ]
         )
         backlog_with_priority = backlog_with_type.join(
-            priorities, left_on="id", right_on="issue_id", how="left"
+            priorities, left_on="id", right_on="issue_id", how="left", coalesce=True
         ).with_columns(pl.col("priority").fill_null("Unknown"))
     else:
         backlog_with_priority = backlog_with_type.with_columns(
@@ -570,7 +583,7 @@ def calculate_backlog_distribution(
     )
 
     return (
-        distribution.join(project_totals, on="project_id", how="left")
+        distribution.join(project_totals, on="project_id", how="left", coalesce=True)
         .with_columns(
             (pl.col("issue_count") * 100.0 / pl.col("project_total"))
             .round(2)
@@ -625,7 +638,7 @@ def calculate_age_distribution(
     )
 
     return (
-        distribution.join(project_totals, on="project_id", how="left")
+        distribution.join(project_totals, on="project_id", how="left", coalesce=True)
         .with_columns(
             (pl.col("issue_count") * 100.0 / pl.col("project_total"))
             .round(2)

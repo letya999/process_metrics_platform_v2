@@ -147,8 +147,8 @@ def calculate_epic_delivery_time(
     )
 
     children_with_times = children.join(
-        starts, left_on="id", right_on="issue_id", how="left"
-    ).join(ends, left_on="id", right_on="issue_id", how="left")
+        starts, left_on="id", right_on="issue_id", how="left", coalesce=True
+    ).join(ends, left_on="id", right_on="issue_id", how="left", coalesce=True)
 
     # Aggregate by epic
     epic_times = (

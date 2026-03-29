@@ -34,8 +34,8 @@ def calculate_estimate_volatility(
         {"id": "issue_id"}
     )
 
-    result = issues.join(final_sp, on="issue_id", how="left").join(
-        initial_sp, on="issue_id", how="left"
+    result = issues.join(final_sp, on="issue_id", how="left", coalesce=True).join(
+        initial_sp, on="issue_id", how="left", coalesce=True
     )
 
     # If no initial_sp in changelog, it means it was never changed, so initial = final

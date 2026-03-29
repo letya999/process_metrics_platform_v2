@@ -135,7 +135,7 @@ def calculate_work_item_aging_facts(
 
             if not last_left_done.is_empty():
                 start_transitions = start_transitions.join(
-                    last_left_done, on="issue_id", how="left"
+                    last_left_done, on="issue_id", how="left", coalesce=True
                 ).filter(
                     pl.col("last_left_done_at").is_null()
                     | (pl.col("changed_at") > pl.col("last_left_done_at"))
@@ -153,6 +153,7 @@ def calculate_work_item_aging_facts(
             left_on="id",
             right_on="issue_id",
             how="left",
+            coalesce=True,
         )
     else:
         active_issues = active_issues.with_columns(
@@ -187,7 +188,11 @@ def calculate_work_item_aging_facts(
         )
 
         aging_df = aging_df.join(
-            last_status_entry, left_on="id", right_on="issue_id", how="left"
+            last_status_entry,
+            left_on="id",
+            right_on="issue_id",
+            how="left",
+            coalesce=True,
         )
 
         aging_df = aging_df.with_columns(

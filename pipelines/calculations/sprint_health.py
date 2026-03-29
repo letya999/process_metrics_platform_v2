@@ -53,7 +53,7 @@ def _determine_story_points_at_event_time(
     )
 
     base = events_df.select(["issue_id", "sprint_id", "changed_at"]).join(
-        current_sp_df, on="issue_id", how="left"
+        current_sp_df, on="issue_id", how="left", coalesce=True
     )
 
     if sp_fields.is_empty() or field_value_changelog_df.is_empty():
@@ -70,7 +70,7 @@ def _determine_story_points_at_event_time(
     changes_filtered = changes.join(relevant_issues, on="issue_id", how="inner")
 
     joined = events_df.select(["issue_id", "sprint_id", "changed_at"]).join(
-        changes_filtered, on="issue_id", how="left", suffix="_sp"
+        changes_filtered, on="issue_id", how="left", coalesce=True, suffix="_sp"
     )
 
     corrections = (
@@ -102,7 +102,12 @@ def _determine_story_points_at_event_time(
     )
 
     return (
-        base.join(corrections, on=["issue_id", "sprint_id", "changed_at"], how="left")
+        base.join(
+            corrections,
+            on=["issue_id", "sprint_id", "changed_at"],
+            how="left",
+            coalesce=True,
+        )
         .with_columns(
             pl.coalesce(["historic_sp", "story_points"])
             .fill_null(0.0)
@@ -334,6 +339,7 @@ def calculate_sprint_spillover(
             left_on="iteration_id",
             right_on="sprint_id",
             how="left",
+            coalesce=True,
         )
         .with_columns(pl.col("spillover_count").fill_null(0))
     )
@@ -666,7 +672,9 @@ def calculate_field_value_sprint_pct(
             .alias("field_value")
         )
     )
-    sprint_full = sprint_unique.join(field_values_single, on="issue_id", how="left")
+    sprint_full = sprint_unique.join(
+        field_values_single, on="issue_id", how="left", coalesce=True
+    )
 
     # Calculate pct per sprint
     agg = (
@@ -697,7 +705,9 @@ def calculate_field_value_sprint_pct(
         sprints_df.select(
             ["project_id", pl.col("id").alias("iteration_id"), "start_date"]
         )
-        .join(agg, left_on="iteration_id", right_on="sprint_id", how="left")
+        .join(
+            agg, left_on="iteration_id", right_on="sprint_id", how="left", coalesce=True
+        )
         .with_columns(pl.col("field_pct").fill_null(0.0))
     )
 
@@ -754,9 +764,9 @@ def calculate_unestimated_closed(
         .agg(pl.col("sp_num").max().alias("sp_num"))
     )
 
-    unestimated = completed.join(sp_by_issue, on="issue_id", how="left").filter(
-        pl.col("sp_num").is_null() | (pl.col("sp_num") <= 0.0)
-    )
+    unestimated = completed.join(
+        sp_by_issue, on="issue_id", how="left", coalesce=True
+    ).filter(pl.col("sp_num").is_null() | (pl.col("sp_num") <= 0.0))
 
     agg = unestimated.group_by("sprint_id").agg(
         pl.col("issue_id").n_unique().alias("unestimated_count")
@@ -766,7 +776,9 @@ def calculate_unestimated_closed(
         sprints_df.select(
             ["project_id", pl.col("id").alias("iteration_id"), "start_date"]
         )
-        .join(agg, left_on="iteration_id", right_on="sprint_id", how="left")
+        .join(
+            agg, left_on="iteration_id", right_on="sprint_id", how="left", coalesce=True
+        )
         .with_columns(pl.col("unestimated_count").fill_null(0))
     )
 

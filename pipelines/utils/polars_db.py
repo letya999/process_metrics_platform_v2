@@ -9,6 +9,7 @@ This module provides helper functions to:
 import json
 import logging
 import os
+import warnings
 
 import polars as pl
 from sqlalchemy import Engine, text
@@ -44,7 +45,13 @@ def read_table(
         except Exception:
             # Fallback for complex types/driver edge-cases.
             with engine.connect() as conn:
-                pdf = pd.read_sql(text(query), conn)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="pandas only supports SQLAlchemy connectable",
+                        category=UserWarning,
+                    )
+                    pdf = pd.read_sql(text(query), conn)
                 for col in pdf.columns:
                     if pdf[col].dtype == "object":
                         # Skip string conversion for datetime objects to avoid destruction
@@ -58,7 +65,13 @@ def read_table(
 
     # Parameterized path: use pandas/SQLAlchemy safely.
     with engine.connect() as conn:
-        pdf = pd.read_sql(text(query), conn, params=params)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="pandas only supports SQLAlchemy connectable",
+                category=UserWarning,
+            )
+            pdf = pd.read_sql(text(query), conn, params=params)
         for col in pdf.columns:
             if pdf[col].dtype == "object":
                 # Skip string conversion for datetime objects to avoid destruction

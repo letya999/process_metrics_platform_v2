@@ -40,6 +40,7 @@ from pipelines.assets.metrics import (
     waste_data_quality_check,
 )
 from pipelines.jobs.schedules import jobs, schedules
+from pipelines.jobs.schedules import sensors as schedule_sensors
 from pipelines.resources.database import database_resource
 
 # Import partitions and sensor
@@ -53,6 +54,8 @@ try:
 except ImportError:
     project_partitions = None
     sensors = []
+
+sensors.extend(schedule_sensors)
 
 # Load all assets from modules
 jira_assets = load_assets_from_modules([jira])

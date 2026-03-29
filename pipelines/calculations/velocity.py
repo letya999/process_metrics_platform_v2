@@ -263,8 +263,10 @@ def identify_sprint_commitment(
         issue_created = non_sub_ids.select(["issue_id", "jira_created_at"])
 
         fallback_commitment = (
-            fallback_candidates.join(sprint_starts, on="sprint_id", how="left")
-            .join(issue_created, on="issue_id", how="left")
+            fallback_candidates.join(
+                sprint_starts, on="sprint_id", how="left", coalesce=True
+            )
+            .join(issue_created, on="issue_id", how="left", coalesce=True)
             .filter(
                 pl.col("jira_created_at").is_null()  # no creation date → include
                 | (pl.col("jira_created_at") < pl.col("start_date"))
@@ -328,7 +330,9 @@ def determine_story_points_at_date(
         {"id": "sprint_id", date_col: "target_date"}
     )
 
-    scope_with_dates = scope_df.join(target_dates, on="sprint_id", how="left")
+    scope_with_dates = scope_df.join(
+        target_dates, on="sprint_id", how="left", coalesce=True
+    )
 
     # Identify SP fields
     if sp_field_key_ids_override:
@@ -343,9 +347,9 @@ def determine_story_points_at_date(
             | (pl.col("name").str.to_lowercase().str.contains("story point"))
         )
         if sp_fields.is_empty() or changelog_df.is_empty():
-            return scope_df.join(current_sp_df, on="issue_id", how="left").select(
-                ["issue_id", "sprint_id", "story_points"]
-            )
+            return scope_df.join(
+                current_sp_df, on="issue_id", how="left", coalesce=True
+            ).select(["issue_id", "sprint_id", "story_points"])
         sp_field_ids = sp_fields["id"].to_list()
 
     # Filter changelog
@@ -359,7 +363,9 @@ def determine_story_points_at_date(
     relevant_issues = scope_df.select("issue_id").unique()
     changes_filtered = changes.join(relevant_issues, on="issue_id", how="inner")
 
-    joined = scope_with_dates.join(changes_filtered, on="issue_id", how="left")
+    joined = scope_with_dates.join(
+        changes_filtered, on="issue_id", how="left", coalesce=True
+    )
 
     # Find corrections: First change AFTER target_date
     corrections = (
@@ -394,10 +400,12 @@ def determine_story_points_at_date(
     )
 
     # Join back to full scope
-    init_sp = scope_df.join(current_sp_df, on="issue_id", how="left")
+    init_sp = scope_df.join(current_sp_df, on="issue_id", how="left", coalesce=True)
 
     final = (
-        init_sp.join(corrections, on=["issue_id", "sprint_id"], how="left")
+        init_sp.join(
+            corrections, on=["issue_id", "sprint_id"], how="left", coalesce=True
+        )
         .with_columns(
             pl.coalesce(["historic_sp", "story_points"])
             .fill_null(0.0)
@@ -484,9 +492,9 @@ def extract_story_points(
 
     # Ensure all issues have SP (default 0)
     all_issues = issues_df.select(["id"]).rename({"id": "issue_id"})
-    result = all_issues.join(sp_parsed, on="issue_id", how="left").with_columns(
-        pl.col("story_points").fill_null(0.0)
-    )
+    result = all_issues.join(
+        sp_parsed, on="issue_id", how="left", coalesce=True
+    ).with_columns(pl.col("story_points").fill_null(0.0))
 
     return result
 
@@ -520,7 +528,7 @@ def identify_completed_issues(
     )
 
     scope_with_dates = scope_df.join(
-        sprint_dates, left_on="sprint_id", right_on="id", how="left"
+        sprint_dates, left_on="sprint_id", right_on="id", how="left", coalesce=True
     )
 
     if status_changelog_df.is_empty() or not done_status_ids:
@@ -531,7 +539,9 @@ def identify_completed_issues(
             ["id", "status_id", "jira_resolved_at"]
         ).rename({"id": "issue_id"})
         return (
-            scope_with_dates.join(issues_status, on="issue_id", how="left")
+            scope_with_dates.join(
+                issues_status, on="issue_id", how="left", coalesce=True
+            )
             .filter(
                 pl.col("status_id")
                 .cast(pl.Utf8)
@@ -550,7 +560,9 @@ def identify_completed_issues(
 
     # Find the status at sprint end for each issue
     status_at_end = (
-        scope_with_dates.join(status_changelog_df, on="issue_id", how="left")
+        scope_with_dates.join(
+            status_changelog_df, on="issue_id", how="left", coalesce=True
+        )
         .filter(
             pl.col("changed_at").is_not_null()
             & (pl.col("changed_at") <= pl.col("effective_end_date"))
@@ -588,7 +600,7 @@ def identify_completed_issues(
         if not scope_with_cl.is_empty():
             # Find first change AFTER effective_end_date
             future_changes = scope_with_cl.join(
-                status_changelog_df, on="issue_id", how="left"
+                status_changelog_df, on="issue_id", how="left", coalesce=True
             ).filter(
                 pl.col("changed_at").is_not_null()
                 & (pl.col("changed_at") > pl.col("effective_end_date"))
@@ -639,7 +651,9 @@ def identify_completed_issues(
     # Jira completedIssues ~= completed during sprint window.
     # Require explicit completion evidence inside sprint interval.
     done_transitions_in_window = (
-        scope_with_dates.join(status_changelog_df, on="issue_id", how="left")
+        scope_with_dates.join(
+            status_changelog_df, on="issue_id", how="left", coalesce=True
+        )
         .filter(
             pl.col("changed_at").is_not_null()
             & pl.col("start_date").is_not_null()
@@ -660,6 +674,7 @@ def identify_completed_issues(
             issues_df.select(["id", "jira_resolved_at"]).rename({"id": "issue_id"}),
             on="issue_id",
             how="left",
+            coalesce=True,
         )
         .filter(
             pl.col("jira_resolved_at").is_not_null()
@@ -701,7 +716,7 @@ def _identify_completed_by_current_status(
     issues_status = issues_df.select(["id", "status_id"]).rename({"id": "issue_id"})
 
     completed = (
-        scope_df.join(issues_status, on="issue_id", how="left")
+        scope_df.join(issues_status, on="issue_id", how="left", coalesce=True)
         .filter(
             pl.col("status_id").cast(pl.Utf8).str.to_lowercase().is_in(done_status_ids)
         )
@@ -816,8 +831,10 @@ def calculate_velocity_facts(
 
     # 7. Join with Sprint Details
     result = (
-        sprints_df.join(plan_agg, left_on="id", right_on="sprint_id", how="left")
-        .join(fact_agg, left_on="id", right_on="sprint_id", how="left")
+        sprints_df.join(
+            plan_agg, left_on="id", right_on="sprint_id", how="left", coalesce=True
+        )
+        .join(fact_agg, left_on="id", right_on="sprint_id", how="left", coalesce=True)
         .with_columns(
             [
                 pl.col("planned_issues").fill_null(0),
@@ -917,7 +934,7 @@ def calculate_velocity_slice_by_issue_type(
 
     # Join with issue type and SP
     commitment_full = commitment_with_sp.join(
-        issue_types_df, on="issue_id", how="left"
+        issue_types_df, on="issue_id", how="left", coalesce=True
     ).with_columns(
         [
             pl.col("story_points").fill_null(0.0),
@@ -926,7 +943,7 @@ def calculate_velocity_slice_by_issue_type(
     )
 
     completed_full = completed_with_sp.join(
-        issue_types_df, on="issue_id", how="left"
+        issue_types_df, on="issue_id", how="left", coalesce=True
     ).with_columns(
         [
             pl.col("story_points").fill_null(0.0),
@@ -951,7 +968,11 @@ def calculate_velocity_slice_by_issue_type(
 
     # Combine plan and fact
     combined = plan_agg.join(
-        fact_agg, on=["sprint_id", "type_name"], how="full", suffix="_fact"
+        fact_agg,
+        on=["sprint_id", "type_name"],
+        how="full",
+        coalesce=True,
+        suffix="_fact",
     ).with_columns(
         [
             pl.col("planned_issues").fill_null(0),
@@ -962,7 +983,9 @@ def calculate_velocity_slice_by_issue_type(
     )
 
     # Join with Sprint Details
-    result = sprints_df.join(combined, left_on="id", right_on="sprint_id", how="left")
+    result = sprints_df.join(
+        combined, left_on="id", right_on="sprint_id", how="left", coalesce=True
+    )
 
     final_metrics = (
         result.rename(

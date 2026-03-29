@@ -138,7 +138,7 @@ async def create_integration(
             )
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Invalid instance_url: {exc}",
             ) from exc
 
@@ -222,7 +222,7 @@ async def update_integration(
                 )
             except ValueError as exc:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Invalid instance_url: {exc}",
                 ) from exc
         else:
@@ -314,14 +314,14 @@ async def list_jira_projects(
 
     if not api_token:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Integration has no resolvable API token",
         )
 
     base_url = (integration.instance_url or "").rstrip("/")
     if not base_url:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Integration has no instance_url configured",
         )
 
@@ -329,7 +329,7 @@ async def list_jira_projects(
         base_url = validate_and_normalize_instance_url(base_url)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid instance_url: {exc}",
         ) from exc
 

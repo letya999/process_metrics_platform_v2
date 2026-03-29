@@ -130,7 +130,7 @@ def calculate_flow_efficiency_per_issue(
         [
             (
                 pl.col("active_days")
-                / (pl.col("active_days") + pl.col("wait_days")).clip_min(0.0001)
+                / (pl.col("active_days") + pl.col("wait_days")).clip(0.0001, None)
                 * 100.0
             )
             .round(2)

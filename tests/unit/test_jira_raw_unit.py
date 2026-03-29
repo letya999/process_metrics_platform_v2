@@ -5,6 +5,8 @@ import pytest
 
 from pipelines.assets.jira import raw
 
+pytestmark = pytest.mark.unit
+
 
 def _asset_fn(defn):
     return defn.node_def.compute_fn.decorated_fn
@@ -84,6 +86,11 @@ def test_raw_jira_data_success_from_env(monkeypatch):
     monkeypatch.setenv("JIRA_USER_EMAIL", "user@local")
     monkeypatch.setenv("JIRA_API_TOKEN", "token")
     monkeypatch.setenv("JIRA_PROJECTS", "AAA, BBB")
+    monkeypatch.setattr(
+        "pipelines.utils.db_config.get_active_projects_from_db", lambda: []
+    )
+    # C-10: Isolation - mock credentials validation to avoid network calls
+    monkeypatch.setattr(raw, "validate_jira_credentials", lambda *a, **k: None)
 
     calls = []
 
@@ -112,6 +119,11 @@ def test_raw_jira_data_raises_when_project_sync_fails(monkeypatch):
     monkeypatch.setenv("JIRA_USER_EMAIL", "user@local")
     monkeypatch.setenv("JIRA_API_TOKEN", "token")
     monkeypatch.setenv("JIRA_PROJECTS", "AAA")
+    monkeypatch.setattr(
+        "pipelines.utils.db_config.get_active_projects_from_db", lambda: []
+    )
+    # C-10: Isolation - mock credentials validation to avoid network calls
+    monkeypatch.setattr(raw, "validate_jira_credentials", lambda *a, **k: None)
     monkeypatch.setattr(
         raw,
         "run_jira_pipeline",

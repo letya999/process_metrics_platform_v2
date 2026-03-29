@@ -109,7 +109,7 @@ def calculate_lead_time_per_issue(
     # If we have last_left_end info, filter to only transitions AFTER last exit
     if last_left_end is not None:
         done_transitions = done_transitions.join(
-            last_left_end, on="issue_id", how="left"
+            last_left_end, on="issue_id", how="left", coalesce=True
         ).filter(
             pl.col("last_left_done_at").is_null()
             | (pl.col("changed_at") > pl.col("last_left_done_at"))
@@ -123,7 +123,11 @@ def calculate_lead_time_per_issue(
     # Join with issues and use COALESCE(changelog_event, resolved_at)
     issues_with_end = (
         issues_df.join(
-            end_events_from_changelog, left_on="id", right_on="issue_id", how="left"
+            end_events_from_changelog,
+            left_on="id",
+            right_on="issue_id",
+            how="left",
+            coalesce=True,
         )
         .with_columns(
             [
@@ -169,7 +173,7 @@ def calculate_lead_time_per_issue(
     # This correctly handles Done → To Do → Done cycles
     if last_left_end is not None:
         start_transitions_filtered = start_transitions_filtered.join(
-            last_left_end, on="issue_id", how="left"
+            last_left_end, on="issue_id", how="left", coalesce=True
         ).filter(
             pl.col("last_left_done_at").is_null()
             | (pl.col("changed_at") >= pl.col("last_left_done_at"))
@@ -251,7 +255,7 @@ def calculate_histogram_bins(lead_time_df: pl.DataFrame) -> pl.DataFrame:
             ]
         )
         .group_by(["project_id", "bin_number"])
-        .agg(pl.count().alias("tickets_count"))
+        .agg(pl.len().alias("tickets_count"))
         .sort(["project_id", "bin_number"])
     )
 
@@ -283,7 +287,7 @@ def calculate_histogram_bins_slice(lead_time_df: pl.DataFrame) -> pl.DataFrame:
             [pl.col("lead_time_days").ceil().cast(pl.Int32).alias("bin_number")]
         )
         .group_by(["project_id", "issue_type", "bin_number"])
-        .agg(pl.count().alias("tickets_count"))
+        .agg(pl.len().alias("tickets_count"))
         .sort(["project_id", "issue_type", "bin_number"])
     )
 
@@ -326,7 +330,7 @@ def calculate_lead_time_slice(lead_time_df: pl.DataFrame) -> pl.DataFrame:
                 .quantile(0.9)
                 .round(2)
                 .alias("p90_lead_time_days"),
-                pl.count().alias("total_issues"),
+                pl.len().alias("total_issues"),
             ]
         )
         .select(

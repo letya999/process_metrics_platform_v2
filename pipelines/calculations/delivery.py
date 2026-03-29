@@ -63,8 +63,10 @@ def calculate_release_burnup(
     )
 
     issues_full = (
-        issues_with_versions.join(current_sp_df, on="issue_id", how="left")
-        .join(done_transitions, on="issue_id", how="left")
+        issues_with_versions.join(
+            current_sp_df, on="issue_id", how="left", coalesce=True
+        )
+        .join(done_transitions, on="issue_id", how="left", coalesce=True)
         .with_columns(pl.col("story_points").fill_null(0.0))
     )
 
@@ -113,8 +115,8 @@ def calculate_release_burnup(
         )
 
         v_result = (
-            df_dates.join(scope_by_date, on="time_date", how="left")
-            .join(done_by_date, on="time_date", how="left")
+            df_dates.join(scope_by_date, on="time_date", how="left", coalesce=True)
+            .join(done_by_date, on="time_date", how="left", coalesce=True)
             .with_columns(
                 [
                     pl.col("added_sp").fill_null(0.0).cum_sum().alias("scope_sp"),

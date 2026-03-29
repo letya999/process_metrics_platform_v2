@@ -113,7 +113,7 @@ def calculate_field_change_count(
         sprints_df.select(
             ["project_id", pl.col("id").alias("iteration_id"), "start_date"]
         )
-        .join(agg, on="iteration_id", how="left")
+        .join(agg, on="iteration_id", how="left", coalesce=True)
         .with_columns(pl.col("change_count").fill_null(0))
     )
 

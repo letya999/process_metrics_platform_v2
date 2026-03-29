@@ -218,7 +218,7 @@ def test_calculate_velocity_facts_keeps_same_name_sprints_separate(monkeypatch):
         velocity,
         "determine_story_points_at_date",
         lambda scope_df, _sprints_df, current_sp_df, *_args, **_kwargs: scope_df.join(
-            current_sp_df, on="issue_id", how="left"
+            current_sp_df, on="issue_id", how="left", coalesce=True
         ),
     )
 
@@ -304,7 +304,7 @@ def test_calculate_velocity_slice_by_issue_type_uses_commitment_for_plan(monkeyp
         captured_scope_issue_sets.append(
             sorted(scope_df["issue_id"].cast(pl.Utf8).to_list())
         )
-        return scope_df.join(current_sp_df, on="issue_id", how="left")
+        return scope_df.join(current_sp_df, on="issue_id", how="left", coalesce=True)
 
     monkeypatch.setattr(
         velocity, "determine_story_points_at_date", _determine_story_points_at_date

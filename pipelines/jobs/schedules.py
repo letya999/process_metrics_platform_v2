@@ -1,15 +1,24 @@
-"""Dagster schedules for automated pipeline execution.
+"""Dagster schedules and sensors for automated pipeline execution.
 
-This module defines cron schedules for running data sync jobs:
-- Daily Jira sync at 6:00 AM UTC
-- Hourly metrics refresh
+This module defines:
+- cron schedules for regular jobs
+- a guarded hourly sensor for metrics refresh to avoid clean-layer race conditions
 """
+
+from datetime import datetime, timezone
 
 from dagster import (
     AssetSelection,
+    DagsterRunStatus,
     DefaultScheduleStatus,
+    DefaultSensorStatus,
+    RunRequest,
+    RunsFilter,
     ScheduleDefinition,
+    SensorEvaluationContext,
+    SkipReason,
     define_asset_job,
+    sensor,
 )
 
 # Define jobs for scheduling
@@ -52,13 +61,60 @@ daily_jira_sync_schedule = ScheduleDefinition(
     execution_timezone="UTC",
 )
 
-# Schedule: Hourly metrics refresh
+# Keep legacy schedule object for compatibility, but prefer guarded sensor below.
 hourly_metrics_refresh_schedule = ScheduleDefinition(
     job=metrics_refresh_job,
-    cron_schedule="0 * * * *",  # Every hour at minute 0
+    cron_schedule="0 * * * *",
     default_status=DefaultScheduleStatus.STOPPED,
     execution_timezone="UTC",
 )
+
+
+@sensor(
+    name="guarded_hourly_metrics_refresh_sensor",
+    job=metrics_refresh_job,
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.STOPPED,
+)
+def guarded_hourly_metrics_refresh_sensor(
+    context: SensorEvaluationContext,
+) -> RunRequest | SkipReason:
+    """Run metrics refresh hourly only when clean/sync jobs are not in progress."""
+    now_utc = datetime.now(timezone.utc)
+    hour_bucket = now_utc.strftime("%Y-%m-%dT%H")
+
+    if now_utc.minute != 0:
+        return SkipReason("Waiting for top of the hour (UTC)")
+
+    if context.cursor == hour_bucket:
+        return SkipReason(f"Metrics refresh already requested for {hour_bucket}:00 UTC")
+
+    active_statuses = [
+        DagsterRunStatus.QUEUED,
+        DagsterRunStatus.NOT_STARTED,
+        DagsterRunStatus.STARTING,
+        DagsterRunStatus.STARTED,
+        DagsterRunStatus.CANCELING,
+    ]
+    blocking_jobs = {"jira_sync_job", "jira_clean_job"}
+
+    active_runs = context.instance.get_run_records(
+        filters=RunsFilter(statuses=active_statuses),
+        limit=50,
+    )
+    blocking_runs = [
+        record for record in active_runs if record.dagster_run.job_name in blocking_jobs
+    ]
+    if blocking_runs:
+        run_ids = [record.dagster_run.run_id for record in blocking_runs]
+        return SkipReason(
+            "Skipping metrics refresh: jira_clean_job/jira_sync_job still active "
+            f"(runs={run_ids})"
+        )
+
+    context.update_cursor(hour_bucket)
+    return RunRequest(run_key=f"metrics-refresh-{hour_bucket}")
+
 
 # Job: Recalculate Lead Time (Fact + View)
 lead_time_recalc_job = define_asset_job(
@@ -208,6 +264,11 @@ jobs = [
 
 schedules = [
     daily_jira_sync_schedule,
+    # Guarded sensor is the recommended path; keep schedule for backward compatibility.
     hourly_metrics_refresh_schedule,
     weekly_ghost_cleanup_schedule,
+]
+
+sensors = [
+    guarded_hourly_metrics_refresh_sensor,
 ]

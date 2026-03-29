@@ -213,6 +213,7 @@ def calculate_backlog_growth(
         left_on="type_id",
         right_on="id",
         how="left",
+        coalesce=True,
     ).rename({"name": "issue_type"})
 
     def health_slice_calc(df_subset):

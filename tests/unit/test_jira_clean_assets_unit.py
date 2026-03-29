@@ -200,6 +200,7 @@ def test_clean_jira_issues_success():
                     ("fields__resolution__id",),
                 ]
             ),
+            _Result(scalar_value=0),  # null_project_count
             _Result(scalar_value=0),  # drop_count due to missing it.id/ist.id
             _Result(scalar_value=0),  # null_date_count
             _Result(fetchall_data=[(1,), (2,), (3,)]),

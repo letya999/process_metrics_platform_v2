@@ -51,3 +51,13 @@ Write an adapter asset per source (`pipelines/assets/jira/universal_adapter.py`)
 **Strategy:** incremental - Jira pipeline keeps running at every step. Adapter writes to `universal.*` in parallel with the existing clean layer; metrics are switched one at a time with verification.
 
 **Impact:** once complete, adding a new source requires only raw layer + clean layer + adapter. Metrics and BI pack remain unchanged.
+
+## TD-006: Production hardening backlog ("по-взрослому")
+**Status:** Deferred / Post-MVP
+Postpone until OSS MVP is validated in internal company rollout.
+
+Included scope:
+- DORA metrics completion (Deployment Frequency, Lead Time for Changes end-to-end)
+- Multi-tenancy (tenant isolation and access controls)
+- DR/SLO program (backup+restore drills, SLO/SLI, alerting policies)
+- Full observability stack (structured logs, metrics, tracing, actionable alerts)
