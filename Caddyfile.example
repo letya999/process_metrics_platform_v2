@@ -6,10 +6,6 @@
 #   DAGSTER_DOMAIN
 #   API_DOMAIN
 #   ADMIN_DOMAIN
-#   DAGSTER_BASIC_AUTH_HASH
-#
-# DAGSTER_BASIC_AUTH_HASH generation:
-#   caddy hash-password --plaintext YOUR_PASSWORD
 # =============================================================================
 
 {$MB_DOMAIN} {
@@ -22,9 +18,6 @@
 }
 
 {$DAGSTER_DOMAIN} {
-    basicauth * {
-        admin {$DAGSTER_BASIC_AUTH_HASH}
-    }
     reverse_proxy dagster-webserver:3000
     header {
         X-Content-Type-Options "nosniff"
