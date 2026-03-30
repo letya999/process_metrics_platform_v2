@@ -1,16 +1,19 @@
-# Required environment variables:
-#   SERVER_IP            - Your server's public IP address
-#   DAGSTER_BASIC_AUTH_HASH - Generate with: caddy hash-password --plaintext YOUR_PASSWORD
-
 # =============================================================================
 # Caddy Configuration for Process Metrics Platform
-# Using nip.io for secure HTTPS access via IP: ${SERVER_IP}
+# =============================================================================
+# Required env vars (from .env.prod):
+#   MB_DOMAIN
+#   DAGSTER_DOMAIN
+#   API_DOMAIN
+#   ADMIN_DOMAIN
+#   DAGSTER_BASIC_AUTH_HASH
+#
+# DAGSTER_BASIC_AUTH_HASH generation:
+#   caddy hash-password --plaintext YOUR_PASSWORD
 # =============================================================================
 
-# Metabase (BI Dashboard)
-http://metrics.${SERVER_IP}.nip.io {
+{$MB_DOMAIN} {
     reverse_proxy metabase:3000
-
     header {
         X-Content-Type-Options "nosniff"
         X-Frame-Options "SAMEORIGIN"
@@ -18,35 +21,26 @@ http://metrics.${SERVER_IP}.nip.io {
     }
 }
 
-# Dagster UI (ETL monitoring)
-http://dagster.${SERVER_IP}.nip.io {
-    # Basic Auth for security
-    # Replace the hash below with your own (generated via 'caddy hash-password')
+{$DAGSTER_DOMAIN} {
     basicauth * {
         admin {$DAGSTER_BASIC_AUTH_HASH}
     }
-
     reverse_proxy dagster-webserver:3000
-
     header {
         X-Content-Type-Options "nosniff"
     }
 }
 
-# FastAPI (Admin Panel / API)
-http://api.${SERVER_IP}.nip.io {
+{$API_DOMAIN} {
     reverse_proxy app:8000
-
     header {
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
     }
 }
 
-# Streamlit Admin Studio
-http://admin.${SERVER_IP}.nip.io {
+{$ADMIN_DOMAIN} {
     reverse_proxy admin-ui:8501
-
     header {
         X-Content-Type-Options "nosniff"
         X-Frame-Options "SAMEORIGIN"

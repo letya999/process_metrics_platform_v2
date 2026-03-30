@@ -172,6 +172,8 @@ tracking/*.md
 .dlt/
 config/projects.yaml
 !config/projects.example.yaml
+Caddyfile
+!Caddyfile.example
 
 # OS files
 .DS_Store

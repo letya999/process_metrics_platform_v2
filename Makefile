@@ -9,7 +9,7 @@
 #   make format   - Auto-format code
 # =============================================================================
 
-.PHONY: help check dev test test-unit test-integration lint lint-local format validate
+.PHONY: help check dev test test-unit test-integration test-validation-db lint lint-local format validate
 .PHONY: migrate migrate-create migrate-down docker-build docker-up docker-down docker-logs
 .PHONY: docker-reset db-reset verify setup-metabase clean install dagster-dev api-dev admin-ui-dev
 .PHONY: prod-up prod-down prod-reset prod-simple-up prod-simple-down prod-simple-reset
@@ -21,11 +21,17 @@ ifeq ($(OS),Windows_NT)
     UVICORN_BIN := .venv/Scripts/uvicorn
     DAGSTER_BIN := .venv/Scripts/dagster
     STREAMLIT_BIN := .venv/Scripts/streamlit
+    COMPOSE_ENV_PREFIX := set COMPOSE_DISABLE_ENV_FILE=1 &&
+    COMPOSE_DEV_VALIDATE_PREFIX := $(COMPOSE_ENV_PREFIX) set POSTGRES_DB=process_metrics && set POSTGRES_USER=postgres && set POSTGRES_PASSWORD=postgres &&
+    COMPOSE_PROD_VALIDATE_PREFIX := $(COMPOSE_ENV_PREFIX) set POSTGRES_DB=process_metrics_v2 && set POSTGRES_USER=pmp_user && set POSTGRES_PASSWORD=placeholder_password &&
 else
     PYTHON_BIN := .venv/bin/python
     UVICORN_BIN := .venv/bin/uvicorn
     DAGSTER_BIN := .venv/bin/dagster
     STREAMLIT_BIN := .venv/bin/streamlit
+    COMPOSE_ENV_PREFIX := COMPOSE_DISABLE_ENV_FILE=1
+    COMPOSE_DEV_VALIDATE_PREFIX := COMPOSE_DISABLE_ENV_FILE=1 POSTGRES_DB=process_metrics POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres
+    COMPOSE_PROD_VALIDATE_PREFIX := COMPOSE_DISABLE_ENV_FILE=1 POSTGRES_DB=process_metrics_v2 POSTGRES_USER=pmp_user POSTGRES_PASSWORD=placeholder_password
 endif
 
 # Default target
@@ -50,6 +56,7 @@ help:
 	@echo "  make test        - Run pytest with coverage"
 	@echo "  make test-unit   - Run only unit tests"
 	@echo "  make test-integration - Run only integration tests"
+	@echo "  make test-validation-db - Run DB-backed validation tests (requires seeded DB)"
 	@echo "  make smoke       - Run minimal smoke test gate"
 	@echo "  make lint        - Check code style (ruff + black + policy)"
 	@echo "  make lint-local  - Check code style only for changed Python files"
@@ -123,6 +130,12 @@ test-integration:
 	@echo "$(BLUE)Running integration tests...$(NC)"
 	$(PYTHON_BIN) -m pytest tests/integration -v
 	@echo "$(GREEN)Integration tests passed!$(NC)"
+
+## Run DB-backed validation tests (requires live DB and seeded data)
+test-validation-db:
+	@echo "$(BLUE)Running validation tests with --run-db-tests...$(NC)"
+	$(PYTHON_BIN) -m pytest tests/validation -v --run-db-tests
+	@echo "$(GREEN)Validation tests passed!$(NC)"
 
 ## Run minimal smoke tests for fast quality gate
 smoke:
@@ -215,8 +228,8 @@ docker-down:
 ## Validate docker compose manifests
 compose-validate:
 	@echo "$(BLUE)Validating docker compose manifests...$(NC)"
-	docker compose -f docker-compose.yml config -q
-	docker compose -f docker-compose.prod.yml --env-file .env.prod.example config -q
+	$(COMPOSE_DEV_VALIDATE_PREFIX) docker compose -f docker-compose.yml --env-file .env.example config -q
+	$(COMPOSE_PROD_VALIDATE_PREFIX) docker compose -f docker-compose.prod.yml --env-file .env.prod.example config -q
 	@echo "$(GREEN)Compose manifests are valid!$(NC)"
 
 ## Start production stack

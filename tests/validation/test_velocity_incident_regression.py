@@ -3,10 +3,13 @@
 import pytest
 from sqlalchemy import create_engine, text
 
-pytestmark = pytest.mark.skipif(
-    "not config.getoption('--run-db-tests', default=False)",
-    reason="Database tests require --run-db-tests flag",
-)
+pytestmark = [
+    pytest.mark.validation,
+    pytest.mark.skipif(
+        "not config.getoption('--run-db-tests', default=False)",
+        reason="Database tests require --run-db-tests flag",
+    ),
+]
 
 
 def get_db_engine():

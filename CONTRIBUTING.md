@@ -19,6 +19,8 @@ Thank you for your interest in contributing! This document provides guidelines f
 2. **Setup environment**:
    ```bash
    cp .env.example .env
+   cp .env.prod.example .env.prod
+   cp Caddyfile.example Caddyfile
    # Edit .env with your local settings if needed
    ```
 
@@ -50,6 +52,14 @@ We use `pytest` for testing. Ensure your changes don't break existing functional
 make test
 # OR
 pytest
+```
+
+DB-backed validation tests are opt-in and require a running, seeded database:
+
+```bash
+make test-validation-db
+# OR
+pytest tests/validation -v --run-db-tests
 ```
 
 ### Code Style

@@ -19,6 +19,12 @@ services:
     image: caddy:2-alpine
     container_name: caddy
     restart: unless-stopped
+    environment:
+      MB_DOMAIN: ${MB_DOMAIN}
+      DAGSTER_DOMAIN: ${DAGSTER_DOMAIN}
+      API_DOMAIN: ${API_DOMAIN}
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+      DAGSTER_BASIC_AUTH_HASH: ${DAGSTER_BASIC_AUTH_HASH}
     ports:
       - "80:80"
       - "443:443"

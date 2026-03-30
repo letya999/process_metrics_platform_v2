@@ -62,9 +62,12 @@ docker compose --profile migration run --rm alembic upgrade head
 
 ## Quick Start (production compose)
 
-Use `docker-compose.prod.yml` with `.env.prod`:
+Use `docker-compose.prod.yml` with `.env.prod` and a local `Caddyfile`:
 
 ```bash
+cp .env.prod.example .env.prod
+cp Caddyfile.example Caddyfile
+# edit .env.prod: SERVER_IP, MB_DOMAIN, DAGSTER_DOMAIN, API_DOMAIN, ADMIN_DOMAIN, DAGSTER_BASIC_AUTH_HASH
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 docker compose -f docker-compose.prod.yml --env-file .env.prod --profile migration run --rm alembic upgrade head
 ```
@@ -78,6 +81,16 @@ make check
 make smoke
 make compose-validate
 make alembic-heads
+```
+
+## Validation tests (DB-backed)
+
+`tests/validation` checks are intentionally opt-in and require a running, seeded Postgres with raw/clean/metrics schemas.
+
+```bash
+make test-validation-db
+# equivalent:
+pytest tests/validation -v --run-db-tests
 ```
 
 ## Repository map

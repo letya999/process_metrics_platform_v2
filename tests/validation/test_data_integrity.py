@@ -7,11 +7,14 @@ These tests are designed to run against a database with actual data.
 import pytest
 from sqlalchemy import create_engine, text
 
-# Skip these tests if no database is available
-pytestmark = pytest.mark.skipif(
-    "not config.getoption('--run-db-tests', default=False)",
-    reason="Database tests require --run-db-tests flag",
-)
+# DB-backed validation suite: runs only when explicitly enabled.
+pytestmark = [
+    pytest.mark.validation,
+    pytest.mark.skipif(
+        "not config.getoption('--run-db-tests', default=False)",
+        reason="Database tests require --run-db-tests flag",
+    ),
+]
 
 
 def get_db_engine():
