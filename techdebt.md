@@ -61,3 +61,30 @@ Included scope:
 - Multi-tenancy (tenant isolation and access controls)
 - DR/SLO program (backup+restore drills, SLO/SLI, alerting policies)
 - Full observability stack (structured logs, metrics, tracing, actionable alerts)
+
+## TD-007: Admin UX before first sync (Project catalog source-of-truth mismatch)
+**Status:** Known / In Progress
+Admin Studio currently builds multiple dropdowns from `clean_jira.projects`, while project onboarding is done in `platform.projects`. Before the first successful `jira_sync_job`, clean layer is empty, so:
+- `Project Filter` shows only `All`
+- Metrics catalog/commitment/settings screens look empty or misleading
+- users think integration import failed even when `platform.projects` already has data
+
+Related reliability issues observed in the same flow:
+- API `create_integration` returned `500` on DB check-constraint violations instead of a user-actionable `409/422`
+- Streamlit tabs could crash with `KeyError: None` when global scope required a source project but project list was empty
+
+**Root cause:** UI/UX coupling to clean layer state for configuration screens that should be driven by platform configuration state.
+
+**Resolution:** Make Admin Studio two-phase and explicit:
+1. **Configuration phase (source: `platform.*`)**
+   - Integrations, imported projects, active flags, and project filters should use `platform.projects` as primary source.
+2. **Data-ready phase (source: `clean_jira.*`)**
+   - Catalog-dependent selectors (boards/statuses/field keys) can require clean data, but must show a clear "sync required" state with CTA.
+
+Implementation details:
+- Add API endpoint(s) for onboarding health (per integration/project): imported/active/synced timestamps and row counts (`raw_jira.projects`, `clean_jira.projects`).
+- In UI, if clean catalog is empty, show blocking banner with one-button action: "Run jira_sync_job now".
+- Keep guards in Streamlit to avoid `KeyError`/empty-select crashes.
+- Keep integration create/update aligned with DB token-storage constraints and return deterministic 4xx errors for operator mistakes.
+
+**Impact:** onboarding becomes deterministic, fewer false "empty system" incidents, faster first successful sync in production.

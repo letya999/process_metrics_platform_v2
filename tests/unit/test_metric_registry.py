@@ -20,6 +20,11 @@ class _DummyResult:
             return None
         return (self.val, "mock_entity")
 
+    def fetchall(self):
+        if self.val is None:
+            return []
+        return [(self.val, "mock_entity")]
+
 
 class _DummyConn:
     def __init__(self, val=None):
@@ -85,6 +90,16 @@ def test_get_project_agg_id_raises_when_project_not_found():
     engine = _DummyEngine(None)
     with pytest.raises(ValueError, match="not found"):
         metric_registry.get_project_agg_id(engine, "proj-404")
+
+
+def test_get_project_agg_id_attempts_sync_before_raising():
+    engine = _DummyEngine(None)
+    with pytest.raises(ValueError, match="not found"):
+        metric_registry.get_project_agg_id(engine, "proj-404")
+
+    assert any(
+        "INSERT INTO metrics.dim_projects" in call[0] for call in engine.conn.calls
+    )
 
 
 def test_resolve_unit_field_returns_project_specific_or_none():

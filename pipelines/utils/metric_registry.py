@@ -90,10 +90,18 @@ def get_project_agg_id(engine: Engine, project_id: str) -> str:
         ).scalar()
 
     if not result:
-        # Since sync is run once, if it's missing, it's an error. We could upsert here if we wanted.
-        raise ValueError(
-            f"Project ID '{project_id}' not found in metrics.dim_projects. Run sync_dim_projects."
-        )
+        _sync_dim_projects(engine)
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    "SELECT id FROM metrics.dim_projects WHERE project_id = :project_id"
+                ),
+                {"project_id": project_id},
+            ).scalar()
+        if not result:
+            raise ValueError(
+                f"Project ID '{project_id}' not found in metrics.dim_projects. Run sync_dim_projects."
+            )
 
     _set_in_cache(cache_key, str(result))
     return str(result)
@@ -122,6 +130,22 @@ def get_project_agg_ids_batch(engine: Engine, project_ids: List[str]) -> Dict[st
             pid, agg_id = str(row[0]), str(row[1])
             _set_in_cache(f"proj_agg_id_{pid}", agg_id)
             result[pid] = agg_id
+
+        for pid in missing:
+            if pid not in result:
+                _sync_dim_projects(engine)
+                with engine.connect() as conn:
+                    retry_rows = conn.execute(
+                        text(
+                            "SELECT project_id, id FROM metrics.dim_projects WHERE project_id = ANY(CAST(:ids AS uuid[]))"
+                        ),
+                        {"ids": missing},
+                    ).fetchall()
+                for row in retry_rows:
+                    retry_pid, agg_id = str(row[0]), str(row[1])
+                    _set_in_cache(f"proj_agg_id_{retry_pid}", agg_id)
+                    result[retry_pid] = agg_id
+                break
 
         for pid in missing:
             if pid not in result:
@@ -174,3 +198,18 @@ def clear_cache():
     """Clear the internal cache (useful for tests)."""
     with _CACHE_LOCK:
         _CACHE.clear()
+
+
+def _sync_dim_projects(engine: Engine) -> None:
+    """Backfill metrics.dim_projects from clean_jira.projects."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO metrics.dim_projects (project_id, project_key)
+                SELECT id, external_key FROM clean_jira.projects
+                ON CONFLICT (project_id) DO UPDATE
+                SET project_key = EXCLUDED.project_key
+                """
+            )
+        )
