@@ -17,7 +17,7 @@ from dagster import (
     asset,
     asset_check,
 )
-from dlt.pipeline.exceptions import PipelineStepFailed
+from dlt.pipeline.exceptions import PipelineConfigMissing, PipelineStepFailed
 from dlt.sources.helpers import requests
 from tenacity import (
     retry,
@@ -630,11 +630,14 @@ def run_jira_pipeline(
         dataset_name=destination_schema,
     )
 
-    # Keep local state/schema in sync with destination and ensure schema tables exist
-    # before executing merge jobs. This helps avoid transient "relation does not exist"
-    # failures on deeply nested Jira child tables.
+    # Keep local state/schema in sync with destination.
+    # On a fresh pipeline there is no extracted schema yet, so sync_schema can fail
+    # with PipelineConfigMissing before the first run().
     pipeline.sync_destination()
-    pipeline.sync_schema()
+    try:
+        pipeline.sync_schema()
+    except PipelineConfigMissing:
+        pass
 
     def _build_source():
         return jira_source(
