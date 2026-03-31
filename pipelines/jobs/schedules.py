@@ -49,6 +49,16 @@ metrics_refresh_job = define_asset_job(
     name="metrics_refresh_job",
     selection=AssetSelection.groups("metrics"),
     description="Refresh all metrics materialized views",
+    config={
+        "execution": {
+            "config": {
+                "multiprocess": {
+                    # Prevent OOM on small/medium hosts by capping step parallelism.
+                    "max_concurrent": 2
+                }
+            }
+        }
+    },
 )
 
 # Define schedules
