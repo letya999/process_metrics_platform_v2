@@ -14,9 +14,8 @@ from __future__ import annotations
 import os
 import sys
 
+import bcrypt
 from sqlalchemy import create_engine, text
-
-from app.services.admin_auth import hash_password
 
 
 def _get_required_env(name: str) -> str:
@@ -37,7 +36,7 @@ def main() -> int:
     email = _get_required_env("ADMIN_BOOTSTRAP_EMAIL")
     password = _get_required_env("ADMIN_BOOTSTRAP_PASSWORD")
     display_name = os.getenv("ADMIN_BOOTSTRAP_DISPLAY_NAME", "Admin").strip() or "Admin"
-    password_hash = hash_password(password)
+    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
     engine = create_engine(db_url, future=True)
     upsert_sql = text(
