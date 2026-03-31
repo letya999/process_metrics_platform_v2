@@ -25,6 +25,7 @@ services:
       API_DOMAIN: ${API_DOMAIN}
       ADMIN_DOMAIN: ${ADMIN_DOMAIN}
       DAGSTER_BASIC_AUTH_HASH: ${DAGSTER_BASIC_AUTH_HASH}
+      SWAGGER_BASIC_AUTH_HASH: ${SWAGGER_BASIC_AUTH_HASH}
     ports:
       - "80:80"
       - "443:443"
@@ -173,7 +174,7 @@ services:
       context: .
       dockerfile: Dockerfile.dagster
     container_name: dagster-daemon
-    command: ["dagster-daemon", "run"]
+    command: ["dagster-daemon", "run", "-m", "pipelines.definitions"]
     restart: unless-stopped
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home

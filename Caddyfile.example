@@ -6,6 +6,8 @@
 #   DAGSTER_DOMAIN
 #   API_DOMAIN
 #   ADMIN_DOMAIN
+#   DAGSTER_BASIC_AUTH_HASH
+#   SWAGGER_BASIC_AUTH_HASH
 # =============================================================================
 
 {$MB_DOMAIN} {
@@ -18,6 +20,9 @@
 }
 
 {$DAGSTER_DOMAIN} {
+    basicauth * {
+        admin {$DAGSTER_BASIC_AUTH_HASH}
+    }
     reverse_proxy dagster-webserver:3000
     header {
         X-Content-Type-Options "nosniff"
@@ -25,6 +30,10 @@
 }
 
 {$API_DOMAIN} {
+    @swagger path /docs /redoc /openapi.json
+    basicauth @swagger {
+        admin {$SWAGGER_BASIC_AUTH_HASH}
+    }
     reverse_proxy app:8000
     header {
         X-Content-Type-Options "nosniff"
