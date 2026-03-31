@@ -6,6 +6,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -71,6 +72,12 @@ async def list_integrations(
     ] = None,
 ):
     """List all configured integrations."""
+    if user_id is None:
+        try:
+            user_id = UUID(_admin.user_id)
+        except Exception:
+            user_id = None
+
     query = select(ToolIntegration).options(
         selectinload(ToolIntegration.integration_type)
     )
@@ -149,20 +156,28 @@ async def create_integration(
         integration_type_id=integration_data.integration_type_id,
         instance_url=normalized_instance_url,
         user_email=integration_data.user_email,
-        secret_provider=integration_data.secret_provider,
+        secret_provider=None,
     )
 
     # Handle token storage based on provider
     if integration_data.secret_provider == "hardcoded":  # noqa: S105
         integration.api_token_unsafe = integration_data.api_token
         integration.secret_reference = None
+        integration.secret_provider = None
     else:
         # For other providers, store reference to secret
         integration.secret_reference = f"INTEGRATION_TOKEN_{integration.id}"
         integration.api_token_unsafe = None
+        integration.secret_provider = integration_data.secret_provider
 
     db.add(integration)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Failed to create integration: violates DB constraints (check unique URL/token mode).",
+        ) from exc
     await db.refresh(integration)
 
     return _integration_to_response(integration, type_name=integration_type.name)
@@ -233,8 +248,10 @@ async def update_integration(
         integration.is_active = update_data.is_active
     if update_data.api_token is not None:
         # Update token storage
-        if integration.secret_provider == "hardcoded":  # noqa: S105
+        if integration.secret_provider in (None, "hardcoded"):  # noqa: S105
             integration.api_token_unsafe = update_data.api_token
+            integration.secret_reference = None
+            integration.secret_provider = None
         else:
             # For other providers, update reference
             integration.secret_reference = f"INTEGRATION_TOKEN_{integration.id}"

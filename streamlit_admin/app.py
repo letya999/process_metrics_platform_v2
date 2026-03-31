@@ -584,6 +584,11 @@ def _tab_commitment_v2(client: AdminApiClient, token: str) -> None:
             f"{p['project_key']} - {p['project_name']}": p["project_id"]
             for p in projects
         }
+        if not source_project_map:
+            st.info(
+                "No projects imported yet. Import projects first in Integrations tab."
+            )
+            return
         source_project_labels = list(source_project_map.keys())
         source_project_label = st.selectbox(
             "Board Source Project",
@@ -592,6 +597,9 @@ def _tab_commitment_v2(client: AdminApiClient, token: str) -> None:
             key="commitment_board_source_project_input",
             help="Project to fetch board/columns from for the global (NULL) rule.",
         )
+        if source_project_label is None:
+            st.info("Select a project to fetch board/column catalog.")
+            return
         board_project_id = source_project_map[source_project_label]
 
     try:
@@ -1088,12 +1096,20 @@ def _tab_settings_v2(client: AdminApiClient, token: str) -> None:
             f"{p['project_key']} - {p['project_name']}": p["project_id"]
             for p in projects
         }
+        if not source_project_map:
+            st.info(
+                "No projects imported yet. Import projects first in Integrations tab."
+            )
+            return
         source_project_label = st.selectbox(
             "Catalog Source Project",
             list(source_project_map.keys()),
             key="settings_source_project_input",
             help="Project used to fetch status/issue-type/field-key options for this global setting.",
         )
+        if source_project_label is None:
+            st.info("Select a project to load catalog options.")
+            return
         catalog_project_id = source_project_map[source_project_label]
 
     default_calc_code = edit_row.get("calc_code") if edit_row else calc_codes[0]
@@ -1315,12 +1331,20 @@ def _tab_units_v2(client: AdminApiClient, token: str) -> None:
             f"{p['project_key']} - {p['project_name']}": p["project_id"]
             for p in projects
         }
+        if not source_project_map:
+            st.info(
+                "No projects imported yet. Import projects first in Integrations tab."
+            )
+            return
         source_project_label = st.selectbox(
             "Field Source Project",
             list(source_project_map.keys()),
             key="units_source_project_input",
             help="Project from which to take field keys list for the global (NULL) binding.",
         )
+        if source_project_label is None:
+            st.info("Select a project to load field keys.")
+            return
         source_project_id = source_project_map[source_project_label]
     try:
         field_keys = client.request(
