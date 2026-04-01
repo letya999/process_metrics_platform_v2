@@ -282,3 +282,53 @@ def test_build_native_query_payload_infers_template_tags() -> None:
     assert "template-tags" in payload
     assert payload["template-tags"]["project_key"]["type"] == "text"
     assert payload["template-tags"]["date_from"]["type"] == "date"
+
+
+def test_collect_required_field_paths_extracts_field_filters(tmp_path: Path) -> None:
+    pack_dir = tmp_path / "pack"
+    cards_dir = pack_dir / "cards"
+    cards_dir.mkdir(parents=True)
+    (pack_dir / "dashboards").mkdir(parents=True)
+    (cards_dir / "one.json").write_text(
+        json.dumps(
+            {
+                "key": "one",
+                "name": "One",
+                "query": "SELECT 1",
+                "field_filters": {
+                    "project_key": "metrics.v_facts.project_key",
+                    "issue_type": "metrics.v_facts.slice_value",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cards_dir / "two.json").write_text(
+        json.dumps(
+            {
+                "key": "two",
+                "name": "Two",
+                "query": "SELECT 2",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    paths = MetabaseProvider._collect_required_field_paths(pack_dir)
+    assert paths == {"metrics.v_facts.project_key", "metrics.v_facts.slice_value"}
+
+
+def test_build_native_query_payload_raises_when_field_filter_id_missing() -> None:
+    provider = MetabaseProvider()
+    with pytest.raises(
+        RuntimeError, match="Field ID not found for field filter mapping"
+    ):
+        provider._build_native_query_payload(
+            {
+                "name": "Velocity",
+                "query": "SELECT 1 [[AND {{project_key}}]]",
+                "field_filters": {"project_key": "metrics.v_facts.project_key"},
+            },
+            field_id_map={},
+            card_name="Velocity",
+        )

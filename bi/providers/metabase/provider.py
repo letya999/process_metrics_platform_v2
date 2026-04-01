@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -42,11 +43,13 @@ class MetabaseProvider:
         """Provision collections, cards, and dashboards from a pack directory."""
         logger.info("Provisioning Metabase from pack: %s", pack_dir)
         self._validate_pack(pack_dir)
+        required_field_paths = self._collect_required_field_paths(pack_dir)
         self.client.wait_for_health()
 
         self._bootstrap_and_authenticate()
 
         db_id = self._ensure_database()
+        self._wait_for_required_fields(db_id, required_field_paths)
         collection_ids = self._ensure_collections(pack_dir)
         card_ids, card_field_filter_tags = self._upsert_cards(
             pack_dir, db_id, collection_ids
@@ -155,6 +158,52 @@ class MetabaseProvider:
             expected_statuses=(200, 202),
         )
 
+    @staticmethod
+    def _collect_required_field_paths(pack_dir: Path) -> set[str]:
+        """Collect all field filter column paths required by pack cards."""
+        cards_dir = pack_dir / "cards"
+        required: set[str] = set()
+        if not cards_dir.exists():
+            return required
+        for card_path in sorted(cards_dir.glob("*.json")):
+            payload = json.loads(card_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                continue
+            field_filters = payload.get("field_filters", {})
+            if not isinstance(field_filters, dict):
+                continue
+            for column_path in field_filters.values():
+                if isinstance(column_path, str) and column_path.strip():
+                    required.add(column_path.strip())
+        return required
+
+    def _wait_for_required_fields(
+        self, db_id: int, required_field_paths: set[str]
+    ) -> None:
+        """Wait until all required field paths are present in Metabase metadata."""
+        if not required_field_paths:
+            return
+        timeout_seconds = int(os.getenv("BI_FIELD_SYNC_TIMEOUT_SECONDS", "300"))
+        poll_seconds = int(os.getenv("BI_FIELD_SYNC_POLL_SECONDS", "5"))
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            field_map = self._get_field_id_map(db_id)
+            missing = sorted(
+                path for path in required_field_paths if path not in field_map
+            )
+            if not missing:
+                return
+            logger.info(
+                "Waiting for Metabase field metadata: db_id=%s missing=%s",
+                db_id,
+                ", ".join(missing[:8]),
+            )
+            time.sleep(poll_seconds)
+        raise RuntimeError(
+            "Timed out waiting for Metabase field metadata. "
+            f"db_id={db_id}, missing paths: {sorted(required_field_paths)}"
+        )
+
     def _ensure_collections(self, pack_dir: Path) -> dict[str, int | None]:
         """Create missing collections defined by the pack and return key->id mapping."""
         collections_by_name = {
@@ -246,7 +295,11 @@ class MetabaseProvider:
             collection_key = spec.get("collection", "root")
             collection_id = collection_ids.get(collection_key)
 
-            native_payload = self._build_native_query_payload(spec, field_id_map)
+            native_payload = self._build_native_query_payload(
+                spec,
+                field_id_map,
+                card_name=name,
+            )
             # Collect tags that are dimensions (field filters)
             field_filter_tags = {
                 tag
@@ -597,7 +650,10 @@ class MetabaseProvider:
         return mappings
 
     def _build_native_query_payload(
-        self, card_spec: dict[str, Any], field_id_map: dict[str, int] | None = None
+        self,
+        card_spec: dict[str, Any],
+        field_id_map: dict[str, int] | None = None,
+        card_name: str = "<unknown>",
     ) -> dict[str, Any]:
         query = str(card_spec["query"])
         payload: dict[str, Any] = {"query": query}
@@ -608,6 +664,7 @@ class MetabaseProvider:
                 configured=card_spec.get("template_tags", {}),
                 field_filters=card_spec.get("field_filters", {}),
                 field_id_map=field_id_map or {},
+                card_name=card_name,
             )
         return payload
 
@@ -617,6 +674,7 @@ class MetabaseProvider:
         configured: dict[str, Any],
         field_filters: dict[str, str] | None = None,
         field_id_map: dict[str, int] | None = None,
+        card_name: str = "<unknown>",
     ) -> dict[str, dict[str, Any]]:
         field_filters = field_filters or {}
         field_id_map = field_id_map or {}
@@ -650,20 +708,11 @@ class MetabaseProvider:
                 if field_id is not None:
                     tag_def["dimension"] = ["field", field_id, None]
                 else:
-                    # Field ID not found -> fall back to text variable with a warning
-                    logger.warning(
-                        "Field ID not found for field_filter tag '%s' -> '%s', falling back to text",
-                        tag,
-                        column_path,
+                    raise RuntimeError(
+                        "Field ID not found for field filter mapping: "
+                        f"card='{card_name}', tag='{tag}', column='{column_path}'. "
+                        "Run schema sync and retry provisioning."
                     )
-                    tag_def = {
-                        "name": tag,
-                        "display-name": cfg.get(
-                            "display_name", tag.replace("_", " ").title()
-                        ),
-                        "type": "text",
-                        "required": bool(cfg.get("required", False)),
-                    }
                 template_tags[tag] = tag_def
                 continue
 
