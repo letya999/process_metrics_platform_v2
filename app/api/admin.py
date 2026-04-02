@@ -14,6 +14,8 @@ from app.api.dependencies import AdminDependency
 from app.database import get_db
 from app.limiter import limiter
 from app.schemas.admin import (
+    AdminBatchJobLaunchItem,
+    AdminBatchJobLaunchRequest,
     AdminJobItem,
     AdminJobLaunchRequest,
     AdminJobLaunchResponse,
@@ -94,6 +96,84 @@ SUPPORTED_ADMIN_JOBS: list[dict[str, str]] = [
         "job_name": "metrics_refresh_job",
         "title": "Metrics Refresh",
         "description": "Recalculate metrics layer only.",
+    },
+]
+
+METRIC_RECALC_JOBS: list[dict[str, str]] = [
+    {
+        "job_name": "recalculate_lead_time_job",
+        "title": "Lead Time",
+        "description": "Recalculate Lead Time facts and refresh view",
+    },
+    {
+        "job_name": "recalculate_velocity_job",
+        "title": "Velocity",
+        "description": "Recalculate Velocity facts and refresh view",
+    },
+    {
+        "job_name": "recalculate_throughput_job",
+        "title": "Throughput",
+        "description": "Recalculate Throughput facts and refresh view",
+    },
+    {
+        "job_name": "recalculate_cfd_job",
+        "title": "CFD",
+        "description": "Recalculate Cumulative Flow Diagram facts",
+    },
+    {
+        "job_name": "recalculate_backlog_growth_job",
+        "title": "Backlog Growth",
+        "description": "Recalculate Backlog Growth facts",
+    },
+    {
+        "job_name": "recalculate_time_to_market_job",
+        "title": "Time to Market",
+        "description": "Recalculate Time to Market facts",
+    },
+    {
+        "job_name": "recalculate_sprint_health_job",
+        "title": "Sprint Health",
+        "description": "Recalculate sprint health metrics (scope changes, burndown, spillover)",
+    },
+    {
+        "job_name": "recalculate_flow_dynamics_job",
+        "title": "Flow Dynamics",
+        "description": "Recalculate flow dynamics metrics (daily status entry, field changes)",
+    },
+    {
+        "job_name": "recalculate_quality_metrics_job",
+        "title": "Quality Metrics",
+        "description": "Recalculate quality metrics (defect density, backflow rate)",
+    },
+    {
+        "job_name": "recalculate_delivery_metrics_job",
+        "title": "Delivery Metrics",
+        "description": "Recalculate delivery metrics (release burnup scope/done)",
+    },
+    {
+        "job_name": "recalculate_cycle_time_extended_job",
+        "title": "Cycle Time Extended",
+        "description": "Recalculate extended cycle time metrics (lifetime, custom CT, epic delivery)",
+    },
+    {
+        "job_name": "recalculate_waste_metrics_job",
+        "title": "Waste Metrics",
+        "description": "Recalculate waste metrics (cancellation rate)",
+    },
+    {
+        "job_name": "recalculate_estimation_metrics_job",
+        "title": "Estimation Metrics",
+        "description": "Recalculate estimation metrics (estimate volatility)",
+    },
+    {
+        "job_name": "recalculate_input_flow_job",
+        "title": "Input Flow",
+        "description": "Recalculate input flow metrics (weekly issue intake)",
+    },
+    {
+        "job_name": "recalculate_aging_extended_job",
+        "title": "Aging Extended",
+        "description": "Recalculate extended aging metrics (blocked time, stale days)",
     },
 ]
 
@@ -1276,3 +1356,59 @@ async def get_admin_job_run_details(
         steps=step_models,
         errors=error_events,
     )
+
+
+@router.get("/metric-jobs", response_model=list[AdminJobItem])
+async def list_metric_recalc_jobs(_admin: AdminDependency):
+    return [AdminJobItem(**job) for job in METRIC_RECALC_JOBS]
+
+
+@router.post("/metric-jobs/launch-batch", response_model=list[AdminBatchJobLaunchItem])
+async def launch_metric_batch(
+    payload: AdminBatchJobLaunchRequest,
+    _admin: AdminDependency,
+):
+    supported = {job["job_name"] for job in METRIC_RECALC_JOBS}
+    unknown = [j for j in payload.job_names if j not in supported]
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported metric job names: {unknown}",
+        )
+
+    client = DagsterClient()
+    results: list[AdminBatchJobLaunchItem] = []
+    for job_name in payload.job_names:
+        try:
+            response = await client.trigger_job(job_name=job_name)
+            launch_result = response.get("data", {}).get("launchRun", {})
+            typename = launch_result.get("__typename")
+            if typename == "LaunchRunSuccess":
+                run_info = launch_result.get("run", {})
+                run_id = run_info.get("runId")
+                run_status = run_info.get("status", "UNKNOWN")
+                results.append(
+                    AdminBatchJobLaunchItem(
+                        job_name=job_name,
+                        run_id=run_id,
+                        status=run_status,
+                    )
+                )
+            else:
+                error_msg = launch_result.get("message", "Unknown Dagster launch error")
+                results.append(
+                    AdminBatchJobLaunchItem(
+                        job_name=job_name,
+                        status="LAUNCH_FAILED",
+                        error=error_msg,
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                AdminBatchJobLaunchItem(
+                    job_name=job_name,
+                    status="LAUNCH_FAILED",
+                    error=str(exc),
+                )
+            )
+    return results

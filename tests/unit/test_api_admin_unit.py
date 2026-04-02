@@ -785,3 +785,151 @@ async def test_admin_job_run_details_success_and_not_found():
     finally:
         admin_api.DagsterClient = old
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_metric_recalc_jobs_returns_all():
+    admin = AdminSession(
+        str(uuid4()), "a@x", "A", True, datetime.now(UTC) + timedelta(hours=1)
+    )
+    jobs = await admin_api.list_metric_recalc_jobs(admin)
+    job_names = {j.job_name for j in jobs}
+    assert "recalculate_lead_time_job" in job_names
+    assert "recalculate_velocity_job" in job_names
+    assert "recalculate_sprint_health_job" in job_names
+    assert "recalculate_aging_extended_job" in job_names
+    # None of the pipeline jobs should be in the metric jobs list
+    assert "jira_sync_job" not in job_names
+    assert len(jobs) == len(admin_api.METRIC_RECALC_JOBS)
+
+
+@pytest.mark.asyncio
+async def test_launch_metric_batch_all_succeed():
+    admin = AdminSession(
+        str(uuid4()), "a@x", "A", True, datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    class _Dagster:
+        def __init__(self):
+            self.calls = []
+
+        async def trigger_job(self, job_name, run_config=None):
+            self.calls.append(job_name)
+            return {
+                "data": {
+                    "launchRun": {
+                        "__typename": "LaunchRunSuccess",
+                        "run": {"runId": f"run-{job_name}", "status": "STARTED"},
+                    }
+                }
+            }
+
+    fake = _Dagster()
+    old = admin_api.DagsterClient
+    admin_api.DagsterClient = lambda: fake
+    try:
+        result = await admin_api.launch_metric_batch(
+            admin_api.AdminBatchJobLaunchRequest(
+                job_names=["recalculate_lead_time_job", "recalculate_velocity_job"]
+            ),
+            admin,
+        )
+    finally:
+        admin_api.DagsterClient = old
+
+    assert len(result) == 2
+    assert result[0].job_name == "recalculate_lead_time_job"
+    assert result[0].run_id == "run-recalculate_lead_time_job"
+    assert result[0].status == "STARTED"
+    assert result[0].error is None
+    assert result[1].job_name == "recalculate_velocity_job"
+    assert result[1].error is None
+
+
+@pytest.mark.asyncio
+async def test_launch_metric_batch_partial_failure():
+    admin = AdminSession(
+        str(uuid4()), "a@x", "A", True, datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    class _Dagster:
+        async def trigger_job(self, job_name, run_config=None):
+            if job_name == "recalculate_velocity_job":
+                raise RuntimeError("Dagster connection refused")
+            return {
+                "data": {
+                    "launchRun": {
+                        "__typename": "LaunchRunSuccess",
+                        "run": {"runId": "run-lt", "status": "STARTED"},
+                    }
+                }
+            }
+
+    old = admin_api.DagsterClient
+    admin_api.DagsterClient = lambda: _Dagster()
+    try:
+        result = await admin_api.launch_metric_batch(
+            admin_api.AdminBatchJobLaunchRequest(
+                job_names=["recalculate_lead_time_job", "recalculate_velocity_job"]
+            ),
+            admin,
+        )
+    finally:
+        admin_api.DagsterClient = old
+
+    assert len(result) == 2
+    lt = next(r for r in result if r.job_name == "recalculate_lead_time_job")
+    vel = next(r for r in result if r.job_name == "recalculate_velocity_job")
+    assert lt.run_id == "run-lt"
+    assert lt.error is None
+    assert vel.status == "LAUNCH_FAILED"
+    assert "connection refused" in vel.error
+
+
+@pytest.mark.asyncio
+async def test_launch_metric_batch_dagster_launch_error_typename():
+    admin = AdminSession(
+        str(uuid4()), "a@x", "A", True, datetime.now(UTC) + timedelta(hours=1)
+    )
+
+    class _Dagster:
+        async def trigger_job(self, job_name, run_config=None):
+            return {
+                "data": {
+                    "launchRun": {
+                        "__typename": "PythonError",
+                        "message": "asset not found",
+                    }
+                }
+            }
+
+    old = admin_api.DagsterClient
+    admin_api.DagsterClient = lambda: _Dagster()
+    try:
+        result = await admin_api.launch_metric_batch(
+            admin_api.AdminBatchJobLaunchRequest(
+                job_names=["recalculate_lead_time_job"]
+            ),
+            admin,
+        )
+    finally:
+        admin_api.DagsterClient = old
+
+    assert result[0].status == "LAUNCH_FAILED"
+    assert "asset not found" in result[0].error
+
+
+@pytest.mark.asyncio
+async def test_launch_metric_batch_rejects_unknown_job():
+    admin = AdminSession(
+        str(uuid4()), "a@x", "A", True, datetime.now(UTC) + timedelta(hours=1)
+    )
+    with pytest.raises(HTTPException) as exc:
+        await admin_api.launch_metric_batch(
+            admin_api.AdminBatchJobLaunchRequest(
+                job_names=["recalculate_lead_time_job", "unknown_job_xyz"]
+            ),
+            admin,
+        )
+    assert exc.value.status_code == 400
+    assert "unknown_job_xyz" in exc.value.detail
