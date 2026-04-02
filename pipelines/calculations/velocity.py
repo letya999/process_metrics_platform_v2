@@ -814,6 +814,28 @@ def calculate_velocity_facts(
         sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
+    # Fallback: if SP at sprint end is missing/zero (e.g. estimate cleared),
+    # use commitment-time SP for the same issue in the same sprint.
+    completed_with_sp = (
+        completed_with_sp.join(
+            commitment_with_sp.rename({"story_points": "commitment_story_points"}),
+            on=["issue_id", "sprint_id"],
+            how="left",
+            coalesce=True,
+        )
+        .with_columns(
+            pl.when(
+                (pl.col("story_points").fill_null(0.0) <= 0.0)
+                & (pl.col("commitment_story_points").fill_null(0.0) > 0.0)
+            )
+            .then(pl.col("commitment_story_points"))
+            .otherwise(pl.col("story_points"))
+            .fill_null(0.0)
+            .alias("story_points")
+        )
+        .select(["issue_id", "sprint_id", "story_points"])
+    )
+
     # 6. Aggregate by Sprint
     plan_agg = commitment_with_sp.group_by("sprint_id").agg(
         [
