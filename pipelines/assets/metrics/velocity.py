@@ -309,7 +309,6 @@ def calculate_velocity(
         return {"status": "no_data"}
     velocity_wide = pl.concat(velocity_parts)
 
-
     # 3. Transform to Long Format (fact_values)
     def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value=None):
         if df_wide.is_empty():

@@ -131,11 +131,6 @@ def calculate_sprint_health(
         else:
             sp_field_key_map[p_id] = None
             context.log.warning(f"No story_points unit configured for project {p_id}")
-    # Use first non-None as fallback for slicing context (full set); per-project used in calc
-    fallback_sp_field_key_id = next(
-        (v for v in sp_field_key_map.values() if v is not None), None
-    )
-
     lead_time_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
     activation_rules_raw = load_commitment_rules_for_calc(
         engine, "activation_velocity_pct"
@@ -180,7 +175,9 @@ def calculate_sprint_health(
             p_sprint_changelog = sub_sprint_changelog.filter(
                 pl.col("sprint_id").is_in(p_sprint_ids)
             )
-            p_field_values = sub_field_values.filter(pl.col("issue_id").is_in(p_issue_ids))
+            p_field_values = sub_field_values.filter(
+                pl.col("issue_id").is_in(p_issue_ids)
+            )
             p_field_changelog = sub_field_changelog.filter(
                 pl.col("issue_id").is_in(p_issue_ids)
             )
@@ -245,12 +242,16 @@ def calculate_sprint_health(
                 .to_list()
             )
             s_sprint_issues = sub_sprint_issues.filter(pl.col("sprint_id") == s_id)
-            s_sprint_changelog = sub_sprint_changelog.filter(pl.col("sprint_id") == s_id)
+            s_sprint_changelog = sub_sprint_changelog.filter(
+                pl.col("sprint_id") == s_id
+            )
             s_status_changelog = sub_status_changelog.filter(
                 pl.col("issue_id").is_in(s_issue_ids)
             )
             s_issues = sub_issues.filter(pl.col("id").is_in(s_issue_ids))
-            s_field_values = sub_field_values.filter(pl.col("issue_id").is_in(s_issue_ids))
+            s_field_values = sub_field_values.filter(
+                pl.col("issue_id").is_in(s_issue_ids)
+            )
             s_field_changelog = sub_field_changelog.filter(
                 pl.col("issue_id").is_in(s_issue_ids)
             )

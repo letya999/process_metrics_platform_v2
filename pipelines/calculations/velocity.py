@@ -354,6 +354,10 @@ def determine_story_points_at_date(
 
     # Filter changelog
     changes = changelog_df.filter(pl.col("field_key_id").is_in(sp_field_ids))
+    if changes.is_empty():
+        return scope_df.join(
+            current_sp_df, on="issue_id", how="left", coalesce=True
+        ).select(["issue_id", "sprint_id", "story_points"])
 
     # Join scope with changes
     # We want changes where changed_at > target_date
@@ -367,16 +371,28 @@ def determine_story_points_at_date(
         changes_filtered, on="issue_id", how="left", coalesce=True
     )
 
+    has_old_value = "old_value" in joined.columns
+    has_new_value = "new_value" in joined.columns
+
     # Find corrections: First change AFTER target_date (value before that change = old_value)
-    corrections_after = (
-        joined.filter(
-            pl.col("changed_at").is_not_null()
-            & (pl.col("changed_at") > pl.col("target_date"))
+    if has_old_value:
+        corrections_after = (
+            joined.filter(
+                pl.col("changed_at").is_not_null()
+                & (pl.col("changed_at") > pl.col("target_date"))
+            )
+            .sort("changed_at", descending=False)  # Ascending
+            .unique(subset=["issue_id", "sprint_id"], keep="first")
+            .select(["issue_id", "sprint_id", "old_value"])
         )
-        .sort("changed_at", descending=False)  # Ascending
-        .unique(subset=["issue_id", "sprint_id"], keep="first")
-        .select(["issue_id", "sprint_id", "old_value"])
-    )
+    else:
+        corrections_after = pl.DataFrame(
+            schema={
+                "issue_id": pl.Utf8,
+                "sprint_id": pl.Utf8,
+                "old_value": pl.Utf8,
+            }
+        )
 
     # Parse old_value
     corrections_after = corrections_after.with_columns(
@@ -400,35 +416,44 @@ def determine_story_points_at_date(
     )
 
     # Also resolve last change ON/BEFORE target_date (value at date = new_value).
-    corrections_before = (
-        joined.filter(
-            pl.col("changed_at").is_not_null()
-            & (pl.col("changed_at") <= pl.col("target_date"))
+    if has_new_value:
+        corrections_before = (
+            joined.filter(
+                pl.col("changed_at").is_not_null()
+                & (pl.col("changed_at") <= pl.col("target_date"))
+            )
+            .sort("changed_at", descending=True)
+            .unique(subset=["issue_id", "sprint_id"], keep="first")
+            .select(["issue_id", "sprint_id", "new_value"])
+            .with_columns(
+                [
+                    pl.when(
+                        pl.col("new_value").is_not_null()
+                        & pl.col("new_value")
+                        .cast(pl.Utf8)
+                        .str.strip_chars()
+                        .str.contains(r"^-?[0-9]+\.?[0-9]*$")
+                    )
+                    .then(
+                        pl.col("new_value")
+                        .cast(pl.Utf8)
+                        .str.strip_chars()
+                        .cast(pl.Float64, strict=False)
+                    )
+                    .otherwise(None)
+                    .alias("historic_sp_before")
+                ]
+            )
+            .select(["issue_id", "sprint_id", "historic_sp_before"])
         )
-        .sort("changed_at", descending=True)
-        .unique(subset=["issue_id", "sprint_id"], keep="first")
-        .select(["issue_id", "sprint_id", "new_value"])
-        .with_columns(
-            [
-                pl.when(
-                    pl.col("new_value").is_not_null()
-                    & pl.col("new_value")
-                    .cast(pl.Utf8)
-                    .str.strip_chars()
-                    .str.contains(r"^-?[0-9]+\.?[0-9]*$")
-                )
-                .then(
-                    pl.col("new_value")
-                    .cast(pl.Utf8)
-                    .str.strip_chars()
-                    .cast(pl.Float64, strict=False)
-                )
-                .otherwise(None)
-                .alias("historic_sp_before")
-            ]
+    else:
+        corrections_before = pl.DataFrame(
+            schema={
+                "issue_id": pl.Utf8,
+                "sprint_id": pl.Utf8,
+                "historic_sp_before": pl.Float64,
+            }
         )
-        .select(["issue_id", "sprint_id", "historic_sp_before"])
-    )
 
     # Join back to full scope
     init_sp = scope_df.join(current_sp_df, on="issue_id", how="left", coalesce=True)
@@ -821,9 +846,7 @@ def calculate_velocity_facts(
                 )
                 | (pl.col("name").str.to_lowercase().str.contains("story point"))
             )
-            sp_field_ids = (
-                sp_fields["id"].to_list() if not sp_fields.is_empty() else []
-            )
+            sp_field_ids = sp_fields["id"].to_list() if not sp_fields.is_empty() else []
 
         if sp_field_ids:
             sp_changelog = field_value_changelog_df.filter(
