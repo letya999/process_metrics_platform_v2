@@ -309,7 +309,7 @@ def jira_source(
             "summary,description,issuetype,status,priority,assignee,reporter,creator,"
             "created,updated,resolutiondate,resolution,parent,subtasks,issuelinks,"
             "comment,worklog,labels,fixVersions,customfield_10020,customfield_10016,"
-            "customfield_10036,"
+            "customfield_10036,customfield_10187,"
             "customfield_10028,project"
         )
         fields_to_fetch = os.getenv("JIRA_FIELDS_OVERRIDE", default_fields)
