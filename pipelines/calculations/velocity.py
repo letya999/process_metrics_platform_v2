@@ -367,8 +367,8 @@ def determine_story_points_at_date(
         changes_filtered, on="issue_id", how="left", coalesce=True
     )
 
-    # Find corrections: First change AFTER target_date
-    corrections = (
+    # Find corrections: First change AFTER target_date (value before that change = old_value)
+    corrections_after = (
         joined.filter(
             pl.col("changed_at").is_not_null()
             & (pl.col("changed_at") > pl.col("target_date"))
@@ -379,7 +379,7 @@ def determine_story_points_at_date(
     )
 
     # Parse old_value
-    corrections = corrections.with_columns(
+    corrections_after = corrections_after.with_columns(
         [
             pl.when(
                 pl.col("old_value").is_not_null()
@@ -394,9 +394,40 @@ def determine_story_points_at_date(
                 .str.strip_chars()
                 .cast(pl.Float64, strict=False)
             )
-            .otherwise(0.0)
-            .alias("historic_sp")
+            .otherwise(None)
+            .alias("historic_sp_after")
         ]
+    )
+
+    # Also resolve last change ON/BEFORE target_date (value at date = new_value).
+    corrections_before = (
+        joined.filter(
+            pl.col("changed_at").is_not_null()
+            & (pl.col("changed_at") <= pl.col("target_date"))
+        )
+        .sort("changed_at", descending=True)
+        .unique(subset=["issue_id", "sprint_id"], keep="first")
+        .select(["issue_id", "sprint_id", "new_value"])
+        .with_columns(
+            [
+                pl.when(
+                    pl.col("new_value").is_not_null()
+                    & pl.col("new_value")
+                    .cast(pl.Utf8)
+                    .str.strip_chars()
+                    .str.contains(r"^-?[0-9]+\.?[0-9]*$")
+                )
+                .then(
+                    pl.col("new_value")
+                    .cast(pl.Utf8)
+                    .str.strip_chars()
+                    .cast(pl.Float64, strict=False)
+                )
+                .otherwise(None)
+                .alias("historic_sp_before")
+            ]
+        )
+        .select(["issue_id", "sprint_id", "historic_sp_before"])
     )
 
     # Join back to full scope
@@ -404,10 +435,19 @@ def determine_story_points_at_date(
 
     final = (
         init_sp.join(
-            corrections, on=["issue_id", "sprint_id"], how="left", coalesce=True
+            corrections_after.select(["issue_id", "sprint_id", "historic_sp_after"]),
+            on=["issue_id", "sprint_id"],
+            how="left",
+            coalesce=True,
+        )
+        .join(
+            corrections_before,
+            on=["issue_id", "sprint_id"],
+            how="left",
+            coalesce=True,
         )
         .with_columns(
-            pl.coalesce(["historic_sp", "story_points"])
+            pl.coalesce(["historic_sp_after", "historic_sp_before", "story_points"])
             .fill_null(0.0)
             .alias("story_points")
         )
