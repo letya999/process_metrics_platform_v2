@@ -764,6 +764,64 @@ def calculate_velocity_facts(
         sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
+    # Build historic non-zero SP fallback from field changelog.
+    # This recovers cases where SP is later cleared to 0/null in Jira.
+    historic_nonzero_sp = pl.DataFrame(
+        schema={"issue_id": pl.Utf8, "historic_max_sp": pl.Float64}
+    )
+    if not field_value_changelog_df.is_empty():
+        if sp_field_key_ids_override:
+            sp_field_ids = sp_field_key_ids_override
+        else:
+            sp_fields = field_keys_df.filter(
+                (
+                    pl.col("external_key").is_in(
+                        ["customfield_10036", "customfield_10016", "story_points"]
+                    )
+                )
+                | (pl.col("name").str.to_lowercase().str.contains("story point"))
+            )
+            sp_field_ids = (
+                sp_fields["id"].to_list() if not sp_fields.is_empty() else []
+            )
+
+        if sp_field_ids:
+            sp_changelog = field_value_changelog_df.filter(
+                pl.col("field_key_id").is_in(sp_field_ids)
+            )
+            if not sp_changelog.is_empty():
+                parsed_hist = (
+                    sp_changelog.select(["issue_id", "old_value", "new_value"])
+                    .melt(
+                        id_vars=["issue_id"],
+                        value_vars=["old_value", "new_value"],
+                        variable_name="value_kind",
+                        value_name="raw_value",
+                    )
+                    .with_columns(
+                        pl.when(
+                            pl.col("raw_value").is_not_null()
+                            & pl.col("raw_value")
+                            .cast(pl.Utf8)
+                            .str.strip_chars()
+                            .str.contains(r"^-?[0-9]+\.?[0-9]*$")
+                        )
+                        .then(
+                            pl.col("raw_value")
+                            .cast(pl.Utf8)
+                            .str.strip_chars()
+                            .cast(pl.Float64, strict=False)
+                        )
+                        .otherwise(None)
+                        .alias("sp_value")
+                    )
+                    .filter(pl.col("sp_value").is_not_null() & (pl.col("sp_value") > 0))
+                    .group_by("issue_id")
+                    .agg(pl.col("sp_value").max().alias("historic_max_sp"))
+                )
+                if not parsed_hist.is_empty():
+                    historic_nonzero_sp = parsed_hist
+
     # 2. Identify Final Scope (issue set that ended in sprint)
     final_scope_df = identify_sprint_final_scope(
         sprint_issues_df, sprint_changelog_df, issues_df
@@ -786,6 +844,20 @@ def calculate_velocity_facts(
         field_keys_df,
         date_col="start_date",
         sp_field_key_ids_override=sp_field_key_ids_override,
+    )
+    commitment_with_sp = (
+        commitment_with_sp.join(historic_nonzero_sp, on="issue_id", how="left")
+        .with_columns(
+            pl.when(
+                (pl.col("story_points").fill_null(0.0) <= 0.0)
+                & (pl.col("historic_max_sp").fill_null(0.0) > 0.0)
+            )
+            .then(pl.col("historic_max_sp"))
+            .otherwise(pl.col("story_points"))
+            .fill_null(0.0)
+            .alias("story_points")
+        )
+        .select(["issue_id", "sprint_id", "story_points"])
     )
 
     # 3. Identify Completed
@@ -823,12 +895,18 @@ def calculate_velocity_facts(
             how="left",
             coalesce=True,
         )
+        .join(historic_nonzero_sp, on="issue_id", how="left", coalesce=True)
         .with_columns(
             pl.when(
                 (pl.col("story_points").fill_null(0.0) <= 0.0)
                 & (pl.col("commitment_story_points").fill_null(0.0) > 0.0)
             )
             .then(pl.col("commitment_story_points"))
+            .when(
+                (pl.col("story_points").fill_null(0.0) <= 0.0)
+                & (pl.col("historic_max_sp").fill_null(0.0) > 0.0)
+            )
+            .then(pl.col("historic_max_sp"))
             .otherwise(pl.col("story_points"))
             .fill_null(0.0)
             .alias("story_points")

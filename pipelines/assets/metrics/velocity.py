@@ -241,41 +241,74 @@ def calculate_velocity(
         engine, boards_df, board_columns_df
     )
 
-    # Resolve story_points field keys via metrics.units, per project.
-    # Falls back to heuristic inside calculate_velocity_facts if no binding found.
-    sp_field_key_override: list[str] = []
+    # Resolve story_points field key via metrics.units, per project.
+    # Important: calculate each project separately to avoid cross-project
+    # SP changelog interference when different projects use different SP fields.
+    sp_field_key_by_project: dict[str, list[str] | None] = {}
     for p_id in project_ids:
         unit_info = resolve_unit_field(engine, p_id, "story_points")
         if unit_info and unit_info.get("source_field_id"):
-            fk_id = str(unit_info["source_field_id"])
-            if fk_id not in sp_field_key_override:
-                sp_field_key_override.append(fk_id)
+            sp_field_key_by_project[p_id] = [str(unit_info["source_field_id"])]
+        else:
+            sp_field_key_by_project[p_id] = None
 
     context.log.info(
-        "story_points field key override from metrics.units: %s",
-        sp_field_key_override or "none (using heuristic)",
+        "story_points field key overrides (per project): %s",
+        {
+            pid: (vals[0] if vals else "heuristic")
+            for pid, vals in sp_field_key_by_project.items()
+        },
     )
 
-    # 2. Calculate BASE velocity facts
-    velocity_wide = velocity_logic.calculate_velocity_facts(
-        sprints_df=sprints_df,
-        sprint_issues_df=sprint_issues_df,
-        sprint_changelog_df=sprint_changelog_df,
-        issues_df=issues_df,
-        field_values_df=field_values_df,
-        field_keys_df=field_keys_df,
-        status_changelog_df=status_changelog_df,
-        boards_df=boards_df,
-        board_columns_df=board_columns_df,
-        field_value_changelog_df=field_value_changelog_df,
-        issue_statuses_df=issue_statuses_df,
-        done_status_ids=done_status_ids or None,
-        allow_current_status_fallback=False,
-        sp_field_key_ids_override=sp_field_key_override or None,
-    )
+    # 2. Calculate BASE velocity facts (project-scoped to keep SP field mapping correct)
+    velocity_parts: list[pl.DataFrame] = []
+    for p_id in project_ids:
+        sub_sprints = sprints_df.filter(pl.col("project_id") == p_id)
+        if sub_sprints.is_empty():
+            continue
 
-    if velocity_wide.is_empty():
+        sub_sprint_ids = sub_sprints.select("id").to_series().to_list()
+        sub_issues = issues_df.filter(pl.col("project_id") == p_id)
+        sub_issue_ids = sub_issues.select("id").to_series().to_list()
+        sub_boards = boards_df.filter(pl.col("project_id") == p_id)
+        sub_board_ids = sub_boards.select("id").to_series().to_list()
+
+        part = velocity_logic.calculate_velocity_facts(
+            sprints_df=sub_sprints,
+            sprint_issues_df=sprint_issues_df.filter(
+                pl.col("sprint_id").is_in(sub_sprint_ids)
+            ),
+            sprint_changelog_df=sprint_changelog_df.filter(
+                pl.col("sprint_id").is_in(sub_sprint_ids)
+            ),
+            issues_df=sub_issues,
+            field_values_df=field_values_df.filter(
+                pl.col("issue_id").is_in(sub_issue_ids)
+            ),
+            field_keys_df=field_keys_df,
+            status_changelog_df=status_changelog_df.filter(
+                pl.col("issue_id").is_in(sub_issue_ids)
+            ),
+            boards_df=sub_boards,
+            board_columns_df=board_columns_df.filter(
+                pl.col("board_id").is_in(sub_board_ids)
+            ),
+            field_value_changelog_df=field_value_changelog_df.filter(
+                pl.col("issue_id").is_in(sub_issue_ids)
+            ),
+            issue_statuses_df=issue_statuses_df,
+            done_status_ids=done_status_ids or None,
+            allow_current_status_fallback=False,
+            sp_field_key_ids_override=sp_field_key_by_project.get(p_id),
+        )
+
+        if not part.is_empty():
+            velocity_parts.append(part)
+
+    if not velocity_parts:
         return {"status": "no_data"}
+    velocity_wide = pl.concat(velocity_parts)
+
 
     # 3. Transform to Long Format (fact_values)
     def transform_to_fact_values(df_wide, slice_rule_id=None, slice_value=None):
@@ -362,6 +395,14 @@ def calculate_velocity(
         sub_boards = boards_df.filter(pl.col("project_id").is_in(subset_pids))
         sub_board_ids = sub_boards.select("id").to_series().to_list()
 
+        subset_issue_ids = df_subset.select("id").to_series().to_list()
+        subset_sp_ids = [
+            sp_field_key_by_project.get(pid, [None])[0]
+            for pid in subset_pids
+            if sp_field_key_by_project.get(pid)
+        ]
+        sp_override = list(dict.fromkeys(subset_sp_ids)) or None
+
         return velocity_logic.calculate_velocity_facts(
             sprints_df=sub_sprints,
             sprint_issues_df=sprint_issues_df.filter(
@@ -371,18 +412,24 @@ def calculate_velocity(
                 pl.col("sprint_id").is_in(sub_sprint_ids)
             ),
             issues_df=df_subset,
-            field_values_df=field_values_df,
+            field_values_df=field_values_df.filter(
+                pl.col("issue_id").is_in(subset_issue_ids)
+            ),
             field_keys_df=field_keys_df,
-            status_changelog_df=status_changelog_df,
+            status_changelog_df=status_changelog_df.filter(
+                pl.col("issue_id").is_in(subset_issue_ids)
+            ),
             boards_df=sub_boards,
             board_columns_df=board_columns_df.filter(
                 pl.col("board_id").is_in(sub_board_ids)
             ),
-            field_value_changelog_df=field_value_changelog_df,
+            field_value_changelog_df=field_value_changelog_df.filter(
+                pl.col("issue_id").is_in(subset_issue_ids)
+            ),
             issue_statuses_df=issue_statuses_df,
             done_status_ids=done_status_ids or None,
             allow_current_status_fallback=False,
-            sp_field_key_ids_override=sp_field_key_override or None,
+            sp_field_key_ids_override=sp_override,
         )
 
     all_facts = [base_facts]
