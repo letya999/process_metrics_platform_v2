@@ -126,16 +126,13 @@ def calculate_sprint_health(
     for p_id in project_ids:
         unit_info = resolve_unit_field(engine, p_id, "story_points")
         if unit_info and unit_info.get("source_field_id"):
-            field_id = unit_info["source_field_id"]
-            matched = field_keys_df.filter(pl.col("external_key") == field_id)
-            sp_field_key_map[p_id] = (
-                matched["id"][0] if not matched.is_empty() else None
-            )
+            # metrics.units.source_field_id stores clean_jira.field_keys.id (uuid)
+            sp_field_key_map[p_id] = unit_info["source_field_id"]
         else:
             sp_field_key_map[p_id] = None
             context.log.warning(f"No story_points unit configured for project {p_id}")
     # Use first non-None as fallback for slicing context (full set); per-project used in calc
-    sp_field_key_id = next(
+    fallback_sp_field_key_id = next(
         (v for v in sp_field_key_map.values() if v is not None), None
     )
 
@@ -167,34 +164,57 @@ def calculate_sprint_health(
         if sub_sprints.is_empty():
             return results
 
-        # A. Scope Changes
-        scope_changes = sprint_health_logic.calculate_sprint_scope_changes(
-            sub_sprints,
-            sub_sprint_changelog,
-            sub_issues,
-            sub_field_values,
-            field_keys_df,
-            sub_field_changelog,
-        )
-        if not scope_changes.is_empty():
-            for col, cid in {
-                "added_count": calc_id_added_count,
-                "added_sp": calc_id_added_sp,
-                "removed_count": calc_id_removed_count,
-                "removed_sp": calc_id_removed_sp,
-            }.items():
-                results.append(
-                    scope_changes.select(
-                        [
-                            "project_id",
-                            pl.col("time_date"),
-                            pl.col(col).alias("value"),
-                            pl.lit("sprint").alias("entity_type"),
-                            pl.col("iteration_id").alias("entity_id"),
-                            pl.lit(cid).alias("calc_id"),
-                        ]
+        # A. Scope Changes (project-specific SP field override)
+        for p_id in p_ids:
+            p_sprints = sub_sprints.filter(pl.col("project_id") == p_id)
+            if p_sprints.is_empty():
+                continue
+            p_sprint_ids = p_sprints.select("id").to_series().to_list()
+            p_issue_ids = (
+                sub_issues.filter(pl.col("project_id") == p_id)
+                .select("id")
+                .to_series()
+                .to_list()
+            )
+            p_issues = sub_issues.filter(pl.col("project_id") == p_id)
+            p_sprint_changelog = sub_sprint_changelog.filter(
+                pl.col("sprint_id").is_in(p_sprint_ids)
+            )
+            p_field_values = sub_field_values.filter(pl.col("issue_id").is_in(p_issue_ids))
+            p_field_changelog = sub_field_changelog.filter(
+                pl.col("issue_id").is_in(p_issue_ids)
+            )
+            p_sp_field_id = sp_field_key_map.get(p_id)
+            p_sp_override = [p_sp_field_id] if p_sp_field_id else None
+
+            scope_changes = sprint_health_logic.calculate_sprint_scope_changes(
+                p_sprints,
+                p_sprint_changelog,
+                p_issues,
+                p_field_values,
+                field_keys_df,
+                p_field_changelog,
+                sp_field_key_ids_override=p_sp_override,
+            )
+            if not scope_changes.is_empty():
+                for col, cid in {
+                    "added_count": calc_id_added_count,
+                    "added_sp": calc_id_added_sp,
+                    "removed_count": calc_id_removed_count,
+                    "removed_sp": calc_id_removed_sp,
+                }.items():
+                    results.append(
+                        scope_changes.select(
+                            [
+                                "project_id",
+                                pl.col("time_date"),
+                                pl.col(col).alias("value"),
+                                pl.lit("sprint").alias("entity_type"),
+                                pl.col("iteration_id").alias("entity_id"),
+                                pl.lit(cid).alias("calc_id"),
+                            ]
+                        )
                     )
-                )
 
         # B. Spillover
         spillover = sprint_health_logic.calculate_sprint_spillover(
@@ -218,6 +238,25 @@ def calculate_sprint_health(
         for sprint in sub_sprints.to_dicts():
             p_id, s_id = sprint["project_id"], sprint["id"]
             s_df = sub_sprints.filter(pl.col("id") == s_id)
+            s_issue_ids = (
+                sprint_issues_df.filter(pl.col("sprint_id") == s_id)
+                .select("issue_id")
+                .to_series()
+                .to_list()
+            )
+            s_sprint_issues = sub_sprint_issues.filter(pl.col("sprint_id") == s_id)
+            s_sprint_changelog = sub_sprint_changelog.filter(pl.col("sprint_id") == s_id)
+            s_status_changelog = sub_status_changelog.filter(
+                pl.col("issue_id").is_in(s_issue_ids)
+            )
+            s_issues = sub_issues.filter(pl.col("id").is_in(s_issue_ids))
+            s_field_values = sub_field_values.filter(pl.col("issue_id").is_in(s_issue_ids))
+            s_field_changelog = sub_field_changelog.filter(
+                pl.col("issue_id").is_in(s_issue_ids)
+            )
+            p_sp_field_id = sp_field_key_map.get(p_id)
+            p_sp_override = [p_sp_field_id] if p_sp_field_id else None
+
             b_id = (
                 boards_df.filter(pl.col("project_id") == p_id).select("id").to_series()
             )
@@ -235,14 +274,15 @@ def calculate_sprint_health(
             # Burndown
             burndown = sprint_health_logic.calculate_sprint_burndown(
                 s_df,
-                sub_sprint_issues,
-                sub_sprint_changelog,
-                sub_status_changelog,
+                s_sprint_issues,
+                s_sprint_changelog,
+                s_status_changelog,
                 done_ids,
-                sub_issues,
-                sub_field_values,
+                s_issues,
+                s_field_values,
                 field_keys_df,
-                sub_field_changelog,
+                s_field_changelog,
+                sp_field_key_ids_override=p_sp_override,
             )
             if not burndown.is_empty():
                 results.append(
@@ -265,14 +305,15 @@ def calculate_sprint_health(
                 if act_pts.get("start_status_ids"):
                     activation = sprint_health_logic.calculate_activation_velocity(
                         s_df,
-                        sub_sprint_issues,
-                        sub_sprint_changelog,
-                        sub_status_changelog,
-                        sub_issues,
-                        sub_field_values,
+                        s_sprint_issues,
+                        s_sprint_changelog,
+                        s_status_changelog,
+                        s_issues,
+                        s_field_values,
                         field_keys_df,
-                        sub_field_changelog,
+                        s_field_changelog,
                         act_pts["start_status_ids"],
+                        sp_field_key_ids_override=p_sp_override,
                     )
                     if not activation.is_empty():
                         results.append(
@@ -289,16 +330,16 @@ def calculate_sprint_health(
                         )
 
             # D. Unestimated
-            if sp_field_key_id:
+            if p_sp_field_id:
                 unest = sprint_health_logic.calculate_unestimated_closed(
                     s_df,
-                    sub_sprint_issues,
-                    sub_sprint_changelog,
-                    sub_issues,
-                    sub_status_changelog,
+                    s_sprint_issues,
+                    s_sprint_changelog,
+                    s_issues,
+                    s_status_changelog,
                     done_ids,
-                    sub_field_values,
-                    sp_field_key_id,
+                    s_field_values,
+                    p_sp_field_id,
                 )
                 if not unest.is_empty():
                     results.append(
