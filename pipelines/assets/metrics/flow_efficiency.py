@@ -2,6 +2,8 @@
 Flow Efficiency Metrics Dagster Asset (Generic Long Metric Store)
 """
 
+import ast
+import json
 import logging
 from typing import Any
 
@@ -45,6 +47,7 @@ def calculate_flow_efficiency(
 
     # 1. Resolve metadata
     def_id = get_definition_id(engine, "flow_efficiency")
+    settings_calc_id = get_calculation_id(engine, "flow_efficiency_pct")
     flow_map = {
         "active_days": get_calculation_id(engine, "flow_active_days"),
         "wait_days": get_calculation_id(engine, "flow_wait_days"),
@@ -85,8 +88,8 @@ def calculate_flow_efficiency(
     flow_settings_df = read_table(
         engine,
         "SELECT project_id, settings_json FROM metrics.calculation_settings"
-        " WHERE target_calculation_id = :def_id AND settings_type = 'flow_status_categories' AND enabled = true",
-        params={"def_id": def_id},
+        " WHERE target_calculation_id = :calc_id AND settings_type = 'flow_status_categories' AND enabled = true",
+        params={"calc_id": settings_calc_id},
     )
 
     # 2. Calculate BASE Flow Efficiency facts — per project
@@ -104,18 +107,42 @@ def calculate_flow_efficiency(
             continue
 
         cfg = p_settings[0, "settings_json"]
-        active_cats = cfg.get("active_categories", [])
-        passive_cats = cfg.get("passive_categories", [])
-        done_cats = cfg.get("done_categories", [])
-
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except json.JSONDecodeError:
+                cfg = ast.literal_eval(cfg)
         p_statuses = issue_statuses_df.filter(pl.col("project_id") == p_id)
-        active_ids = p_statuses.filter(pl.col("category").is_in(active_cats))[
-            "id"
-        ].to_list()
-        wait_ids = p_statuses.filter(pl.col("category").is_in(passive_cats))[
-            "id"
-        ].to_list()
-        end_ids = p_statuses.filter(pl.col("category").is_in(done_cats))["id"].to_list()
+
+        # Preferred mode: explicit status-id lists (board/column-level mapping).
+        active_ids_cfg = cfg.get("active_status_ids")
+        passive_ids_cfg = cfg.get("passive_status_ids")
+        done_ids_cfg = cfg.get("done_status_ids")
+
+        if (
+            isinstance(active_ids_cfg, list)
+            and isinstance(passive_ids_cfg, list)
+            and isinstance(done_ids_cfg, list)
+        ):
+            known_status_ids = set(p_statuses["id"].to_list())
+            active_ids = [sid for sid in active_ids_cfg if sid in known_status_ids]
+            wait_ids = [sid for sid in passive_ids_cfg if sid in known_status_ids]
+            end_ids = [sid for sid in done_ids_cfg if sid in known_status_ids]
+        else:
+            # Backward-compatible mode: category-based mapping.
+            active_cats = cfg.get("active_categories", [])
+            passive_cats = cfg.get("passive_categories", [])
+            done_cats = cfg.get("done_categories", [])
+            active_ids = p_statuses.filter(pl.col("category").is_in(active_cats))[
+                "id"
+            ].to_list()
+            wait_ids = p_statuses.filter(pl.col("category").is_in(passive_cats))[
+                "id"
+            ].to_list()
+            end_ids = p_statuses.filter(pl.col("category").is_in(done_cats))[
+                "id"
+            ].to_list()
+
         project_status_maps[p_id] = (active_ids, wait_ids, end_ids)
 
         p_issues = issues_df.filter(pl.col("project_id") == p_id)

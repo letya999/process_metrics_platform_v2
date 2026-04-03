@@ -354,6 +354,10 @@ def determine_story_points_at_date(
 
     # Filter changelog
     changes = changelog_df.filter(pl.col("field_key_id").is_in(sp_field_ids))
+    if changes.is_empty():
+        return scope_df.join(
+            current_sp_df, on="issue_id", how="left", coalesce=True
+        ).select(["issue_id", "sprint_id", "story_points"])
 
     # Join scope with changes
     # We want changes where changed_at > target_date
@@ -367,19 +371,31 @@ def determine_story_points_at_date(
         changes_filtered, on="issue_id", how="left", coalesce=True
     )
 
-    # Find corrections: First change AFTER target_date
-    corrections = (
-        joined.filter(
-            pl.col("changed_at").is_not_null()
-            & (pl.col("changed_at") > pl.col("target_date"))
+    has_old_value = "old_value" in joined.columns
+    has_new_value = "new_value" in joined.columns
+
+    # Find corrections: First change AFTER target_date (value before that change = old_value)
+    if has_old_value:
+        corrections_after = (
+            joined.filter(
+                pl.col("changed_at").is_not_null()
+                & (pl.col("changed_at") > pl.col("target_date"))
+            )
+            .sort("changed_at", descending=False)  # Ascending
+            .unique(subset=["issue_id", "sprint_id"], keep="first")
+            .select(["issue_id", "sprint_id", "old_value"])
         )
-        .sort("changed_at", descending=False)  # Ascending
-        .unique(subset=["issue_id", "sprint_id"], keep="first")
-        .select(["issue_id", "sprint_id", "old_value"])
-    )
+    else:
+        corrections_after = pl.DataFrame(
+            schema={
+                "issue_id": pl.Utf8,
+                "sprint_id": pl.Utf8,
+                "old_value": pl.Utf8,
+            }
+        )
 
     # Parse old_value
-    corrections = corrections.with_columns(
+    corrections_after = corrections_after.with_columns(
         [
             pl.when(
                 pl.col("old_value").is_not_null()
@@ -394,20 +410,69 @@ def determine_story_points_at_date(
                 .str.strip_chars()
                 .cast(pl.Float64, strict=False)
             )
-            .otherwise(0.0)
-            .alias("historic_sp")
+            .otherwise(None)
+            .alias("historic_sp_after")
         ]
     )
+
+    # Also resolve last change ON/BEFORE target_date (value at date = new_value).
+    if has_new_value:
+        corrections_before = (
+            joined.filter(
+                pl.col("changed_at").is_not_null()
+                & (pl.col("changed_at") <= pl.col("target_date"))
+            )
+            .sort("changed_at", descending=True)
+            .unique(subset=["issue_id", "sprint_id"], keep="first")
+            .select(["issue_id", "sprint_id", "new_value"])
+            .with_columns(
+                [
+                    pl.when(
+                        pl.col("new_value").is_not_null()
+                        & pl.col("new_value")
+                        .cast(pl.Utf8)
+                        .str.strip_chars()
+                        .str.contains(r"^-?[0-9]+\.?[0-9]*$")
+                    )
+                    .then(
+                        pl.col("new_value")
+                        .cast(pl.Utf8)
+                        .str.strip_chars()
+                        .cast(pl.Float64, strict=False)
+                    )
+                    .otherwise(None)
+                    .alias("historic_sp_before")
+                ]
+            )
+            .select(["issue_id", "sprint_id", "historic_sp_before"])
+        )
+    else:
+        corrections_before = pl.DataFrame(
+            schema={
+                "issue_id": pl.Utf8,
+                "sprint_id": pl.Utf8,
+                "historic_sp_before": pl.Float64,
+            }
+        )
 
     # Join back to full scope
     init_sp = scope_df.join(current_sp_df, on="issue_id", how="left", coalesce=True)
 
     final = (
         init_sp.join(
-            corrections, on=["issue_id", "sprint_id"], how="left", coalesce=True
+            corrections_after.select(["issue_id", "sprint_id", "historic_sp_after"]),
+            on=["issue_id", "sprint_id"],
+            how="left",
+            coalesce=True,
+        )
+        .join(
+            corrections_before,
+            on=["issue_id", "sprint_id"],
+            how="left",
+            coalesce=True,
         )
         .with_columns(
-            pl.coalesce(["historic_sp", "story_points"])
+            pl.coalesce(["historic_sp_after", "historic_sp_before", "story_points"])
             .fill_null(0.0)
             .alias("story_points")
         )
@@ -764,6 +829,62 @@ def calculate_velocity_facts(
         sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
+    # Build historic non-zero SP fallback from field changelog.
+    # This recovers cases where SP is later cleared to 0/null in Jira.
+    historic_nonzero_sp = pl.DataFrame(
+        schema={"issue_id": pl.Utf8, "historic_max_sp": pl.Float64}
+    )
+    if not field_value_changelog_df.is_empty():
+        if sp_field_key_ids_override:
+            sp_field_ids = sp_field_key_ids_override
+        else:
+            sp_fields = field_keys_df.filter(
+                (
+                    pl.col("external_key").is_in(
+                        ["customfield_10036", "customfield_10016", "story_points"]
+                    )
+                )
+                | (pl.col("name").str.to_lowercase().str.contains("story point"))
+            )
+            sp_field_ids = sp_fields["id"].to_list() if not sp_fields.is_empty() else []
+
+        if sp_field_ids:
+            sp_changelog = field_value_changelog_df.filter(
+                pl.col("field_key_id").is_in(sp_field_ids)
+            )
+            if not sp_changelog.is_empty():
+                parsed_hist = (
+                    sp_changelog.select(["issue_id", "old_value", "new_value"])
+                    .melt(
+                        id_vars=["issue_id"],
+                        value_vars=["old_value", "new_value"],
+                        variable_name="value_kind",
+                        value_name="raw_value",
+                    )
+                    .with_columns(
+                        pl.when(
+                            pl.col("raw_value").is_not_null()
+                            & pl.col("raw_value")
+                            .cast(pl.Utf8)
+                            .str.strip_chars()
+                            .str.contains(r"^-?[0-9]+\.?[0-9]*$")
+                        )
+                        .then(
+                            pl.col("raw_value")
+                            .cast(pl.Utf8)
+                            .str.strip_chars()
+                            .cast(pl.Float64, strict=False)
+                        )
+                        .otherwise(None)
+                        .alias("sp_value")
+                    )
+                    .filter(pl.col("sp_value").is_not_null() & (pl.col("sp_value") > 0))
+                    .group_by("issue_id")
+                    .agg(pl.col("sp_value").max().alias("historic_max_sp"))
+                )
+                if not parsed_hist.is_empty():
+                    historic_nonzero_sp = parsed_hist
+
     # 2. Identify Final Scope (issue set that ended in sprint)
     final_scope_df = identify_sprint_final_scope(
         sprint_issues_df, sprint_changelog_df, issues_df
@@ -786,6 +907,20 @@ def calculate_velocity_facts(
         field_keys_df,
         date_col="start_date",
         sp_field_key_ids_override=sp_field_key_ids_override,
+    )
+    commitment_with_sp = (
+        commitment_with_sp.join(historic_nonzero_sp, on="issue_id", how="left")
+        .with_columns(
+            pl.when(
+                (pl.col("story_points").fill_null(0.0) <= 0.0)
+                & (pl.col("historic_max_sp").fill_null(0.0) > 0.0)
+            )
+            .then(pl.col("historic_max_sp"))
+            .otherwise(pl.col("story_points"))
+            .fill_null(0.0)
+            .alias("story_points")
+        )
+        .select(["issue_id", "sprint_id", "story_points"])
     )
 
     # 3. Identify Completed
@@ -812,6 +947,34 @@ def calculate_velocity_facts(
         field_keys_df,
         date_col="effective_end_date",
         sp_field_key_ids_override=sp_field_key_ids_override,
+    )
+
+    # Fallback: if SP at sprint end is missing/zero (e.g. estimate cleared),
+    # use commitment-time SP for the same issue in the same sprint.
+    completed_with_sp = (
+        completed_with_sp.join(
+            commitment_with_sp.rename({"story_points": "commitment_story_points"}),
+            on=["issue_id", "sprint_id"],
+            how="left",
+            coalesce=True,
+        )
+        .join(historic_nonzero_sp, on="issue_id", how="left", coalesce=True)
+        .with_columns(
+            pl.when(
+                (pl.col("story_points").fill_null(0.0) <= 0.0)
+                & (pl.col("commitment_story_points").fill_null(0.0) > 0.0)
+            )
+            .then(pl.col("commitment_story_points"))
+            .when(
+                (pl.col("story_points").fill_null(0.0) <= 0.0)
+                & (pl.col("historic_max_sp").fill_null(0.0) > 0.0)
+            )
+            .then(pl.col("historic_max_sp"))
+            .otherwise(pl.col("story_points"))
+            .fill_null(0.0)
+            .alias("story_points")
+        )
+        .select(["issue_id", "sprint_id", "story_points"])
     )
 
     # 6. Aggregate by Sprint

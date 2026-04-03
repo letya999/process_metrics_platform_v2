@@ -59,6 +59,7 @@ def _ensure_state() -> None:
     st.session_state.setdefault("jobs_active_run_id", None)
     st.session_state.setdefault("jobs_active_job_name", None)
     st.session_state.setdefault("jobs_history", [])
+    st.session_state.setdefault("metrics_run_active", [])
 
 
 def _login_view(client: AdminApiClient) -> None:
@@ -1928,6 +1929,152 @@ def _tab_integrations(client: AdminApiClient, token: str) -> None:
             st.caption(proj["name"])
 
 
+def _tab_metrics_run(client: AdminApiClient, token: str) -> None:
+    section_title(
+        "Metrics Run",
+        "Select individual metrics to recalculate and monitor progress.",
+    )
+
+    try:
+        metric_jobs = client.request("GET", "/admin/metric-jobs", token=token)
+    except Exception as exc:
+        show_error(exc)
+        return
+
+    if not metric_jobs:
+        st.info("No metric jobs available.")
+        return
+
+    job_by_name = {j["job_name"]: j for j in metric_jobs}
+
+    st.markdown("#### Select metrics to run")
+    c_all, c_none, _ = st.columns([1, 1, 6])
+    if c_all.button("Select all", key="mrun_select_all"):
+        for j in metric_jobs:
+            st.session_state[f"mrun_chk_{j['job_name']}"] = True
+    if c_none.button("Clear", key="mrun_clear"):
+        for j in metric_jobs:
+            st.session_state[f"mrun_chk_{j['job_name']}"] = False
+
+    cols_per_row = 3
+    rows = [
+        metric_jobs[i : i + cols_per_row]
+        for i in range(0, len(metric_jobs), cols_per_row)
+    ]
+    for row in rows:
+        cols = st.columns(cols_per_row)
+        for col, job in zip(cols, row, strict=False):
+            with col:
+                st.checkbox(
+                    job["title"],
+                    key=f"mrun_chk_{job['job_name']}",
+                    help=job.get("description", ""),
+                )
+
+    selected = [
+        j["job_name"]
+        for j in metric_jobs
+        if st.session_state.get(f"mrun_chk_{j['job_name']}", False)
+    ]
+
+    st.markdown(f"**Selected:** {len(selected)} / {len(metric_jobs)}")
+
+    if st.button(
+        "Run selected",
+        type="primary",
+        disabled=not selected,
+        key="mrun_launch",
+    ):
+        try:
+            launches = client.request(
+                "POST",
+                "/admin/metric-jobs/launch-batch",
+                token=token,
+                json={"job_names": selected},
+            )
+            new_runs = []
+            for item in launches:
+                title = job_by_name.get(item["job_name"], {}).get(
+                    "title", item["job_name"]
+                )
+                new_runs.append(
+                    {
+                        "job_name": item["job_name"],
+                        "title": title,
+                        "run_id": item.get("run_id"),
+                        "status": item.get("status", "UNKNOWN"),
+                        "progress_pct": 0.0,
+                        "error": item.get("error"),
+                    }
+                )
+            st.session_state["metrics_run_active"] = new_runs
+            launched = sum(1 for r in new_runs if r["run_id"])
+            show_success(f"Launched {launched} of {len(selected)} metric jobs.")
+        except Exception as exc:
+            show_error(exc)
+
+    st.divider()
+
+    active_runs: list[dict] = st.session_state.get("metrics_run_active", [])
+    if not active_runs:
+        st.info("No active metric runs. Select metrics and click Run.")
+        return
+
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        auto_poll = st.toggle("Auto refresh", value=True, key="mrun_auto_refresh")
+    with c2:
+        st.caption("Polling interval: 3 seconds while runs are active.")
+    st.button("Refresh now", key="mrun_refresh_now")
+
+    any_running = False
+    for run_entry in active_runs:
+        run_id = run_entry.get("run_id")
+        if not run_id:
+            run_entry["status"] = "LAUNCH_FAILED"
+            continue
+        current_status = (run_entry.get("status") or "UNKNOWN").upper()
+        if current_status in {"SUCCESS", "FAILURE", "CANCELED", "LAUNCH_FAILED"}:
+            continue
+        try:
+            details = client.request("GET", f"/admin/jobs/runs/{run_id}", token=token)
+            run_entry["status"] = (details.get("status") or "UNKNOWN").upper()
+            run_entry["progress_pct"] = details.get("progress_pct", 0.0)
+        except Exception:  # noqa: BLE001,S110
+            pass  # noqa: S110
+        if run_entry["status"] not in {
+            "SUCCESS",
+            "FAILURE",
+            "CANCELED",
+            "LAUNCH_FAILED",
+        }:
+            any_running = True
+
+    st.session_state["metrics_run_active"] = active_runs
+
+    st.markdown("#### Run Status")
+    status_rows = [
+        {
+            "metric": r["title"],
+            "job": r["job_name"],
+            "run_id": r.get("run_id") or "-",
+            "status": r.get("status", "UNKNOWN"),
+            "progress_%": r.get("progress_pct", 0.0),
+            "error": r.get("error") or "",
+        }
+        for r in active_runs
+    ]
+    st.dataframe(
+        pd.DataFrame(status_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if any_running and auto_poll:
+        time.sleep(3)
+        st.rerun()
+
+
 def _page_configuration(client: AdminApiClient, token: str) -> None:
     tabs = st.tabs(
         [
@@ -1939,6 +2086,7 @@ def _page_configuration(client: AdminApiClient, token: str) -> None:
             "Slices",
             "Validate",
             "Jobs",
+            "Metrics Run",
         ]
     )
 
@@ -1958,6 +2106,8 @@ def _page_configuration(client: AdminApiClient, token: str) -> None:
         _tab_validate(client, token, None)
     with tabs[7]:
         _tab_jobs(client, token)
+    with tabs[8]:
+        _tab_metrics_run(client, token)
 
 
 def main() -> None:

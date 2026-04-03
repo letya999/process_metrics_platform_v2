@@ -101,8 +101,10 @@ def parse_jira_issue(raw_issue: dict[str, Any]) -> dict[str, Any]:
     parsed["reporter_account_id"] = reporter.get("accountId") if reporter else None
     parsed["reporter_display_name"] = reporter.get("displayName") if reporter else None
 
-    # Parse story points (common custom field)
+    # Parse story points (field id differs across Jira instances/projects)
     parsed["story_points"] = fields.get("customfield_10016")
+    if parsed["story_points"] is None:
+        parsed["story_points"] = fields.get("customfield_10036")
 
     # Parse sprint (if present)
     sprint_field = fields.get("customfield_10020", [])  # Common sprint field

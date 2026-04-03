@@ -209,6 +209,17 @@ class AdminJobLaunchResponse(BaseModel):
     status: str
 
 
+class AdminBatchJobLaunchRequest(BaseModel):
+    job_names: list[str]
+
+
+class AdminBatchJobLaunchItem(BaseModel):
+    job_name: str
+    run_id: str | None = None
+    status: str
+    error: str | None = None
+
+
 class AdminRunStepStatus(BaseModel):
     step_key: str
     status: str | None = None

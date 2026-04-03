@@ -88,3 +88,20 @@ Implementation details:
 - Keep integration create/update aligned with DB token-storage constraints and return deterministic 4xx errors for operator mistakes.
 
 **Impact:** onboarding becomes deterministic, fewer false "empty system" incidents, faster first successful sync in production.
+
+## TD-008: Mixed-project sprint board scope vs project scope mismatch (Velocity/Sprint Health)
+**Status:** Known / Not Started
+For some Jira boards (notably `TWBACKEND`), sprint scope includes issues from multiple project keys on the same board. Jira sprint reports are board-scoped, but current platform aggregation is primarily project-scoped (`project_agg_id`), so metrics diverge from Jira in mixed sprints.
+
+Observed effect in production:
+- `TWWB` and `TWMOB` are close to Jira after SP-field fixes
+- `TWBACKEND` still has large deltas on planned/completed SP for specific sprints
+- root cause is mixed sprint composition, not only SP field mapping
+
+**Resolution:** Add explicit board-scoped metric mode:
+- introduce board-level dimensions/facts (or board slice) for sprint metrics
+- calculate velocity/sprint-health on sprint issue set as seen by board scope
+- keep project-scoped metrics in parallel (do not replace), make scope explicit in BI filters
+- add validation job comparing board-scoped results against Jira sprint report API
+
+**Impact:** allows 1:1 reconciliation with Jira for mixed boards while preserving current project analytics.

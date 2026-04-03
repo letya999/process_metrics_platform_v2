@@ -36,6 +36,7 @@ def _determine_story_points_at_event_time(
     current_sp_df: pl.DataFrame,
     field_value_changelog_df: pl.DataFrame,
     field_keys_df: pl.DataFrame,
+    sp_field_key_ids_override: list[str] | None = None,
 ) -> pl.DataFrame:
     """Determine Story Points at exact event timestamp (`changed_at`) for each row."""
     if events_df.is_empty():
@@ -43,23 +44,27 @@ def _determine_story_points_at_event_time(
             pl.lit(0.0).alias("story_points")
         )
 
-    sp_fields = field_keys_df.filter(
-        (
-            pl.col("external_key").is_in(
-                ["customfield_10036", "customfield_10016", "story_points"]
-            )
-        )
-        | (pl.col("name").str.to_lowercase().str.contains("story point"))
-    )
-
     base = events_df.select(["issue_id", "sprint_id", "changed_at"]).join(
         current_sp_df, on="issue_id", how="left", coalesce=True
     )
 
-    if sp_fields.is_empty() or field_value_changelog_df.is_empty():
-        return base.with_columns(pl.col("story_points").fill_null(0.0))
+    if sp_field_key_ids_override:
+        sp_field_ids = sp_field_key_ids_override
+    else:
+        sp_fields = field_keys_df.filter(
+            (
+                pl.col("external_key").is_in(
+                    ["customfield_10036", "customfield_10016", "story_points"]
+                )
+            )
+            | (pl.col("name").str.to_lowercase().str.contains("story point"))
+        )
+        if sp_fields.is_empty():
+            return base.with_columns(pl.col("story_points").fill_null(0.0))
+        sp_field_ids = sp_fields["id"].to_list()
 
-    sp_field_ids = sp_fields["id"].to_list()
+    if field_value_changelog_df.is_empty():
+        return base.with_columns(pl.col("story_points").fill_null(0.0))
     changes = field_value_changelog_df.filter(
         pl.col("field_key_id").is_in(sp_field_ids)
     )
@@ -124,6 +129,7 @@ def calculate_sprint_scope_changes(
     field_values_df: pl.DataFrame,
     field_keys_df: pl.DataFrame,
     field_value_changelog_df: pl.DataFrame,
+    sp_field_key_ids_override: list[str] | None = None,
 ) -> pl.DataFrame:
     """Calculate daily added/removed scope events during the sprint."""
     if sprint_changelog_df.is_empty():
@@ -175,13 +181,19 @@ def calculate_sprint_scope_changes(
         .unique(subset=["issue_id", "sprint_id"], keep="first")
     )
 
-    current_sp_df = extract_story_points(issues_df, field_values_df, field_keys_df)
+    current_sp_df = extract_story_points(
+        issues_df,
+        field_values_df,
+        field_keys_df,
+        sp_field_key_ids_override=sp_field_key_ids_override,
+    )
 
     added_with_sp = _determine_story_points_at_event_time(
         added_cl,
         current_sp_df,
         field_value_changelog_df,
         field_keys_df,
+        sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
     removed_with_sp = _determine_story_points_at_event_time(
@@ -189,6 +201,7 @@ def calculate_sprint_scope_changes(
         current_sp_df,
         field_value_changelog_df,
         field_keys_df,
+        sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
     added_agg = (
@@ -357,6 +370,7 @@ def calculate_sprint_burndown(
     field_values_df: pl.DataFrame,
     field_keys_df: pl.DataFrame,
     field_value_changelog_df: pl.DataFrame,
+    sp_field_key_ids_override: list[str] | None = None,
 ) -> pl.DataFrame:
     """
     Calculate remaining SP per day for each sprint.
@@ -371,7 +385,12 @@ def calculate_sprint_burndown(
     the Cartesian product bug that occurs when an issue has multiple done-status
     transitions (e.g., Canceled -> Done within seconds).
     """
-    current_sp_df = extract_story_points(issues_df, field_values_df, field_keys_df)
+    current_sp_df = extract_story_points(
+        issues_df,
+        field_values_df,
+        field_keys_df,
+        sp_field_key_ids_override=sp_field_key_ids_override,
+    )
 
     # Non-sub-task issue IDs
     non_sub_ids = set(
@@ -502,11 +521,17 @@ def calculate_activation_velocity(
     field_keys_df: pl.DataFrame,
     field_value_changelog_df: pl.DataFrame,
     initial_status_id: str | List[str],
+    sp_field_key_ids_override: list[str] | None = None,
 ) -> pl.DataFrame:
     """
     Calculate activation velocity percentage per day.
     """
-    current_sp_df = extract_story_points(issues_df, field_values_df, field_keys_df)
+    current_sp_df = extract_story_points(
+        issues_df,
+        field_values_df,
+        field_keys_df,
+        sp_field_key_ids_override=sp_field_key_ids_override,
+    )
 
     # 1. Total planned SP (commitment)
     commitment_df = identify_sprint_commitment(
@@ -519,6 +544,7 @@ def calculate_activation_velocity(
         field_value_changelog_df,
         field_keys_df,
         date_col="start_date",
+        sp_field_key_ids_override=sp_field_key_ids_override,
     )
 
     total_planned_sp = commitment_with_sp.group_by("sprint_id").agg(
@@ -580,6 +606,7 @@ def calculate_activation_velocity(
         current_sp_df,
         field_value_changelog_df,
         field_keys_df,
+        sp_field_key_ids_override=sp_field_key_ids_override,
     ).with_columns(pl.col("changed_at").dt.date().alias("activation_date"))
 
     # 3. Generate daily rows

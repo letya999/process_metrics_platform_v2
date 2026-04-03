@@ -60,3 +60,37 @@ def test_validation_response_contains_issues():
     response = ValidationResponse(issues=[issue])
 
     assert response.issues[0].code == "missing_setting"
+
+
+def test_admin_batch_job_launch_request_accepts_list():
+    from app.schemas.admin import AdminBatchJobLaunchRequest
+
+    req = AdminBatchJobLaunchRequest(
+        job_names=["recalculate_lead_time_job", "recalculate_velocity_job"]
+    )
+    assert len(req.job_names) == 2
+    assert req.job_names[0] == "recalculate_lead_time_job"
+
+
+def test_admin_batch_job_launch_item_success():
+    from app.schemas.admin import AdminBatchJobLaunchItem
+
+    item = AdminBatchJobLaunchItem(
+        job_name="recalculate_velocity_job",
+        run_id="run-42",
+        status="STARTED",
+    )
+    assert item.run_id == "run-42"
+    assert item.error is None
+
+
+def test_admin_batch_job_launch_item_failure():
+    from app.schemas.admin import AdminBatchJobLaunchItem
+
+    item = AdminBatchJobLaunchItem(
+        job_name="recalculate_velocity_job",
+        status="LAUNCH_FAILED",
+        error="Dagster unavailable",
+    )
+    assert item.run_id is None
+    assert item.error == "Dagster unavailable"
