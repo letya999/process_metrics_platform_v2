@@ -83,6 +83,50 @@ make compose-validate
 make alembic-heads
 ```
 
+## Dagster automation defaults
+
+The repository defines daily/hourly automation for the Jira pipeline and metrics refresh:
+
+- `jira_sync_job_schedule` (`0 6 * * *`, UTC) for full `raw -> clean -> metrics`
+- `metrics_refresh_job_schedule` (`0 * * * *`, UTC)
+- `guarded_hourly_metrics_refresh_sensor` (hourly guard against clean/sync overlap)
+
+Important: these schedules/sensors are created with `default_status=STOPPED` and must be enabled explicitly in Dagster UI or via CLI after deployment.
+
+Example checks:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T dagster-daemon dagster schedule list -m pipelines.definitions
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T dagster-daemon dagster sensor list -m pipelines.definitions
+```
+
+## Flow Efficiency configuration
+
+`calculate_flow_efficiency` requires `metrics.calculation_settings` entries with `settings_type='flow_status_categories'` per project.
+
+Supported config format in `settings_json`:
+
+- preferred: explicit status IDs
+  - `active_status_ids`
+  - `passive_status_ids`
+  - `done_status_ids`
+- backward compatibility: category lists
+  - `active_categories`
+  - `passive_categories`
+  - `done_categories`
+
+Seed/apply script for production mappings:
+
+```bash
+cat scripts/apply_flow_status_settings.sql | docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T postgres psql -U pmp_user -d process_metrics_v2 -v ON_ERROR_STOP=1 -f -
+```
+
+Recalculate flow efficiency asset:
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T dagster-daemon dagster asset materialize -m pipelines.definitions --select calculate_flow_efficiency
+```
+
 ## Validation tests (DB-backed)
 
 `tests/validation` checks are intentionally opt-in and require a running, seeded Postgres with raw/clean/metrics schemas.
