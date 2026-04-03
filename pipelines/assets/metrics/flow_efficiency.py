@@ -2,6 +2,7 @@
 Flow Efficiency Metrics Dagster Asset (Generic Long Metric Store)
 """
 
+import json
 import logging
 from typing import Any
 
@@ -105,6 +106,8 @@ def calculate_flow_efficiency(
             continue
 
         cfg = p_settings[0, "settings_json"]
+        if isinstance(cfg, str):
+            cfg = json.loads(cfg)
         p_statuses = issue_statuses_df.filter(pl.col("project_id") == p_id)
 
         # Preferred mode: explicit status-id lists (board/column-level mapping).
