@@ -105,3 +105,101 @@ Observed effect in production:
 - add validation job comparing board-scoped results against Jira sprint report API
 
 **Impact:** allows 1:1 reconciliation with Jira for mixed boards while preserving current project analytics.
+
+## TD-009: Reuse active/passive column mapping by shared column names across projects
+**Status:** Known / Not Started
+Flow-efficiency setup currently requires explicit per-project configuration and duplicates similar mappings for columns with the same semantic meaning (`In Progress`, `On review`, `Testing`, etc.).
+
+**Resolution:** Add reusable mapping layer:
+- global dictionary of column-name patterns -> active/passive bucket
+- project-level overrides for exceptions
+- dry-run preview to show resolved mapping before apply
+
+**Impact:** faster onboarding of new projects and fewer manual config errors.
+
+## TD-010: Finish metrics recalculation launch and schedule management from Admin UI
+**Status:** Known / In Progress
+Admin API/UI already supports manual launches for many jobs, but end-to-end operational flow is incomplete for schedule lifecycle management.
+
+**Resolution:** complete full control surface in Admin:
+- start/stop schedules and sensors
+- run history + last success/failure visibility
+- one-click rerun for failed jobs
+
+**Impact:** operations can manage ETL/metrics lifecycle without direct Dagster CLI access.
+
+## TD-011: Programmatic card/dashboard creation from Admin UI
+**Status:** Known / Not Started
+Dashboard/card provisioning is script-based and not fully exposed via Admin workflows.
+
+**Resolution:** add Admin-managed BI provisioning:
+- create/update cards and dashboards from templates
+- bind dashboard filters and slices from UI
+- idempotent apply with preview and diff
+
+**Impact:** removes manual Metabase setup bottlenecks and improves reproducibility.
+
+## TD-012: Unified user management for Admin UI and Metabase
+**Status:** Known / Not Started
+User provisioning is split across systems and not centrally governed.
+
+**Resolution:** implement centralized user management:
+- create/update/disable users for Admin + Metabase from one panel
+- role mapping across systems
+- audit trail for access changes
+
+**Impact:** safer and faster access operations.
+
+## TD-013: Admin UI migration to React with RBAC
+**Status:** Known / Deferred
+Current Streamlit admin is productive for MVP but limited for advanced role-based UI and large-scale operations.
+
+**Resolution:** migrate Admin to React frontend + API-backed RBAC:
+- role-permission model
+- route and action guards
+- granular feature flags by role
+
+**Impact:** enterprise-ready admin experience and stronger access control.
+
+## TD-014: SSO for Admin UI, Metabase, Dagster and related services
+**Status:** Known / Deferred
+Authentication is fragmented across platform components.
+
+**Resolution:** introduce unified SSO:
+- single identity provider integration (OIDC/SAML)
+- token/session propagation across Admin, Metabase, Dagster endpoints
+- consistent logout/session invalidation policy
+
+**Impact:** lower auth friction and improved security posture.
+
+## TD-015: Metric-level contextual tooltips/info hints
+**Status:** Known / Not Started
+Many metrics are opaque for non-technical users without embedded explanation of formula and interpretation.
+
+**Resolution:** add metric help metadata and UI rendering:
+- definition, formula, data source notes, caveats
+- consistent tooltip/info panel in dashboard/admin
+
+**Impact:** fewer support questions and more reliable metric interpretation.
+
+## TD-016: AI assistant for platform guidance + Text2SQL
+**Status:** Known / Research
+No embedded assistant for user guidance and ad-hoc analytical questions.
+
+**Resolution:** add in-product AI copilot:
+- operational help for platform usage
+- guarded Text2SQL for analytics queries
+- query safety controls, scope restrictions, and audit logging
+
+**Impact:** faster self-service analytics and reduced analyst load.
+
+## TD-017: Multi-project commitment point mapping by shared names
+**Status:** Known / Not Started
+Commitment-point configuration is board/project-specific and difficult to align when equivalent stages exist across multiple projects.
+
+**Resolution:** support shared commitment mapping:
+- select by common column names across projects
+- allow multi-project mapping sets in one rule
+- keep project overrides for edge cases
+
+**Impact:** consistent commitment logic and lower setup cost across portfolio boards.
