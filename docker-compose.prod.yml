@@ -196,6 +196,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "dagster-daemon", "liveness-check" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
       - internal
     deploy:

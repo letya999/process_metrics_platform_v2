@@ -302,7 +302,8 @@ def jira_source(
             jql = "ORDER BY updated ASC, key ASC"
 
         max_results = 100
-        next_page_token = None
+        start_at = 0
+        next_page_token: str | None = None
 
         # 3.4: Limit fields whitelist
         default_fields = (
@@ -314,37 +315,89 @@ def jira_source(
         )
         fields_to_fetch = os.getenv("JIRA_FIELDS_OVERRIDE", default_fields)
 
+        def _iterate_search_jql() -> Iterator[dict[str, Any]]:
+            nonlocal start_at, next_page_token
+
+            while True:
+                params = {
+                    "jql": jql,
+                    "maxResults": max_results,
+                    "expand": "changelog,renderedFields",
+                    "fields": fields_to_fetch,
+                }
+                if next_page_token:
+                    params["nextPageToken"] = next_page_token
+                else:
+                    params["startAt"] = start_at
+
+                response = _get_with_retry(
+                    f"{base_url}/rest/api/3/search/jql",
+                    auth=(email, api_token),
+                    params=params,
+                )
+                data = response.json()
+
+                issues = data.get("issues", [])
+                for issue in issues:
+                    yield issue
+
+                fetched = len(issues)
+                total = data.get("total")
+                is_last = data.get("isLast")
+                token = data.get("nextPageToken")
+
+                if token:
+                    next_page_token = token
+                    start_at += fetched
+                    continue
+
+                next_page_token = None
+                start_at += fetched
+
+                if is_last is True:
+                    break
+                if fetched == 0:
+                    break
+                if isinstance(total, int) and start_at >= total:
+                    break
+                if fetched < max_results:
+                    break
+
+        try:
+            yield from _iterate_search_jql()
+            return
+        except requests.HTTPError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            # Some Jira tenants still expose only the legacy /search endpoint.
+            if status_code not in (404, 410):
+                raise
+
+        # Fallback to legacy endpoint with startAt/total pagination.
+        start_at = 0
         while True:
             params = {
                 "jql": jql,
+                "startAt": start_at,
                 "maxResults": max_results,
                 "expand": "changelog,renderedFields",
                 "fields": fields_to_fetch,
             }
-            # Add nextPageToken only if we have one (not on first request)
-            if next_page_token:
-                params["nextPageToken"] = next_page_token
 
             response = _get_with_retry(
-                f"{base_url}/rest/api/3/search/jql",
+                f"{base_url}/rest/api/3/search",
                 auth=(email, api_token),
                 params=params,
             )
-            response.raise_for_status()
             data = response.json()
 
             issues = data.get("issues", [])
             for issue in issues:
                 yield issue
 
-            # Check if there are more results using isLast flag
-            if data.get("isLast", True):
-                break
-
-            # Get nextPageToken for next iteration
-            # Note: nextPageToken might not be in response if isLast is True
-            next_page_token = data.get("nextPageToken")
-            if not next_page_token:
+            total = data.get("total", 0)
+            fetched = len(issues)
+            start_at += fetched
+            if fetched == 0 or start_at >= total:
                 break
 
     @dlt.resource(name="projects", write_disposition="merge", primary_key="id")
