@@ -63,6 +63,31 @@ def test_login_view_success(monkeypatch, fake_state):
     rerun.assert_called_once()
 
 
+def test_login_view_google_button_uses_public_api_url(monkeypatch, fake_state):
+    client = MagicMock()
+    client.base_url = "http://app:8000/api/v1"
+    link_button = MagicMock()
+
+    monkeypatch.setenv("ADMIN_PUBLIC_API_URL", "http://localhost:8000/api/v1")
+    monkeypatch.setattr(admin_app.st, "title", MagicMock())
+    monkeypatch.setattr(admin_app.st, "caption", MagicMock())
+    monkeypatch.setattr(admin_app.st, "form", lambda _name: nullcontext())
+    monkeypatch.setattr(admin_app.st, "text_input", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        admin_app.st, "form_submit_button", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(admin_app.st, "divider", MagicMock())
+    monkeypatch.setattr(admin_app.st, "link_button", link_button)
+
+    admin_app._login_view(client)
+
+    link_button.assert_called_once_with(
+        "Sign in with Google",
+        "http://localhost:8000/api/v1/admin/auth/google/redirect",
+        use_container_width=True,
+    )
+
+
 def test_logout_clears_state(monkeypatch, fake_state):
     fake_state.token = "tok"
     fake_state.me = {"email": "admin@example.com"}

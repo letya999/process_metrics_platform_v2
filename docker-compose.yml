@@ -144,6 +144,7 @@ services:
       - "8501:8501"
     environment:
       ADMIN_API_URL: http://app:8000/api/v1
+      ADMIN_PUBLIC_API_URL: http://localhost:8000/api/v1
     depends_on:
       app:
         condition: service_healthy

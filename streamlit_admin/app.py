@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -90,16 +91,19 @@ def _login_view(client: AdminApiClient) -> None:
 
     # Google Login Button
     # Note: st.link_button is available in Streamlit 1.27+
+    public_api_base_url = (
+        os.getenv("ADMIN_PUBLIC_API_URL", "").strip().rstrip("/") or client.base_url
+    )
+    redirect_url = f"{public_api_base_url}/admin/auth/google/redirect"
     if hasattr(st, "link_button"):
         st.link_button(
             "Sign in with Google",
-            f"{client.base_url}/admin/auth/google/redirect",
+            redirect_url,
             use_container_width=True,
         )
     else:
         # Fallback for older Streamlit versions
         if st.button("Sign in with Google", use_container_width=True):
-            redirect_url = f"{client.base_url}/admin/auth/google/redirect"
             st.markdown(
                 f'<meta http-equiv="refresh" content="0; url={redirect_url}">',
                 unsafe_allow_html=True,
