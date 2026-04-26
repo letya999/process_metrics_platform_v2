@@ -1,11 +1,13 @@
 """Admin API for metrics configuration studio."""
 
 import logging
+import os
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +60,11 @@ from app.services.admin_auth import (
     verify_password,
 )
 from app.services.dagster_client import DagsterClient
+from app.services.google_auth import (
+    build_google_redirect_url,
+    exchange_code_for_email,
+    verify_state_and_get_return_to,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +283,92 @@ async def admin_logout(
     if token:
         revoke_token(token)
     return {"status": "ok"}
+
+
+@router.get("/auth/google/redirect")
+@limiter.limit("20/minute")
+async def admin_google_redirect(request: Request, return_to: str | None = None):
+    """Redirect to Google OAuth consent screen."""
+    admin_ui_url = os.getenv("ADMIN_UI_URL", "http://localhost:8501")
+    safe_return_to = return_to or admin_ui_url
+    try:
+        url = build_google_redirect_url(safe_return_to)
+    except HTTPException:
+        raise
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/auth/google/callback")
+@limiter.limit("20/minute")
+async def admin_google_callback(
+    request: Request,
+    db: DBSession,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    """Handle Google OAuth callback, issue JWT, redirect to Streamlit."""
+    admin_ui_url = os.getenv("ADMIN_UI_URL", "http://localhost:8501")
+
+    # Google returned an error
+    if error or not code or not state:
+        return RedirectResponse(
+            f"{admin_ui_url}?error=google_auth_cancelled", status_code=302
+        )
+
+    # Verify state (CSRF protection)
+    return_to = verify_state_and_get_return_to(state)
+    if not return_to:
+        return RedirectResponse(
+            f"{admin_ui_url}?error=google_auth_invalid_state", status_code=302
+        )
+
+    # Exchange code for email
+    email = await exchange_code_for_email(code)
+    if not email:
+        return RedirectResponse(
+            f"{return_to}?error=google_auth_failed", status_code=302
+        )
+
+    # Look up admin user by email
+    row = (
+        (
+            await db.execute(
+                text(
+                    """
+                SELECT id, email, display_name, is_admin, is_active
+                FROM platform.users
+                WHERE email = :email
+                """
+                ),
+                {"email": email},
+            )
+        )
+        .mappings()
+        .first()
+    )
+
+    if not row or not row["is_active"] or not row["is_admin"]:
+        return RedirectResponse(
+            f"{return_to}?error=google_auth_not_authorized", status_code=302
+        )
+
+    # Issue JWT (same flow as password login)
+    session = AdminSession(
+        user_id=str(row["id"]),
+        email=row["email"],
+        display_name=row["display_name"],
+        is_admin=True,
+        expires_at=datetime.now(UTC),
+    )
+    try:
+        token, _ = create_access_token(session)
+    except RuntimeError:
+        return RedirectResponse(
+            f"{return_to}?error=google_auth_server_error", status_code=302
+        )
+
+    return RedirectResponse(f"{return_to}?token={token}", status_code=302)
 
 
 @router.get("/catalog/projects", response_model=list[ProjectCatalogItem])

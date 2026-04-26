@@ -111,7 +111,7 @@ def test_main_renders_tabs_when_authenticated(monkeypatch, fake_state):
 
     # Patch tabs to return enough tabs for _page_configuration
     monkeypatch.setattr(
-        admin_app.st, "tabs", lambda _labels: [nullcontext() for _ in range(8)]
+        admin_app.st, "tabs", lambda _labels: [nullcontext() for _ in range(9)]
     )
 
     called = []
@@ -137,6 +137,9 @@ def test_main_renders_tabs_when_authenticated(monkeypatch, fake_state):
         admin_app, "_tab_validate", lambda *_args: called.append("validate")
     )
     monkeypatch.setattr(admin_app, "_tab_jobs", lambda *_args: called.append("jobs"))
+    monkeypatch.setattr(
+        admin_app, "_tab_metrics_run", lambda *_args: called.append("metrics_run")
+    )
 
     admin_app.main()
 
@@ -149,6 +152,7 @@ def test_main_renders_tabs_when_authenticated(monkeypatch, fake_state):
         "slices",
         "validate",
         "jobs",
+        "metrics_run",
     ]
 
 

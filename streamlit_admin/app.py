@@ -86,6 +86,26 @@ def _login_view(client: AdminApiClient) -> None:
         except Exception as exc:
             show_error(exc)
 
+    st.divider()
+
+    # Google Login Button
+    # Note: st.link_button is available in Streamlit 1.27+
+    if hasattr(st, "link_button"):
+        st.link_button(
+            "Sign in with Google",
+            f"{client.base_url}/admin/auth/google/redirect",
+            use_container_width=True,
+        )
+    else:
+        # Fallback for older Streamlit versions
+        if st.button("Sign in with Google", use_container_width=True):
+            redirect_url = f"{client.base_url}/admin/auth/google/redirect"
+            st.markdown(
+                f'<meta http-equiv="refresh" content="0; url={redirect_url}">',
+                unsafe_allow_html=True,
+            )
+            st.stop()
+
 
 def _logout(client: AdminApiClient) -> None:
     try:
@@ -2113,6 +2133,19 @@ def _page_configuration(client: AdminApiClient, token: str) -> None:
 def main() -> None:
     _ensure_state()
     client = get_client()
+
+    # Handle Google OAuth callback token or errors from URL params
+    # Note: st.query_params is available in Streamlit 1.30+
+    params = st.query_params
+    if "token" in params:
+        st.session_state.token = params["token"]
+        st.query_params.clear()
+        st.rerun()
+
+    if "error" in params:
+        error_code = params["error"]
+        show_error(f"Authentication error: {error_code}")
+        st.query_params.clear()
 
     if not st.session_state.token:
         _login_view(client)
