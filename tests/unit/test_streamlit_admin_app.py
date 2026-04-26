@@ -88,6 +88,37 @@ def test_login_view_google_button_uses_public_api_url(monkeypatch, fake_state):
     )
 
 
+def test_login_view_google_button_falls_back_to_google_callback_domain(
+    monkeypatch, fake_state
+):
+    client = MagicMock()
+    client.base_url = "http://app:8000/api/v1"
+    link_button = MagicMock()
+
+    monkeypatch.delenv("ADMIN_PUBLIC_API_URL", raising=False)
+    monkeypatch.setenv(
+        "ADMIN_GOOGLE_REDIRECT_URI",
+        "https://pmp-api.ktts.space/api/v1/admin/auth/google/callback",
+    )
+    monkeypatch.setattr(admin_app.st, "title", MagicMock())
+    monkeypatch.setattr(admin_app.st, "caption", MagicMock())
+    monkeypatch.setattr(admin_app.st, "form", lambda _name: nullcontext())
+    monkeypatch.setattr(admin_app.st, "text_input", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        admin_app.st, "form_submit_button", lambda *_args, **_kwargs: False
+    )
+    monkeypatch.setattr(admin_app.st, "divider", MagicMock())
+    monkeypatch.setattr(admin_app.st, "link_button", link_button)
+
+    admin_app._login_view(client)
+
+    link_button.assert_called_once_with(
+        "Sign in with Google",
+        "https://pmp-api.ktts.space/api/v1/admin/auth/google/redirect",
+        use_container_width=True,
+    )
+
+
 def test_logout_clears_state(monkeypatch, fake_state):
     fake_state.token = "tok"
     fake_state.me = {"email": "admin@example.com"}

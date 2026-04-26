@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import pandas as pd
 import streamlit as st
@@ -91,9 +92,7 @@ def _login_view(client: AdminApiClient) -> None:
 
     # Google Login Button
     # Note: st.link_button is available in Streamlit 1.27+
-    public_api_base_url = (
-        os.getenv("ADMIN_PUBLIC_API_URL", "").strip().rstrip("/") or client.base_url
-    )
+    public_api_base_url = _resolve_public_api_base_url(client)
     redirect_url = f"{public_api_base_url}/admin/auth/google/redirect"
     if hasattr(st, "link_button"):
         st.link_button(
@@ -109,6 +108,24 @@ def _login_view(client: AdminApiClient) -> None:
                 unsafe_allow_html=True,
             )
             st.stop()
+
+
+def _resolve_public_api_base_url(client: AdminApiClient) -> str:
+    explicit = os.getenv("ADMIN_PUBLIC_API_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+
+    callback_url = os.getenv("ADMIN_GOOGLE_REDIRECT_URI", "").strip()
+    if callback_url:
+        parsed = urlsplit(callback_url)
+        if parsed.scheme and parsed.netloc:
+            marker = "/admin/auth/google/callback"
+            if parsed.path.endswith(marker):
+                base_path = parsed.path[: -len(marker)].rstrip("/")
+                return f"{parsed.scheme}://{parsed.netloc}{base_path}"
+            return f"{parsed.scheme}://{parsed.netloc}/api/v1"
+
+    return client.base_url
 
 
 def _logout(client: AdminApiClient) -> None:
