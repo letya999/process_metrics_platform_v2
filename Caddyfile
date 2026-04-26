@@ -1,0 +1,12 @@
+http://pmp-bi.ktts.space {
+    reverse_proxy metabase:3000
+}
+http://pmp-dagster.ktts.space {
+    reverse_proxy dagster-webserver:3000
+}
+http://pmp-api.ktts.space {
+    reverse_proxy app:8000
+}
+http://pmp-admin.ktts.space {
+    reverse_proxy admin-ui:8501
+}

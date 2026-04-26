@@ -27,8 +27,7 @@ services:
       DAGSTER_BASIC_AUTH_HASH: ${DAGSTER_BASIC_AUTH_HASH}
       SWAGGER_BASIC_AUTH_HASH: ${SWAGGER_BASIC_AUTH_HASH}
     ports:
-      - "80:80"
-      - "443:443"
+      - "8001:80"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -78,10 +77,6 @@ services:
       DAGSTER_GRAPHQL_URL: http://dagster-webserver:3000/graphql
       ENVIRONMENT: production
       LOG_LEVEL: ${LOG_LEVEL:-WARNING}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
-      ADMIN_GOOGLE_REDIRECT_URI: ${ADMIN_GOOGLE_REDIRECT_URI}
-      ADMIN_UI_URL: ${ADMIN_UI_URL}
     env_file:
       - .env.prod
     depends_on:
@@ -217,7 +212,7 @@ services:
   # Metabase
   # ===========================================================================
   metabase:
-    image: metabase/metabase:v0.58.6
+    image: metabase/metabase:v0.51.4
     container_name: metabase
     restart: unless-stopped
     environment:
@@ -229,7 +224,6 @@ services:
       MB_DB_HOST: postgres
       MB_ENCRYPTION_SECRET_KEY: ${METABASE_SECRET_KEY:-}
       MB_SITE_URL: ${MB_SITE_URL:-}
-      MB_GOOGLE_AUTH_CLIENT_ID: ${GOOGLE_CLIENT_ID}
     depends_on:
       postgres:
         condition: service_healthy
