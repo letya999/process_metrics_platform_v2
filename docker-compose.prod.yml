@@ -212,7 +212,7 @@ services:
   # Metabase
   # ===========================================================================
   metabase:
-    image: metabase/metabase:v0.51.4
+    image: metabase/metabase:v0.58.6
     container_name: metabase
     restart: unless-stopped
     environment:
@@ -224,6 +224,7 @@ services:
       MB_DB_HOST: postgres
       MB_ENCRYPTION_SECRET_KEY: ${METABASE_SECRET_KEY:-}
       MB_SITE_URL: ${MB_SITE_URL:-}
+      MB_GOOGLE_AUTH_CLIENT_ID: ${GOOGLE_CLIENT_ID}
     depends_on:
       postgres:
         condition: service_healthy
