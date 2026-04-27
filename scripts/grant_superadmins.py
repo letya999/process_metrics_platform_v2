@@ -37,8 +37,8 @@ def _resolve_db_url() -> str:
     if not db_url:
         raise RuntimeError("DATABASE_URL or ALEMBIC_SQLALCHEMY_URL must be set")
 
-    # Allows running from host machine when env uses docker DNS.
-    if "@postgres:" in db_url:
+    # Optional fallback for local host runs where docker DNS is unavailable.
+    if os.getenv("DB_URL_USE_LOCALHOST", "").strip() == "1" and "@postgres:" in db_url:
         db_url = db_url.replace("@postgres:", "@localhost:", 1)
     return db_url
 
