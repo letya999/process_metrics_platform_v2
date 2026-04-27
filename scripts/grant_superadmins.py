@@ -151,7 +151,7 @@ def _find_metabase_user(url: str, token: str, email: str) -> dict | None:
 
 def _create_metabase_user(
     url: str, token: str, email: str, display_name: str, password: str
-) -> None:
+) -> str:
     first_name, last_name = _split_name(display_name)
     resp = requests.post(
         f"{url}/api/user",
@@ -165,10 +165,11 @@ def _create_metabase_user(
         },
         timeout=20,
     )
-    if resp.status_code not in {200, 201}:
-        raise RuntimeError(
-            f"Metabase create failed: {resp.status_code} {resp.text[:200]}"
-        )
+    if resp.status_code in {200, 201}:
+        return "created"
+    if resp.status_code == 400 and "Email address already in use" in resp.text:
+        return "exists"
+    raise RuntimeError(f"Metabase create failed: {resp.status_code} {resp.text[:200]}")
 
 
 def _promote_metabase_user(url: str, token: str, user: dict, display_name: str) -> None:
@@ -196,6 +197,18 @@ def _promote_metabase_user(url: str, token: str, user: dict, display_name: str) 
 
 
 def _ensure_metabase_admin_membership(conn, email: str) -> None:
+    conn.execute(
+        text(
+            """
+            UPDATE core_user
+            SET is_superuser = true,
+                is_active = true
+            WHERE email = :email
+            """
+        ),
+        {"email": email},
+    )
+
     conn.execute(
         text(
             """
@@ -270,10 +283,12 @@ def main() -> int:
                 _promote_metabase_user(mb_url, mb_token, existing, display_name)
                 metabase_status = "promoted"
             else:
-                _create_metabase_user(
+                create_status = _create_metabase_user(
                     mb_url, mb_token, email, display_name, metabase_initial_password
                 )
-                metabase_status = "created"
+                metabase_status = (
+                    "created" if create_status == "created" else "promoted-db"
+                )
 
             _ensure_metabase_admin_membership(conn, email)
             results.append(
