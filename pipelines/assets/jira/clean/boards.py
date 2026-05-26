@@ -77,12 +77,16 @@ def clean_jira_board_columns(
             """
             )
         )
-        # Avoid transient unique conflicts on (board_id, position) when Jira column
-        # positions are re-ordered: move existing rows out of the way, then apply
-        # desired positions from raw snapshot.
-        result = conn.execute(
+        conn.execute(
             text(
                 """
+            CREATE TEMP TABLE tmp_board_columns_src (
+                board_id uuid NOT NULL,
+                name text NOT NULL,
+                position integer NOT NULL
+            ) ON COMMIT DROP;
+
+            INSERT INTO tmp_board_columns_src (board_id, name, position)
             WITH src_raw AS (
                 SELECT DISTINCT ON (b.id, col.name)
                     b.id AS board_id,
@@ -94,49 +98,44 @@ def clean_jira_board_columns(
                 JOIN clean_jira.boards b ON b.project_id = p.id AND b.external_id = bc.board_id::text
                 WHERE col.name IS NOT NULL
                 ORDER BY b.id, col.name, bc._dlt_id DESC
-            ),
-            src AS (
-                SELECT
-                    board_id,
-                    name,
-                    (row_number() OVER (PARTITION BY board_id ORDER BY raw_position, name) - 1)::int AS position
-                FROM src_raw
-            ),
-            affected_boards AS (
-                SELECT DISTINCT board_id
-                FROM src
-            ),
-            deleted_statuses AS (
-                DELETE FROM clean_jira.board_column_statuses bcs
-                USING clean_jira.board_columns bc
-                WHERE bcs.board_column_id = bc.id
-                  AND EXISTS (
-                      SELECT 1
-                      FROM affected_boards ab
-                      WHERE ab.board_id = bc.board_id
-                  )
-                RETURNING bcs.board_column_id
-            ),
-            deleted_columns AS (
-                DELETE FROM clean_jira.board_columns bc
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM affected_boards ab
-                    WHERE ab.board_id = bc.board_id
-                )
-                RETURNING bc.id
-            ),
-            upserted AS (
-                INSERT INTO clean_jira.board_columns (board_id, name, position)
-                SELECT s.board_id, s.name, s.position
-                FROM src s
-                RETURNING id
             )
-            SELECT count(*)::int AS affected_count FROM upserted
-        """
+            SELECT
+                board_id,
+                name,
+                (row_number() OVER (PARTITION BY board_id ORDER BY raw_position, name) - 1)::int AS position
+            FROM src_raw;
+            """
             )
         )
-        count = int(result.scalar() or 0)
+        conn.execute(
+            text(
+                """
+            DELETE FROM clean_jira.board_column_statuses bcs
+            USING clean_jira.board_columns bc
+            WHERE bcs.board_column_id = bc.id
+              AND bc.board_id IN (SELECT DISTINCT board_id FROM tmp_board_columns_src);
+            """
+            )
+        )
+        conn.execute(
+            text(
+                """
+            DELETE FROM clean_jira.board_columns bc
+            WHERE bc.board_id IN (SELECT DISTINCT board_id FROM tmp_board_columns_src);
+            """
+            )
+        )
+        result = conn.execute(
+            text(
+                """
+            INSERT INTO clean_jira.board_columns (board_id, name, position)
+            SELECT s.board_id, s.name, s.position
+            FROM tmp_board_columns_src s
+            RETURNING id;
+            """
+            )
+        )
+        count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
 
