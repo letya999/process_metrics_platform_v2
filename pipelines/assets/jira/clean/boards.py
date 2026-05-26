@@ -73,17 +73,24 @@ def clean_jira_board_columns(
         result = conn.execute(
             text(
                 """
-            WITH src AS (
+            WITH src_raw AS (
                 SELECT DISTINCT ON (b.id, col.name)
                     b.id AS board_id,
                     col.name AS name,
-                    col._dlt_list_idx::int AS position
+                    col._dlt_list_idx::int AS raw_position
                 FROM raw_jira.board_configurations__columns_config__columns col
                 JOIN raw_jira.board_configurations bc ON col._dlt_parent_id = bc._dlt_id
                 JOIN clean_jira.projects p ON p.external_key = bc.project_key
                 JOIN clean_jira.boards b ON b.project_id = p.id AND b.external_id = bc.board_id::text
                 WHERE col.name IS NOT NULL
                 ORDER BY b.id, col.name, bc._dlt_id DESC
+            ),
+            src AS (
+                SELECT
+                    board_id,
+                    name,
+                    (row_number() OVER (PARTITION BY board_id ORDER BY raw_position, name) - 1)::int AS position
+                FROM src_raw
             ),
             affected_boards AS (
                 SELECT DISTINCT board_id
