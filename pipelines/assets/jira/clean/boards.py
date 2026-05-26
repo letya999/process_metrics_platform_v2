@@ -85,14 +85,17 @@ def clean_jira_board_columns(
                 WHERE col.name IS NOT NULL
                 ORDER BY b.id, col.name, bc._dlt_id DESC
             ),
+            affected_boards AS (
+                SELECT DISTINCT board_id
+                FROM src
+            ),
             shifted AS (
                 UPDATE clean_jira.board_columns bc
                 SET position = bc.position + 10000
                 WHERE EXISTS (
                     SELECT 1
-                    FROM src s
-                    WHERE s.board_id = bc.board_id
-                      AND s.name = bc.name
+                    FROM affected_boards ab
+                    WHERE ab.board_id = bc.board_id
                 )
                 RETURNING bc.id
             ),
