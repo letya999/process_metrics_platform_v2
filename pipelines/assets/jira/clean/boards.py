@@ -67,6 +67,16 @@ def clean_jira_board_columns(
     engine = database.get_engine()
     with engine.connect() as conn:
         context.log.info("Syncing board columns...")
+        # Serialize board column rebuild to avoid concurrent run collisions on
+        # unique (board_id, position) when multiple runs overlap.
+        conn.execute(
+            text(
+                """
+            LOCK TABLE clean_jira.board_column_statuses IN EXCLUSIVE MODE;
+            LOCK TABLE clean_jira.board_columns IN EXCLUSIVE MODE;
+            """
+            )
+        )
         # Avoid transient unique conflicts on (board_id, position) when Jira column
         # positions are re-ordered: move existing rows out of the way, then apply
         # desired positions from raw snapshot.
