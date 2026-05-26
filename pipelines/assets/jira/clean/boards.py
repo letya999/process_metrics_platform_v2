@@ -117,9 +117,8 @@ def clean_jira_board_columns(
                 RETURNING bc.id
             ),
             upserted AS (
-                INSERT INTO clean_jira.board_columns (board_id, name, position, created_at)
+                INSERT INTO clean_jira.board_columns (board_id, name, position)
                 SELECT s.board_id, s.name, s.position
-                     , now()
                 FROM src s
                 RETURNING id
             )
