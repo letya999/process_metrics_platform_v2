@@ -96,9 +96,19 @@ def clean_jira_board_columns(
                 SELECT DISTINCT board_id
                 FROM src
             ),
-            shifted AS (
-                UPDATE clean_jira.board_columns bc
-                SET position = bc.position + 10000
+            deleted_statuses AS (
+                DELETE FROM clean_jira.board_column_statuses bcs
+                USING clean_jira.board_columns bc
+                WHERE bcs.board_column_id = bc.id
+                  AND EXISTS (
+                      SELECT 1
+                      FROM affected_boards ab
+                      WHERE ab.board_id = bc.board_id
+                  )
+                RETURNING bcs.board_column_id
+            ),
+            deleted_columns AS (
+                DELETE FROM clean_jira.board_columns bc
                 WHERE EXISTS (
                     SELECT 1
                     FROM affected_boards ab
@@ -107,11 +117,10 @@ def clean_jira_board_columns(
                 RETURNING bc.id
             ),
             upserted AS (
-                INSERT INTO clean_jira.board_columns (board_id, name, position)
+                INSERT INTO clean_jira.board_columns (board_id, name, position, created_at)
                 SELECT s.board_id, s.name, s.position
+                     , now()
                 FROM src s
-                ON CONFLICT (board_id, name)
-                DO UPDATE SET position = EXCLUDED.position
                 RETURNING id
             )
             SELECT count(*)::int AS affected_count FROM upserted
