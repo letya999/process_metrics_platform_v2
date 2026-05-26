@@ -6,6 +6,13 @@ run_launcher:
   module: dagster._core.launcher
   class: DefaultRunLauncher
 
+# Queue runs and cap overall parallelism at instance level.
+run_coordinator:
+  module: dagster._core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 2
+
 # PostgreSQL storage for run history, event logs, and schedules
 # Using separate storage configs (required for Dagster 1.9+)
 run_storage:

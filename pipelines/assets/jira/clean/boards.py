@@ -67,24 +67,48 @@ def clean_jira_board_columns(
     engine = database.get_engine()
     with engine.connect() as conn:
         context.log.info("Syncing board columns...")
+        # Avoid transient unique conflicts on (board_id, position) when Jira column
+        # positions are re-ordered: move existing rows out of the way, then apply
+        # desired positions from raw snapshot.
         result = conn.execute(
             text(
                 """
-            INSERT INTO clean_jira.board_columns (board_id, name, position)
-            SELECT DISTINCT ON (b.id, col.name)
-                b.id, col.name, col._dlt_list_idx::int
-            FROM raw_jira.board_configurations__columns_config__columns col
-            JOIN raw_jira.board_configurations bc ON col._dlt_parent_id = bc._dlt_id
-            JOIN clean_jira.projects p ON p.external_key = bc.project_key
-            JOIN clean_jira.boards b ON b.project_id = p.id AND b.external_id = bc.board_id::text
-            WHERE col.name IS NOT NULL
-            ORDER BY b.id, col.name, bc._dlt_id DESC
-            ON CONFLICT (board_id, name) DO UPDATE SET position = EXCLUDED.position
-            RETURNING id
+            WITH src AS (
+                SELECT DISTINCT ON (b.id, col.name)
+                    b.id AS board_id,
+                    col.name AS name,
+                    col._dlt_list_idx::int AS position
+                FROM raw_jira.board_configurations__columns_config__columns col
+                JOIN raw_jira.board_configurations bc ON col._dlt_parent_id = bc._dlt_id
+                JOIN clean_jira.projects p ON p.external_key = bc.project_key
+                JOIN clean_jira.boards b ON b.project_id = p.id AND b.external_id = bc.board_id::text
+                WHERE col.name IS NOT NULL
+                ORDER BY b.id, col.name, bc._dlt_id DESC
+            ),
+            shifted AS (
+                UPDATE clean_jira.board_columns bc
+                SET position = bc.position + 10000
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM src s
+                    WHERE s.board_id = bc.board_id
+                      AND s.name = bc.name
+                )
+                RETURNING bc.id
+            ),
+            upserted AS (
+                INSERT INTO clean_jira.board_columns (board_id, name, position)
+                SELECT s.board_id, s.name, s.position
+                FROM src s
+                ON CONFLICT (board_id, name)
+                DO UPDATE SET position = EXCLUDED.position
+                RETURNING id
+            )
+            SELECT count(*)::int AS affected_count FROM upserted
         """
             )
         )
-        count = len(result.fetchall())
+        count = int(result.scalar() or 0)
         conn.commit()
     return {"status": "success", "count": count}
 
