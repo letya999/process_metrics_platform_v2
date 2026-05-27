@@ -27,6 +27,22 @@ from pipelines.utils.polars_db import read_table, write_fact_values
 logger = logging.getLogger(__name__)
 
 
+def _norm_utf8(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
+    exprs = []
+    for c in cols:
+        if c not in df.columns:
+            continue
+        if df.schema[c] == pl.Object:
+            exprs.append(
+                pl.col(c).map_elements(
+                    lambda x: str(x) if x is not None else None, return_dtype=pl.Utf8
+                )
+            )
+        else:
+            exprs.append(pl.col(c).cast(pl.Utf8, strict=False))
+    return df.with_columns(exprs) if exprs else df
+
+
 @asset(
     group_name="metrics",
     deps=[
@@ -215,6 +231,7 @@ def calculate_aging_extended(
         )
         if issues_df.is_empty():
             continue
+        issues_df = _norm_utf8(issues_df, ["id", "project_id", "status_id"])
         issue_status_changelog_df = read_table(
             engine,
             """
@@ -225,16 +242,22 @@ def calculate_aging_extended(
             """,
             params={"project_id": project_id},
         )
-        field_value_changelog_df = read_table(
-            engine,
-            """
+        issue_status_changelog_df = _norm_utf8(
+            issue_status_changelog_df, ["issue_id", "from_status_id", "to_status_id"]
+        )
+        field_value_changelog_df = _norm_utf8(
+            read_table(
+                engine,
+                """
             SELECT fvc.issue_id, fvc.field_key_id, fvc.old_value::text as old_value,
                    fvc.new_value::text as new_value, fvc.changed_at as change_time
             FROM clean_jira.field_value_changelog fvc
             JOIN clean_jira.issues i ON i.id = fvc.issue_id
             WHERE i.project_id = :project_id
             """,
-            params={"project_id": project_id},
+                params={"project_id": project_id},
+            ),
+            ["issue_id", "field_key_id"],
         )
         board_columns_df = read_table(
             engine,
@@ -247,11 +270,15 @@ def calculate_aging_extended(
             """,
             params={"project_id": project_id},
         )
-        boards_df = read_table(
-            engine,
-            "SELECT * FROM clean_jira.boards WHERE project_id = :project_id",
-            params={"project_id": project_id},
+        boards_df = _norm_utf8(
+            read_table(
+                engine,
+                "SELECT * FROM clean_jira.boards WHERE project_id = :project_id",
+                params={"project_id": project_id},
+            ),
+            ["id", "project_id"],
         )
+        board_columns_df = _norm_utf8(board_columns_df, ["id", "board_id"])
 
         project_agg_map = {str(project_id): str(get_project_agg_id(engine, project_id))}
 

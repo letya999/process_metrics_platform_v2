@@ -144,36 +144,45 @@ def calculate_backlog_growth(
         )
         issues_df = _norm_utf8(issues_df, ["id", "project_id", "type_id", "status_id"])
         issue_types_df = _norm_utf8(issue_types_df, ["id", "project_id"])
-        field_values_df = read_table(
-            engine,
-            """
+        field_values_df = _norm_utf8(
+            read_table(
+                engine,
+                """
             SELECT fv.issue_id, fv.field_key_id, fv.json_value::text AS json_value
             FROM clean_jira.field_values fv
             JOIN clean_jira.issues i ON i.id = fv.issue_id
             WHERE i.project_id = :project_id
             """,
-            params={"project_id": project_id},
+                params={"project_id": project_id},
+            ),
+            ["issue_id", "field_key_id"],
         )
-        changelog_df = read_table(
-            engine,
-            """
+        changelog_df = _norm_utf8(
+            read_table(
+                engine,
+                """
             SELECT isc.issue_id, isc.from_status_id, isc.to_status_id, isc.changed_at
             FROM clean_jira.issue_status_changelog isc
             JOIN clean_jira.issues i ON i.id = isc.issue_id
             WHERE i.project_id = :project_id
             """,
-            params={"project_id": project_id},
+                params={"project_id": project_id},
+            ),
+            ["issue_id", "from_status_id", "to_status_id"],
         )
-        board_column_statuses_df = read_table(
-            engine,
-            """
+        board_column_statuses_df = _norm_utf8(
+            read_table(
+                engine,
+                """
             SELECT b.project_id, bc.position, bcs.status_id
             FROM clean_jira.board_column_statuses bcs
             JOIN clean_jira.board_columns bc ON bcs.board_column_id = bc.id
             JOIN clean_jira.boards b ON bc.board_id = b.id
             WHERE b.project_id = :project_id
             """,
-            params={"project_id": project_id},
+                params={"project_id": project_id},
+            ),
+            ["project_id", "status_id"],
         )
 
         project_agg_id = str(get_project_agg_id(engine, project_id))
