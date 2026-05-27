@@ -7,7 +7,13 @@ from pipelines.jobs import schedules
 
 
 def _evaluate(context):
-    return schedules.guarded_hourly_metrics_refresh_sensor._raw_fn(
+    return schedules.guarded_hourly_metrics_light_refresh_sensor._raw_fn(
+        context
+    )  # noqa: SLF001
+
+
+def _evaluate_heavy(context):
+    return schedules.guarded_nightly_metrics_heavy_refresh_sensor._raw_fn(
         context
     )  # noqa: SLF001
 
@@ -44,7 +50,7 @@ def test_metrics_sensor_skips_outside_hour_boundary(monkeypatch):
 
 
 def test_metrics_sensor_skips_when_clean_or_sync_is_active(monkeypatch):
-    _patch_now(monkeypatch, datetime(2026, 3, 28, 11, 0, tzinfo=timezone.utc))
+    _patch_now(monkeypatch, datetime(2026, 3, 28, 11, 5, tzinfo=timezone.utc))
     active = [
         SimpleNamespace(
             dagster_run=SimpleNamespace(job_name="jira_sync_job", run_id="run-1")
@@ -59,11 +65,48 @@ def test_metrics_sensor_skips_when_clean_or_sync_is_active(monkeypatch):
 
 
 def test_metrics_sensor_requests_run_when_safe(monkeypatch):
-    _patch_now(monkeypatch, datetime(2026, 3, 28, 12, 0, tzinfo=timezone.utc))
+    _patch_now(monkeypatch, datetime(2026, 3, 28, 12, 5, tzinfo=timezone.utc))
     context = _FakeContext()
 
     event = _evaluate(context)
 
     assert isinstance(event, RunRequest)
-    assert event.run_key == "metrics-refresh-2026-03-28T12"
+    assert event.run_key == "metrics-light-refresh-2026-03-28T12"
     assert context._updated_cursor == "2026-03-28T12"
+
+
+def test_heavy_metrics_sensor_skips_outside_window(monkeypatch):
+    _patch_now(monkeypatch, datetime(2026, 3, 28, 2, 10, tzinfo=timezone.utc))
+    context = _FakeContext()
+
+    event = _evaluate_heavy(context)
+
+    assert isinstance(event, SkipReason)
+
+
+def test_heavy_metrics_sensor_skips_when_light_is_active(monkeypatch):
+    _patch_now(monkeypatch, datetime(2026, 3, 28, 2, 35, tzinfo=timezone.utc))
+    active = [
+        SimpleNamespace(
+            dagster_run=SimpleNamespace(
+                job_name="metrics_light_refresh_job", run_id="run-light"
+            )
+        )
+    ]
+    context = _FakeContext(run_records=active)
+
+    event = _evaluate_heavy(context)
+
+    assert isinstance(event, SkipReason)
+    assert "blocking" in event.skip_message
+
+
+def test_heavy_metrics_sensor_requests_run_when_safe(monkeypatch):
+    _patch_now(monkeypatch, datetime(2026, 3, 28, 2, 35, tzinfo=timezone.utc))
+    context = _FakeContext()
+
+    event = _evaluate_heavy(context)
+
+    assert isinstance(event, RunRequest)
+    assert event.run_key == "metrics-heavy-refresh-2026-03-28"
+    assert context._updated_cursor == "2026-03-28"

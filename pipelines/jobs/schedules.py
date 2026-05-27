@@ -2,7 +2,7 @@
 
 This module defines:
 - cron schedules for regular jobs
-- a guarded hourly sensor for metrics refresh to avoid clean-layer race conditions
+- guarded sensors for non-overlapping light/heavy metrics refresh runs
 """
 
 from datetime import datetime, timezone
@@ -21,13 +21,44 @@ from dagster import (
     sensor,
 )
 
+# Metrics split to reduce OOM risk and avoid queue congestion.
+METRICS_HEAVY_SELECTION = AssetSelection.assets(
+    "calculate_cumulative_flow_diagram",
+    "calculate_quality_metrics",
+    "metrics_all",
+)
+METRICS_LIGHT_SELECTION = AssetSelection.groups("metrics") - METRICS_HEAVY_SELECTION
+
+
+def _get_active_run_ids_by_job(
+    context: SensorEvaluationContext, job_names: set[str]
+) -> dict[str, list[str]]:
+    active_statuses = [
+        DagsterRunStatus.QUEUED,
+        DagsterRunStatus.NOT_STARTED,
+        DagsterRunStatus.STARTING,
+        DagsterRunStatus.STARTED,
+        DagsterRunStatus.CANCELING,
+    ]
+    active_runs = context.instance.get_run_records(
+        filters=RunsFilter(statuses=active_statuses),
+        limit=200,
+    )
+    by_job: dict[str, list[str]] = {}
+    for record in active_runs:
+        job_name = record.dagster_run.job_name
+        if job_name in job_names:
+            by_job.setdefault(job_name, []).append(record.dagster_run.run_id)
+    return by_job
+
+
 # Define jobs for scheduling
 
-# Job: Full Jira sync (raw → clean → metrics)
+# Job: Full Jira sync (raw -> clean -> light metrics)
 jira_sync_job = define_asset_job(
     name="jira_sync_job",
-    selection=AssetSelection.groups("jira_raw", "jira_clean", "metrics"),
-    description="Full Jira data sync: raw → clean → metrics refresh",
+    selection=AssetSelection.groups("jira_raw", "jira_clean") | METRICS_LIGHT_SELECTION,
+    description="Full Jira data sync: raw -> clean -> light metrics refresh",
 )
 
 # Job: Jira raw only (useful for incremental loads)
@@ -48,17 +79,24 @@ jira_clean_job = define_asset_job(
 metrics_refresh_job = define_asset_job(
     name="metrics_refresh_job",
     selection=AssetSelection.groups("metrics"),
-    description="Refresh all metrics materialized views",
-    config={
-        "execution": {
-            "config": {
-                "multiprocess": {
-                    # Prevent OOM on small/medium hosts by capping step parallelism.
-                    "max_concurrent": 2
-                }
-            }
-        }
-    },
+    description="Legacy full metrics refresh job (includes heavy assets)",
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
+)
+
+# Job: Light metrics refresh (hourly)
+metrics_light_refresh_job = define_asset_job(
+    name="metrics_light_refresh_job",
+    selection=METRICS_LIGHT_SELECTION,
+    description="Refresh light metrics (hourly, lower OOM risk)",
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 2}}}},
+)
+
+# Job: Heavy metrics refresh (nightly)
+metrics_heavy_refresh_job = define_asset_job(
+    name="metrics_heavy_refresh_job",
+    selection=METRICS_HEAVY_SELECTION,
+    description="Refresh heavy metrics (nightly, serialized)",
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
 )
 
 # Define schedules
@@ -73,7 +111,7 @@ daily_jira_sync_schedule = ScheduleDefinition(
 
 # Keep legacy schedule object for compatibility, but prefer guarded sensor below.
 hourly_metrics_refresh_schedule = ScheduleDefinition(
-    job=metrics_refresh_job,
+    job=metrics_light_refresh_job,
     cron_schedule="0 * * * *",
     default_status=DefaultScheduleStatus.STOPPED,
     execution_timezone="UTC",
@@ -81,49 +119,77 @@ hourly_metrics_refresh_schedule = ScheduleDefinition(
 
 
 @sensor(
-    name="guarded_hourly_metrics_refresh_sensor",
-    job=metrics_refresh_job,
+    name="guarded_hourly_metrics_light_refresh_sensor",
+    job=metrics_light_refresh_job,
     minimum_interval_seconds=60,
     default_status=DefaultSensorStatus.STOPPED,
 )
-def guarded_hourly_metrics_refresh_sensor(
+def guarded_hourly_metrics_light_refresh_sensor(
     context: SensorEvaluationContext,
 ) -> RunRequest | SkipReason:
-    """Run metrics refresh hourly only when clean/sync jobs are not in progress."""
+    """Run light metrics hourly only when no blocking jobs are active."""
     now_utc = datetime.now(timezone.utc)
     hour_bucket = now_utc.strftime("%Y-%m-%dT%H")
 
-    if now_utc.minute != 0:
-        return SkipReason("Waiting for top of the hour (UTC)")
+    if now_utc.minute != 5:
+        return SkipReason("Waiting for :05 minute boundary (UTC)")
 
     if context.cursor == hour_bucket:
-        return SkipReason(f"Metrics refresh already requested for {hour_bucket}:00 UTC")
-
-    active_statuses = [
-        DagsterRunStatus.QUEUED,
-        DagsterRunStatus.NOT_STARTED,
-        DagsterRunStatus.STARTING,
-        DagsterRunStatus.STARTED,
-        DagsterRunStatus.CANCELING,
-    ]
-    blocking_jobs = {"jira_sync_job", "jira_clean_job"}
-
-    active_runs = context.instance.get_run_records(
-        filters=RunsFilter(statuses=active_statuses),
-        limit=50,
-    )
-    blocking_runs = [
-        record for record in active_runs if record.dagster_run.job_name in blocking_jobs
-    ]
-    if blocking_runs:
-        run_ids = [record.dagster_run.run_id for record in blocking_runs]
         return SkipReason(
-            "Skipping metrics refresh: jira_clean_job/jira_sync_job still active "
-            f"(runs={run_ids})"
+            f"Light metrics refresh already requested for {hour_bucket}:05 UTC"
+        )
+
+    blocking_jobs = {
+        "jira_sync_job",
+        "jira_clean_job",
+        "metrics_light_refresh_job",
+        "metrics_heavy_refresh_job",
+    }
+    blocking_runs = _get_active_run_ids_by_job(context, blocking_jobs)
+    if blocking_runs:
+        return SkipReason(
+            "Skipping light metrics refresh due to active blocking runs "
+            f"(runs={blocking_runs})"
         )
 
     context.update_cursor(hour_bucket)
-    return RunRequest(run_key=f"metrics-refresh-{hour_bucket}")
+    return RunRequest(run_key=f"metrics-light-refresh-{hour_bucket}")
+
+
+@sensor(
+    name="guarded_nightly_metrics_heavy_refresh_sensor",
+    job=metrics_heavy_refresh_job,
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.STOPPED,
+)
+def guarded_nightly_metrics_heavy_refresh_sensor(
+    context: SensorEvaluationContext,
+) -> RunRequest | SkipReason:
+    """Run heavy metrics nightly only when no blocking jobs are active."""
+    now_utc = datetime.now(timezone.utc)
+    day_bucket = now_utc.strftime("%Y-%m-%d")
+
+    if not (now_utc.hour == 2 and now_utc.minute == 35):
+        return SkipReason("Waiting for 02:35 UTC nightly window")
+
+    if context.cursor == day_bucket:
+        return SkipReason(f"Heavy metrics refresh already requested for {day_bucket}")
+
+    blocking_jobs = {
+        "jira_sync_job",
+        "jira_clean_job",
+        "metrics_light_refresh_job",
+        "metrics_heavy_refresh_job",
+    }
+    blocking_runs = _get_active_run_ids_by_job(context, blocking_jobs)
+    if blocking_runs:
+        return SkipReason(
+            "Skipping heavy metrics refresh due to active blocking runs "
+            f"(runs={blocking_runs})"
+        )
+
+    context.update_cursor(day_bucket)
+    return RunRequest(run_key=f"metrics-heavy-refresh-{day_bucket}")
 
 
 # Job: Recalculate Lead Time (Fact + View)
@@ -253,6 +319,8 @@ jobs = [
     jira_raw_job,
     jira_clean_job,
     metrics_refresh_job,
+    metrics_light_refresh_job,
+    metrics_heavy_refresh_job,
     lead_time_recalc_job,
     velocity_recalc_job,
     throughput_recalc_job,
@@ -280,5 +348,6 @@ schedules = [
 ]
 
 sensors = [
-    guarded_hourly_metrics_refresh_sensor,
+    guarded_hourly_metrics_light_refresh_sensor,
+    guarded_nightly_metrics_heavy_refresh_sensor,
 ]
