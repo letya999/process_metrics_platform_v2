@@ -102,7 +102,8 @@ def test_calculate_quality_metrics_no_data(monkeypatch):
     out = _asset_fn(quality.calculate_quality_metrics)(
         _DummyContext(), _DummyDatabase(object())
     )
-    assert out["status"] == "no_data"
+    assert out["status"] == "success"
+    assert out["rows_written"] == 0
 
 
 def test_calculate_quality_metrics_success_with_slicing(monkeypatch):
@@ -252,28 +253,44 @@ def test_quality_slice_calc_no_cross_project_rows(monkeypatch):
     s1_end = datetime(2026, 1, 14, tzinfo=timezone.utc)
     s2_end = datetime(2026, 1, 28, tzinfo=timezone.utc)
 
+    _all_sprints = pl.DataFrame(
+        {
+            "id": ["S1", "S2"],
+            "project_id": ["P1", "P2"],
+            "start_date": [s1_start, s2_start],
+            "end_date": [s1_end, s2_end],
+            "status": ["closed", "closed"],
+        }
+    )
+    _all_issues = pl.DataFrame(
+        {
+            "id": ["I1", "I2"],
+            "project_id": ["P1", "P2"],
+            "issue_type_id": ["T1", "T1"],
+            "type_name": ["Bug", "Bug"],
+        }
+    )
+    _sprint_issues = pl.DataFrame({"issue_id": ["I1", "I2"], "sprint_id": ["S1", "S2"]})
+
     def _read_table(_engine, query, params=None):
+        pid = (params or {}).get("project_id")
         if "FROM clean_jira.sprints" in query:
-            return pl.DataFrame(
-                {
-                    "id": ["S1", "S2"],
-                    "project_id": ["P1", "P2"],
-                    "start_date": [s1_start, s2_start],
-                    "end_date": [s1_end, s2_end],
-                    "status": ["closed", "closed"],
-                }
-            )
+            df = _all_sprints
+            if pid:
+                df = df.filter(pl.col("project_id") == pid)
+            return df
         if "FROM clean_jira.sprint_issues" in query:
-            return pl.DataFrame({"issue_id": ["I1", "I2"], "sprint_id": ["S1", "S2"]})
+            if pid:
+                proj_sprint_ids = _all_sprints.filter(pl.col("project_id") == pid)[
+                    "id"
+                ].to_list()
+                return _sprint_issues.filter(pl.col("sprint_id").is_in(proj_sprint_ids))
+            return _sprint_issues
         if "FROM clean_jira.issues" in query:
-            return pl.DataFrame(
-                {
-                    "id": ["I1", "I2"],
-                    "project_id": ["P1", "P2"],
-                    "issue_type_id": ["T1", "T1"],
-                    "type_name": ["Bug", "Bug"],
-                }
-            )
+            df = _all_issues
+            if pid:
+                df = df.filter(pl.col("project_id") == pid)
+            return df
         if "FROM clean_jira.issue_types" in query:
             return pl.DataFrame({"id": ["T1"], "name": ["Bug"]})
         if "FROM clean_jira.issue_status_changelog" in query:
@@ -302,10 +319,10 @@ def test_quality_slice_calc_no_cross_project_rows(monkeypatch):
     monkeypatch.setattr(quality, "read_table", _read_table)
     monkeypatch.setattr(quality, "get_slice_rules", lambda *_a, **_k: pl.DataFrame())
 
-    captured = {}
+    written = []
 
     def _write(df, engine, **kwargs):
-        captured["df"] = df
+        written.append(df)
         return df.height
 
     monkeypatch.setattr(quality, "write_fact_values", _write)
@@ -314,8 +331,10 @@ def test_quality_slice_calc_no_cross_project_rows(monkeypatch):
         _DummyContext(), _DummyDatabase(object())
     )
 
+    assert written, "write_fact_values was never called"
+    all_written = pl.concat(written, how="diagonal_relaxed")
     # The base rows should have exactly one row per sprint (2 total, one per project)
-    base_rows = captured["df"].filter(pl.col("slice_rule_id").is_null())
+    base_rows = all_written.filter(pl.col("slice_rule_id").is_null())
     p1_rows = base_rows.filter(pl.col("project_agg_id") == "agg-1")
     p2_rows = base_rows.filter(pl.col("project_agg_id") == "agg-2")
     assert p1_rows.height == 1, f"Expected 1 P1 base row, got {p1_rows.height}"

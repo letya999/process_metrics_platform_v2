@@ -1225,7 +1225,11 @@ def test_calculate_backlog_growth_success(monkeypatch):
     )
 
     def _read_table(_engine, query, params=None):
-        if "FROM clean_jira.issues i" in query:
+        if "DISTINCT project_id" in query:
+            return pl.DataFrame({"project_id": ["p1"]})
+        if "FROM clean_jira.issues i" in query or (
+            "FROM clean_jira.issues" in query and params
+        ):
             return pl.DataFrame(
                 {
                     "id": ["i1"],
@@ -1327,7 +1331,11 @@ def test_calculate_backlog_growth_no_data(monkeypatch):
     )
 
     def _read_table(_engine, query, params=None):
-        if "FROM clean_jira.issues i" in query:
+        if "DISTINCT project_id" in query:
+            return pl.DataFrame({"project_id": ["p1"]})
+        if "FROM clean_jira.issues i" in query or (
+            "FROM clean_jira.issues" in query and params
+        ):
             return pl.DataFrame(
                 {
                     "id": ["i1"],
@@ -1390,7 +1398,8 @@ def test_calculate_backlog_growth_no_data(monkeypatch):
     out = _asset_fn(backlog_growth.calculate_backlog_growth)(
         _DummyContext(), _DummyDatabase(MagicMock())
     )
-    assert out["status"] == "no_data"
+    assert out["status"] == "success"
+    assert out["rows_written"] == 0
 
 
 def test_calculate_backlog_growth_with_slices_and_check(monkeypatch):
@@ -1412,7 +1421,11 @@ def test_calculate_backlog_growth_with_slices_and_check(monkeypatch):
     )
 
     def _read_table(_engine, query, params=None):
-        if "FROM clean_jira.issues i" in query:
+        if "DISTINCT project_id" in query:
+            return pl.DataFrame({"project_id": ["p1"]})
+        if "FROM clean_jira.issues i" in query or (
+            "FROM clean_jira.issues" in query and params
+        ):
             return pl.DataFrame(
                 {
                     "id": ["i1"],
@@ -1495,10 +1508,9 @@ def test_calculate_backlog_growth_with_slices_and_check(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(
-        backlog_growth,
-        "apply_slicing",
-        lambda *_args, **_kwargs: pl.DataFrame(
+
+    def _fake_iter_slicing(*_args, **_kwargs):
+        yield pl.DataFrame(
             {
                 "project_id": ["p1"],
                 "fact_date": [date(2026, 1, 5)],
@@ -1508,8 +1520,9 @@ def test_calculate_backlog_growth_with_slices_and_check(monkeypatch):
                 "net_growth_daily": [1.0],
                 "slice_value": ["Story"],
             }
-        ),
-    )
+        )
+
+    monkeypatch.setattr(backlog_growth, "iter_slicing_results", _fake_iter_slicing)
     original_concat = pl.concat
     monkeypatch.setattr(
         backlog_growth.pl,

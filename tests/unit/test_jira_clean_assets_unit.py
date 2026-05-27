@@ -581,7 +581,15 @@ def test_clean_jira_misc_assets_success():
         == 2
     )
 
-    conn_cols = _SequencedConnection([_Result(fetchall_data=[(1,)])])
+    conn_cols = _SequencedConnection(
+        [
+            _Result(),  # LOCK TABLE
+            _Result(),  # CREATE TEMP TABLE + INSERT INTO tmp
+            _Result(),  # DELETE board_column_statuses
+            _Result(),  # DELETE board_columns
+            _Result(fetchall_data=[(1,)]),  # INSERT board_columns RETURNING id
+        ]
+    )
     assert (
         _asset_fn(clean.clean_jira_board_columns)(
             _DummyContext(), _DummyDatabase(conn_cols)

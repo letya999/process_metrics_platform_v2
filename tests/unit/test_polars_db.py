@@ -1,7 +1,5 @@
-import uuid
 from unittest.mock import MagicMock
 
-import pandas as pd
 import polars as pl
 import pytest
 
@@ -62,22 +60,23 @@ def test_read_table_without_params_uses_polars_uri(monkeypatch):
     assert captured["query"] == "SELECT 1"
 
 
-def test_read_table_with_params_uses_pandas_and_casts_uuid(monkeypatch):
-    uid = uuid.uuid4()
+def test_read_table_with_params_uses_polars_read_database(monkeypatch):
+    captured = {}
 
-    def _fake_read_sql(_query, _engine, params=None):
-        assert params == {"id": "123"}
-        return pd.DataFrame({"id": [uid], "name": ["row"]})
+    def _fake_read_database(query, connection, execute_options=None):
+        captured["execute_options"] = execute_options
+        return pl.DataFrame({"id": ["abc"], "name": ["row"]})
 
-    monkeypatch.setattr(pd, "read_sql", _fake_read_sql)
+    monkeypatch.setattr(pl, "read_database", _fake_read_database)
 
     engine = _DummyEngine()
     result = polars_db.read_table(
         engine, "SELECT * FROM t WHERE id=:id", params={"id": "123"}
     )
 
-    assert result["id"][0] == str(uid)
+    assert result["id"][0] == "abc"
     assert result["name"][0] == "row"
+    assert captured["execute_options"] == {"parameters": {"id": "123"}}
 
 
 def test_write_fact_values_validates_schema():
@@ -95,7 +94,7 @@ def test_write_fact_values_validates_schema():
         )
 
 
-def test_write_fact_values_atomic_flow(monkeypatch):
+def test_write_fact_values_atomic_flow():
     engine = _DummyEngine()
     df = pl.DataFrame(
         {
@@ -105,15 +104,6 @@ def test_write_fact_values_atomic_flow(monkeypatch):
             "value": [1.0],
         }
     )
-
-    to_sql_called = []
-
-    def _fake_to_sql(self, name, con, if_exists, index, method, chunksize=None):
-        to_sql_called.append(name)
-        assert name == "_fact_values_stage"
-        assert if_exists == "append"
-
-    monkeypatch.setattr(pd.DataFrame, "to_sql", _fake_to_sql)
 
     inserted = polars_db.write_fact_values(
         df=df,
@@ -125,9 +115,8 @@ def test_write_fact_values_atomic_flow(monkeypatch):
     )
 
     assert inserted == 1
-    assert "_fact_values_stage" in to_sql_called
 
-    # Check SQL calls sequence
+    # Check SQL calls sequence (dict-based insert, no pandas to_sql)
     calls = [c[0] for c in engine.conn.calls]
     assert any("CREATE TEMP TABLE _fact_values_stage" in c for c in calls)
     assert any("DELETE FROM metrics.fact_values" in c for c in calls)

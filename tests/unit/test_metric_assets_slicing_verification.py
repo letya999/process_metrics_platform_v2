@@ -42,10 +42,10 @@ def test_cumulative_flow_slicing(monkeypatch):
     monkeypatch.setattr(
         cumulative_flow, "get_project_agg_id", lambda engine, pid: f"agg-{pid}"
     )
-    captured = {}
+    captured = {"writes": []}
 
     def _write_fact_values(df, *_a, **_k):
-        captured["df"] = df
+        captured["writes"].append(df)
         return df.height
 
     monkeypatch.setattr(cumulative_flow, "write_fact_values", _write_fact_values)
@@ -121,10 +121,9 @@ def test_cumulative_flow_slicing(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(
-        cumulative_flow,
-        "apply_slicing",
-        lambda *_a, **_k: pl.DataFrame(
+
+    def _fake_iter_slicing_cfd(*_a, **_k):
+        yield pl.DataFrame(
             {
                 "project_id": ["p1"],
                 "date": [date(2026, 1, 1)],
@@ -133,21 +132,23 @@ def test_cumulative_flow_slicing(monkeypatch):
                 "status_id": ["s1"],
                 "slice_value": ["Story"],
             }
-        ),
-    )
+        )
+
+    monkeypatch.setattr(cumulative_flow, "iter_slicing_results", _fake_iter_slicing_cfd)
 
     out = _asset_fn(cumulative_flow.calculate_cumulative_flow_diagram)(
         _DummyContext(), _DummyDatabase(object())
     )
     assert out["status"] == "success"
     assert out["rows_written"] == 2
-    assert "context_json" in captured["df"].columns
-    assert captured["df"].get_column("context_json").null_count() == 0
-    contexts = captured["df"].get_column("context_json").to_list()
+    all_written = pl.concat(captured["writes"], how="diagonal_relaxed")
+    assert "context_json" in all_written.columns
+    assert all_written.get_column("context_json").null_count() == 0
+    contexts = all_written.get_column("context_json").to_list()
     assert all(ctx["column_id"] == "c1" for ctx in contexts)
     assert all(ctx["column_name"] == "To Do" for ctx in contexts)
     assert all(ctx["status_id"] == "s1" for ctx in contexts)
-    slice_values = captured["df"].get_column("slice_value").to_list()
+    slice_values = all_written.get_column("slice_value").to_list()
     assert len(slice_values) == 2
     assert "Story" in slice_values
     assert None in slice_values
@@ -233,10 +234,9 @@ def test_aging_extended_slicing(monkeypatch):
             {"slice_rule_id": ["rule-1"], "enabled": [True]}
         ),
     )
-    monkeypatch.setattr(
-        aging_extended,
-        "apply_slicing",
-        lambda *_a, **_k: pl.DataFrame(
+
+    def _fake_iter_slicing_aging(*_a, **_k):
+        yield pl.DataFrame(
             {
                 "project_id": ["p1"],
                 "issue_id": ["i1"],
@@ -244,7 +244,10 @@ def test_aging_extended_slicing(monkeypatch):
                 "slice_value": ["Story"],
                 "calc_id": ["id-blocked_time_total"],
             }
-        ),
+        )
+
+    monkeypatch.setattr(
+        aging_extended, "iter_slicing_results", _fake_iter_slicing_aging
     )
 
     out = _asset_fn(aging_extended.calculate_aging_extended)(

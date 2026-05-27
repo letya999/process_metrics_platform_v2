@@ -6,19 +6,15 @@ import pytest
 from pipelines.utils.polars_db import execute_sql, read_table, write_fact_values
 
 
-def test_read_table_fallback_to_pandas():
+def test_read_table_fallback_to_polars_read_database():
     mock_engine = MagicMock()
     mock_engine.url = "postgresql://user:pass@host/db"
 
-    # Mock pl.read_database_uri to fail
+    fallback_df = pl.DataFrame({"col1": [1, 2], "col2": ["a", "b"]})
+
+    # When read_database_uri fails, falls back to pl.read_database
     with patch("polars.read_database_uri", side_effect=Exception("Driver Error")):
-        with patch("pandas.read_sql") as mock_read_sql:
-            import pandas as pd
-
-            mock_read_sql.return_value = pd.DataFrame(
-                {"col1": [1, 2], "col2": ["a", "b"]}
-            )
-
+        with patch("polars.read_database", return_value=fallback_df):
             res = read_table(mock_engine, "SELECT * FROM table")
             assert res.height == 2
             assert "col1" in res.columns
@@ -54,13 +50,14 @@ def test_write_fact_values_drops_auto_cols():
         }
     )
 
-    # Mock context manager for engine.begin()
-    _ = mock_engine.begin.return_value.__enter__.return_value
+    conn_mock = mock_engine.begin.return_value.__enter__.return_value
 
-    with patch("pandas.DataFrame.to_sql") as mock_to_sql:
-        write_fact_values(df, mock_engine, ["m1"], ["p1"], 1, 1)
-        # Verify to_sql was called (it means it reached the point after dropping columns)
-        assert mock_to_sql.called
+    write_fact_values(df, mock_engine, ["m1"], ["p1"], 1, 1)
+
+    # Verify that dict-based INSERT was executed (id and created_at auto-cols were dropped)
+    assert conn_mock.execute.called
+    sql_texts = [str(c.args[0]) for c in conn_mock.execute.call_args_list if c.args]
+    assert any("INSERT INTO _fact_values_stage" in s for s in sql_texts)
 
 
 def test_write_fact_values_serializes_struct_columns():
