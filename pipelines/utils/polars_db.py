@@ -9,7 +9,7 @@ This module provides helper functions to:
 import json
 import logging
 import os
-import warnings
+from collections.abc import Iterator
 
 import polars as pl
 from sqlalchemy import Engine, text
@@ -34,10 +34,6 @@ def read_table(
     Returns:
         Polars DataFrame containing query results
     """
-    from datetime import date, datetime
-
-    import pandas as pd
-
     if not params:
         # Fast path used by tests and by read-only queries.
         try:
@@ -45,41 +41,39 @@ def read_table(
         except Exception:
             # Fallback for complex types/driver edge-cases.
             with engine.connect() as conn:
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore",
-                        message="pandas only supports SQLAlchemy connectable",
-                        category=UserWarning,
-                    )
-                    pdf = pd.read_sql(text(query), conn)
-                for col in pdf.columns:
-                    if pdf[col].dtype == "object":
-                        # Skip string conversion for datetime objects to avoid destruction
-                        sample = pdf[col].dropna().head(1)
-                        if not sample.empty and isinstance(
-                            sample.iloc[0], (datetime, date)
-                        ):
-                            continue
-                        pdf[col] = pdf[col].astype(str)
-                return pl.from_pandas(pdf)
+                return pl.read_database(query=text(query), connection=conn)
 
-    # Parameterized path: use pandas/SQLAlchemy safely.
+    # Parameterized path without pandas bridge to avoid extra RAM copies.
     with engine.connect() as conn:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="pandas only supports SQLAlchemy connectable",
-                category=UserWarning,
-            )
-            pdf = pd.read_sql(text(query), conn, params=params)
-        for col in pdf.columns:
-            if pdf[col].dtype == "object":
-                # Skip string conversion for datetime objects to avoid destruction
-                sample = pdf[col].dropna().head(1)
-                if not sample.empty and isinstance(sample.iloc[0], (datetime, date)):
-                    continue
-                pdf[col] = pdf[col].astype(str)
-        return pl.from_pandas(pdf)
+        return pl.read_database(
+            query=text(query),
+            connection=conn,
+            execute_options={"parameters": params},
+        )
+
+
+def read_table_batches(
+    engine: Engine,
+    query: str,
+    *,
+    batch_size: int = 50_000,
+    params: dict | list | tuple | None = None,
+) -> Iterator[pl.DataFrame]:
+    """Iterate SQL result in DataFrame batches to keep peak memory bounded."""
+    with engine.connect() as conn:
+        stream_conn = conn.execution_options(stream_results=True)
+        yield from pl.read_database(
+            query=text(query),
+            connection=stream_conn,
+            iter_batches=True,
+            batch_size=batch_size,
+            execute_options={"parameters": params} if params else None,
+        )
+
+
+def _iter_row_dict_chunks(df: pl.DataFrame, chunk_size: int) -> Iterator[list[dict]]:
+    for start in range(0, len(df), chunk_size):
+        yield df.slice(start, chunk_size).to_dicts()
 
 
 def write_fact_values(
@@ -114,13 +108,30 @@ def write_fact_values(
             f"DataFrame is missing required fact_values columns: {missing}"
         )
 
-    # 1. Prepare data for insertion (UUIDs as strings for SQLAlchemy/Pandas)
-    pdf = None
+    metric_ids = [str(x) for x in metric_ids]
+    project_agg_ids = [str(x) for x in project_agg_ids]
+
+    # 1. Prepare data for insertion (UUIDs/Struct as strings for SQLAlchemy).
+    insert_df = df
     if not df.is_empty():
+        # First normalize generic Object dtype columns to text to avoid panics in later ops.
+        object_cols_initial = [
+            name for name, dtype in insert_df.schema.items() if dtype == pl.Object
+        ]
+        if object_cols_initial:
+            insert_df = insert_df.with_columns(
+                [
+                    pl.col(name).map_elements(
+                        lambda x: str(x) if x is not None else None,
+                        return_dtype=pl.Utf8,
+                    )
+                    for name in object_cols_initial
+                ]
+            )
         # Serialize Struct columns to JSON strings - psycopg2 cannot adapt dict values
         struct_cols = [c for c in df.columns if str(df[c].dtype).startswith("Struct")]
         if struct_cols:
-            df = df.with_columns(
+            insert_df = insert_df.with_columns(
                 [
                     pl.col(c).map_elements(
                         lambda x: json.dumps(x) if x is not None else None,
@@ -129,14 +140,16 @@ def write_fact_values(
                     for c in struct_cols
                 ]
             )
-        pdf = df.to_pandas()
         # Drop columns that should be auto-generated by PostgreSQL
-        columns_to_drop = []
+        drop_cols = []
         for col in ["id", "created_at", "updated_at"]:
-            if col in pdf.columns and pdf[col].isna().all():
-                columns_to_drop.append(col)
-        if columns_to_drop:
-            pdf = pdf.drop(columns=columns_to_drop)
+            if (
+                col in insert_df.columns
+                and insert_df.select(pl.col(col).is_null().all()).item()
+            ):
+                drop_cols.append(col)
+        if drop_cols:
+            insert_df = insert_df.drop(drop_cols)
 
         # Stringify UUIDs
         for col in [
@@ -146,8 +159,18 @@ def write_fact_values(
             "commitment_rule_id",
             "settings_id",
         ]:
-            if col in pdf.columns:
-                pdf[col] = pdf[col].apply(lambda x: str(x) if x is not None else None)
+            if col in insert_df.columns:
+                insert_df = insert_df.with_columns(
+                    pl.col(col).cast(pl.Utf8, strict=False).alias(col)
+                )
+        # Some rule/slice columns can surface as generic Object; convert safely to text.
+        object_cols = [
+            name for name, dtype in insert_df.schema.items() if dtype == pl.Object
+        ]
+        if object_cols:
+            insert_df = insert_df.with_columns(
+                [pl.col(name).cast(pl.Utf8, strict=False) for name in object_cols]
+            )
 
     # 2. Execute atomic transaction
     with engine.begin() as conn:
@@ -159,15 +182,16 @@ def write_fact_values(
         )
 
         # b. Load data into staging table
-        if pdf is not None and not pdf.empty:
-            pdf.to_sql(
-                name="_fact_values_stage",
-                con=conn,
-                if_exists="append",
-                index=False,
-                method="multi",
-                chunksize=5000,
+        if not insert_df.is_empty():
+            chunk_size = int(os.getenv("FACT_VALUES_INSERT_CHUNK_SIZE", "5000"))
+            cols = insert_df.columns
+            cols_sql = ", ".join([f'"{c}"' for c in cols])
+            values_sql = ", ".join([f":{c}" for c in cols])
+            insert_stage_stmt = text(
+                f"INSERT INTO _fact_values_stage ({cols_sql}) VALUES ({values_sql})"  # noqa: S608
             )
+            for rows in _iter_row_dict_chunks(insert_df, chunk_size):
+                conn.execute(insert_stage_stmt, rows)
 
         # c. Optional advisory lock for concurrent writers
         use_advisory_lock = (
@@ -201,9 +225,9 @@ def write_fact_values(
         )
 
         # e. INSERT from staging to final
-        if pdf is not None and not pdf.empty:
+        if not insert_df.is_empty():
             # Match columns explicitly in case of schema drifts
-            cols = ", ".join([f'"{c}"' for c in pdf.columns])
+            cols = ", ".join([f'"{c}"' for c in insert_df.columns])
             insert_sql = f"INSERT INTO metrics.fact_values ({cols}) SELECT {cols} FROM _fact_values_stage"  # noqa: S608
             # Column identifiers come from in-process DataFrame schema and are quoted.
             conn.execute(text(insert_sql))
@@ -212,7 +236,7 @@ def write_fact_values(
         # but here we use session-scope temp table which is also fine.
         conn.execute(text("DROP TABLE _fact_values_stage"))
 
-    return len(df)
+    return len(insert_df)
 
 
 def execute_sql(engine: Engine, sql: str) -> None:

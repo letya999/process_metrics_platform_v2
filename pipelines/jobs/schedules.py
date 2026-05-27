@@ -24,6 +24,8 @@ from dagster import (
 # Metrics split to reduce OOM risk and avoid queue congestion.
 METRICS_HEAVY_SELECTION = AssetSelection.assets(
     "calculate_cumulative_flow_diagram",
+    "calculate_backlog_growth",
+    "calculate_aging_extended",
     "calculate_quality_metrics",
     "metrics_all",
 )
@@ -59,6 +61,7 @@ jira_sync_job = define_asset_job(
     name="jira_sync_job",
     selection=AssetSelection.groups("jira_raw", "jira_clean") | METRICS_LIGHT_SELECTION,
     description="Full Jira data sync: raw -> clean -> light metrics refresh",
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
 )
 
 # Job: Jira raw only (useful for incremental loads)
@@ -88,7 +91,7 @@ metrics_light_refresh_job = define_asset_job(
     name="metrics_light_refresh_job",
     selection=METRICS_LIGHT_SELECTION,
     description="Refresh light metrics (hourly, lower OOM risk)",
-    config={"execution": {"config": {"multiprocess": {"max_concurrent": 2}}}},
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
 )
 
 # Job: Heavy metrics refresh (nightly)
@@ -96,6 +99,25 @@ metrics_heavy_refresh_job = define_asset_job(
     name="metrics_heavy_refresh_job",
     selection=METRICS_HEAVY_SELECTION,
     description="Refresh heavy metrics (nightly, serialized)",
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
+)
+
+# Job: staged heavy - CFD only
+metrics_heavy_cfd_job = define_asset_job(
+    name="metrics_heavy_cfd_job",
+    selection=AssetSelection.assets("calculate_cumulative_flow_diagram"),
+    description="Heavy window 1: CFD only",
+    config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
+)
+
+# Job: staged heavy - backlog growth + aging extended
+metrics_heavy_backlog_aging_job = define_asset_job(
+    name="metrics_heavy_backlog_aging_job",
+    selection=AssetSelection.assets(
+        "calculate_backlog_growth",
+        "calculate_aging_extended",
+    ),
+    description="Heavy window 2: backlog growth + aging extended",
     config={"execution": {"config": {"multiprocess": {"max_concurrent": 1}}}},
 )
 
@@ -190,6 +212,73 @@ def guarded_nightly_metrics_heavy_refresh_sensor(
 
     context.update_cursor(day_bucket)
     return RunRequest(run_key=f"metrics-heavy-refresh-{day_bucket}")
+
+
+@sensor(
+    name="guarded_nightly_metrics_heavy_cfd_sensor",
+    job=metrics_heavy_cfd_job,
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.STOPPED,
+)
+def guarded_nightly_metrics_heavy_cfd_sensor(
+    context: SensorEvaluationContext,
+) -> RunRequest | SkipReason:
+    """Run CFD in a dedicated heavy window."""
+    now_utc = datetime.now(timezone.utc)
+    day_bucket = now_utc.strftime("%Y-%m-%d")
+    if not (now_utc.hour == 2 and now_utc.minute == 35):
+        return SkipReason("Waiting for 02:35 UTC heavy CFD window")
+    if context.cursor == day_bucket:
+        return SkipReason(f"Heavy CFD already requested for {day_bucket}")
+    blocking_jobs = {
+        "jira_sync_job",
+        "jira_clean_job",
+        "metrics_light_refresh_job",
+        "metrics_heavy_refresh_job",
+        "metrics_heavy_backlog_aging_job",
+        "metrics_heavy_cfd_job",
+    }
+    blocking_runs = _get_active_run_ids_by_job(context, blocking_jobs)
+    if blocking_runs:
+        return SkipReason(
+            f"Skipping heavy CFD due to active blocking runs (runs={blocking_runs})"
+        )
+    context.update_cursor(day_bucket)
+    return RunRequest(run_key=f"metrics-heavy-cfd-{day_bucket}")
+
+
+@sensor(
+    name="guarded_nightly_metrics_heavy_backlog_aging_sensor",
+    job=metrics_heavy_backlog_aging_job,
+    minimum_interval_seconds=60,
+    default_status=DefaultSensorStatus.STOPPED,
+)
+def guarded_nightly_metrics_heavy_backlog_aging_sensor(
+    context: SensorEvaluationContext,
+) -> RunRequest | SkipReason:
+    """Run backlog/aging in dedicated follow-up window after CFD."""
+    now_utc = datetime.now(timezone.utc)
+    day_bucket = now_utc.strftime("%Y-%m-%d")
+    if not (now_utc.hour == 3 and now_utc.minute == 20):
+        return SkipReason("Waiting for 03:20 UTC heavy backlog/aging window")
+    if context.cursor == day_bucket:
+        return SkipReason(f"Heavy backlog/aging already requested for {day_bucket}")
+    blocking_jobs = {
+        "jira_sync_job",
+        "jira_clean_job",
+        "metrics_light_refresh_job",
+        "metrics_heavy_refresh_job",
+        "metrics_heavy_backlog_aging_job",
+        "metrics_heavy_cfd_job",
+    }
+    blocking_runs = _get_active_run_ids_by_job(context, blocking_jobs)
+    if blocking_runs:
+        return SkipReason(
+            "Skipping heavy backlog/aging due to active blocking runs "
+            f"(runs={blocking_runs})"
+        )
+    context.update_cursor(day_bucket)
+    return RunRequest(run_key=f"metrics-heavy-backlog-aging-{day_bucket}")
 
 
 # Job: Recalculate Lead Time (Fact + View)
@@ -321,6 +410,8 @@ jobs = [
     metrics_refresh_job,
     metrics_light_refresh_job,
     metrics_heavy_refresh_job,
+    metrics_heavy_cfd_job,
+    metrics_heavy_backlog_aging_job,
     lead_time_recalc_job,
     velocity_recalc_job,
     throughput_recalc_job,
@@ -350,4 +441,6 @@ schedules = [
 sensors = [
     guarded_hourly_metrics_light_refresh_sensor,
     guarded_nightly_metrics_heavy_refresh_sensor,
+    guarded_nightly_metrics_heavy_cfd_sensor,
+    guarded_nightly_metrics_heavy_backlog_aging_sensor,
 ]

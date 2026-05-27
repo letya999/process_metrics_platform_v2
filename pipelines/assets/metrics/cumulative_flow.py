@@ -1,14 +1,15 @@
 """
-Cumulative Flow Diagram (CFD) Dagster Asset (Generic Long Metric Store)
+Cumulative Flow Diagram (CFD) Dagster Asset (Generic Long Metric Store).
 """
 
+import os
 from typing import Any
 
 import polars as pl
 from dagster import AssetCheckResult, AssetExecutionContext, asset, asset_check
 
 from pipelines.calculations import cumulative_flow as cfd_logic
-from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
+from pipelines.calculations.slicing_utils import get_slice_rules, iter_slicing_results
 from pipelines.resources.database import DatabaseResource
 from pipelines.utils.metric_registry import (
     get_calculation_id,
@@ -44,7 +45,7 @@ def calculate_cumulative_flow_diagram(
 
     # 1. Resolve metadata
     def_id = get_definition_id(engine, "cfd")
-    calc_id = get_calculation_id(engine, "cfd_count")
+    calc_id = str(get_calculation_id(engine, "cfd_count"))
 
     context.log.info("Loading project list for CFD...")
 
@@ -67,6 +68,21 @@ def calculate_cumulative_flow_diagram(
 
     # 2. Calculate BASE CFD facts
     # 3. Transform to Long Format (fact_values)
+    def _utf8_expr(df: pl.DataFrame, col: str, alias: str | None = None) -> pl.Expr:
+        out = alias or col
+        if col not in df.columns:
+            return pl.lit(None).cast(pl.Utf8).alias(out)
+        if df.schema.get(col) == pl.Object:
+            return (
+                pl.col(col)
+                .map_elements(
+                    lambda x: str(x) if x is not None else None,
+                    return_dtype=pl.Utf8,
+                )
+                .alias(out)
+            )
+        return pl.col(col).cast(pl.Utf8, strict=False).alias(out)
+
     def transform_to_fact_values(
         df_wide,
         board_columns_df,
@@ -83,8 +99,8 @@ def calculate_cumulative_flow_diagram(
         if "column_id" in df_wide.columns and "id" in board_columns_df.columns:
             board_column_names = board_columns_df.select(
                 [
-                    pl.col("id").cast(pl.Utf8).alias("column_id"),
-                    pl.col("name").cast(pl.Utf8).alias("column_name"),
+                    _utf8_expr(board_columns_df, "id", "column_id"),
+                    _utf8_expr(board_columns_df, "name", "column_name"),
                 ]
             ).unique(subset=["column_id"], keep="first")
             df_enriched = df_wide.join(
@@ -93,13 +109,18 @@ def calculate_cumulative_flow_diagram(
 
         def _opt_col(name: str, dtype: pl.DataType = pl.Utf8) -> pl.Expr:
             if name in df_enriched.columns:
+                if dtype == pl.Utf8 and df_enriched.schema.get(name) == pl.Object:
+                    return pl.col(name).map_elements(
+                        lambda x: str(x) if x is not None else None,
+                        return_dtype=pl.Utf8,
+                    )
                 return pl.col(name).cast(dtype)
             return pl.lit(None).cast(dtype)
 
         facts = df_enriched.with_columns(
             [
-                pl.lit(calc_id).alias("metric_id"),
-                pl.lit(project_agg_id).alias("project_agg_id"),
+                pl.lit(str(calc_id)).alias("metric_id"),
+                pl.lit(str(project_agg_id)).alias("project_agg_id"),
                 pl.col("date").dt.strftime("%Y%m%d").cast(pl.Int32).alias("time_id"),
                 pl.col("issue_count").cast(pl.Float64).alias("value"),
                 pl.lit("board_column").alias("entity_type"),
@@ -151,6 +172,29 @@ def calculate_cumulative_flow_diagram(
 
     rows_written_total = 0
     projects_processed = 0
+    issue_batch_size = int(os.getenv("CFD_ISSUE_BATCH_SIZE", "4000"))
+
+    def _calc_cfd_batched(
+        *,
+        issues_df: pl.DataFrame,
+        status_changelog_df: pl.DataFrame,
+        issue_statuses_df: pl.DataFrame,
+        boards_df: pl.DataFrame,
+        board_columns_df: pl.DataFrame,
+        days_back: int,
+    ) -> pl.DataFrame:
+        if len(issues_df) > issue_batch_size:
+            context.log.info(
+                f"CFD issue batching is disabled for stability (issues={len(issues_df)} batch_size={issue_batch_size})"
+            )
+        return cfd_logic.calculate_cumulative_flow_diagram(
+            issues_df=issues_df,
+            status_changelog_df=status_changelog_df,
+            issue_statuses_df=issue_statuses_df,
+            boards_df=boards_df,
+            board_columns_df=board_columns_df,
+            days_back=days_back,
+        )
 
     for project_id in projects_df["project_id"].to_list():
         context.log.info(f"CFD batch project_id={project_id}")
@@ -196,7 +240,7 @@ def calculate_cumulative_flow_diagram(
             params={"project_id": project_id},
         )
 
-        cfd_wide = cfd_logic.calculate_cumulative_flow_diagram(
+        cfd_wide = _calc_cfd_batched(
             issues_df=issues_df,
             status_changelog_df=status_changelog_df,
             issue_statuses_df=issue_statuses_df,
@@ -211,7 +255,15 @@ def calculate_cumulative_flow_diagram(
         base_facts = transform_to_fact_values(
             cfd_wide, board_columns_df=board_columns_df, project_agg_id=project_agg_id
         )
-        all_facts = [base_facts]
+        if not base_facts.is_empty():
+            rows_written_total += write_fact_values(
+                base_facts,
+                engine,
+                metric_ids=[calc_id],
+                project_agg_ids=[project_agg_id],
+                time_id_start=base_facts["time_id"].min(),
+                time_id_end=base_facts["time_id"].max(),
+            )
 
         issues_for_slicing = issues_df.with_columns(
             pl.col("type_name").alias("issue_type")
@@ -225,11 +277,47 @@ def calculate_cumulative_flow_diagram(
             _boards_df=boards_df,
             _board_columns_df=board_columns_df,
         ):
-            subset_ids = df_subset["id"].unique().to_list()
-            sub_changelog = _status_changelog_df.filter(
-                pl.col("issue_id").is_in(subset_ids)
-            )
-            return cfd_logic.calculate_cumulative_flow_diagram(
+            if df_subset.schema.get("id") == pl.Object:
+                subset_ids = (
+                    df_subset.select(
+                        pl.col("id")
+                        .map_elements(
+                            lambda x: str(x) if x is not None else None,
+                            return_dtype=pl.Utf8,
+                        )
+                        .alias("id")
+                    )["id"]
+                    .unique()
+                    .to_list()
+                )
+            else:
+                subset_ids = (
+                    df_subset.select(
+                        pl.col("id").cast(pl.Utf8, strict=False).alias("id")
+                    )["id"]
+                    .unique()
+                    .to_list()
+                )
+            subset_series = pl.Series("subset_ids", subset_ids, dtype=pl.Utf8)
+            if _status_changelog_df.schema.get("issue_id") == pl.Object:
+                sub_changelog = _status_changelog_df.with_columns(
+                    pl.col("issue_id")
+                    .map_elements(
+                        lambda x: str(x) if x is not None else None,
+                        return_dtype=pl.Utf8,
+                    )
+                    .alias("__issue_id_norm")
+                )
+            else:
+                sub_changelog = _status_changelog_df.with_columns(
+                    pl.col("issue_id")
+                    .cast(pl.Utf8, strict=False)
+                    .alias("__issue_id_norm")
+                )
+            sub_changelog = sub_changelog.filter(
+                pl.col("__issue_id_norm").is_in(subset_series)
+            ).drop("__issue_id_norm")
+            return _calc_cfd_batched(
                 issues_df=df_subset,
                 status_changelog_df=sub_changelog,
                 issue_statuses_df=_issue_statuses_df,
@@ -241,34 +329,28 @@ def calculate_cumulative_flow_diagram(
         if not rules_df.is_empty():
             for rule in rules_df.to_dicts():
                 rule_id = rule["slice_rule_id"]
-                sliced_wide = apply_slicing(
+                for sliced_wide in iter_slicing_results(
                     issues_for_slicing,
                     rules_df.filter(pl.col("slice_rule_id") == rule_id),
                     cfd_slice_calc,
                     engine=engine,
-                )
-                if not sliced_wide.is_empty():
-                    all_facts.append(
-                        transform_to_fact_values(
-                            sliced_wide,
-                            board_columns_df=board_columns_df,
-                            project_agg_id=project_agg_id,
-                            slice_rule_id=rule_id,
-                            slice_value_col="slice_value",
-                        )
+                ):
+                    sliced_facts = transform_to_fact_values(
+                        sliced_wide,
+                        board_columns_df=board_columns_df,
+                        project_agg_id=project_agg_id,
+                        slice_rule_id=rule_id,
+                        slice_value_col="slice_value",
                     )
-
-        final_df = pl.concat(all_facts)
-        time_id_start = final_df["time_id"].min()
-        time_id_end = final_df["time_id"].max()
-        rows_written_total += write_fact_values(
-            final_df,
-            engine,
-            metric_ids=[calc_id],
-            project_agg_ids=[project_agg_id],
-            time_id_start=time_id_start,
-            time_id_end=time_id_end,
-        )
+                    if not sliced_facts.is_empty():
+                        rows_written_total += write_fact_values(
+                            sliced_facts,
+                            engine,
+                            metric_ids=[calc_id],
+                            project_agg_ids=[project_agg_id],
+                            time_id_start=sliced_facts["time_id"].min(),
+                            time_id_end=sliced_facts["time_id"].max(),
+                        )
         projects_processed += 1
 
     return {

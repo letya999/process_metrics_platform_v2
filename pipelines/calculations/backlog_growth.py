@@ -22,6 +22,26 @@ from datetime import datetime, timedelta, timezone
 import polars as pl
 
 
+def _normalize_utf8(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
+    present = [c for c in cols if c in df.columns]
+    if not present:
+        return df
+    exprs = []
+    for c in present:
+        if df.schema.get(c) == pl.Object:
+            exprs.append(
+                pl.col(c)
+                .map_elements(
+                    lambda x: str(x) if x is not None else None,
+                    return_dtype=pl.Utf8,
+                )
+                .alias(c)
+            )
+        else:
+            exprs.append(pl.col(c).cast(pl.Utf8, strict=False).alias(c))
+    return df.with_columns(exprs)
+
+
 def calculate_backlog_growth(
     issues_df: pl.DataFrame,
     issue_statuses_df: pl.DataFrame,
@@ -52,6 +72,24 @@ def calculate_backlog_growth(
                 "entered_backlog_count": pl.Int64,
                 "exited_backlog_count": pl.Int64,
             }
+        )
+
+    issues_df = _normalize_utf8(
+        issues_df,
+        ["id", "project_id", "status_id", "type_id", "priority_id"],
+    )
+    issue_statuses_df = _normalize_utf8(issue_statuses_df, ["id", "project_id"])
+    field_values_df = _normalize_utf8(field_values_df, ["issue_id", "field_key_id"])
+    field_keys_df = _normalize_utf8(field_keys_df, ["id", "name"])
+    if changelog_df is not None and not changelog_df.is_empty():
+        changelog_df = _normalize_utf8(
+            changelog_df,
+            ["issue_id", "from_status_id", "to_status_id"],
+        )
+    if board_column_statuses_df is not None and not board_column_statuses_df.is_empty():
+        board_column_statuses_df = _normalize_utf8(
+            board_column_statuses_df,
+            ["board_column_id", "status_id"],
         )
 
     if fact_date is None:

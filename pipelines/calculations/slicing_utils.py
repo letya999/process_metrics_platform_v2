@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterator
 from typing import Any, Optional
 
 import polars as pl
@@ -61,6 +62,25 @@ def get_slice_rules(
     if rules_df.is_empty():
         return rules_df
 
+    # Normalize Object columns first to avoid cast/unique failures with UUID python objects.
+    object_cols = [
+        name for name, dtype in rules_df.schema.items() if dtype == pl.Object
+    ]
+    if object_cols:
+        normalized_rows = []
+        for row in rules_df.to_dicts():
+            normalized_rows.append(
+                {
+                    key: (
+                        str(value)
+                        if key in object_cols and value is not None
+                        else value
+                    )
+                    for key, value in row.items()
+                }
+            )
+        rules_df = pl.DataFrame(normalized_rows)
+
     # Filter logic:
     # 1. Match the specific project_id OR have project_id as NULL (global)
     # 2. Match the specific target_definition_id OR have target_definition_id as NULL (default for all metrics)
@@ -97,23 +117,22 @@ def get_slice_rules(
     return filtered_rules
 
 
-def apply_slicing(
+def iter_slicing_results(
     df: pl.DataFrame,
     rules_df: pl.DataFrame,
     calculation_func: Any,
     engine: Engine,
     source_table: str = "clean_jira.issues",
-) -> pl.DataFrame:
+) -> Iterator[pl.DataFrame]:
     """
     Apply slicing rules to a DataFrame.
     If the slice column is missing in the DF, it uses SmartSlicer to dynamically
     resolve the join path and inject the dimension.
     """
     if df.is_empty() or rules_df.is_empty():
-        return pl.DataFrame()
+        return
 
     slicer = SmartSlicer(engine)
-    sliced_frames = []
     rules = rules_df.to_dicts()
 
     for rule in rules:
@@ -160,11 +179,11 @@ def apply_slicing(
                 # Fallback: search FK-adjacent tables (no source_table in rule)
                 full_target = slicer.find_target_for_column(source_table, group_col)
 
-            if not full_target:
-                logger.warning(
-                    f"Cannot resolve target for column '{group_col}' from {source_table}"
-                )
-                continue
+                if not full_target:
+                    logger.warning(
+                        f"Cannot resolve target for column '{group_col}' from {source_table}"
+                    )
+                    continue
 
             mapping_df = slicer.get_slice_mapping(source_table, full_target)
 
@@ -188,9 +207,16 @@ def apply_slicing(
                     )
                     continue
 
-                current_df = df.with_columns(
-                    pl.col(join_key).cast(pl.Utf8).alias("__slice_source_id")
-                ).join(
+                join_expr: pl.Expr
+                if df.schema.get(join_key) == pl.Object:
+                    join_expr = pl.col(join_key).map_elements(
+                        lambda x: str(x) if x is not None else None,
+                        return_dtype=pl.Utf8,
+                    )
+                else:
+                    join_expr = pl.col(join_key).cast(pl.Utf8, strict=False)
+
+                current_df = df.with_columns(join_expr.alias("__slice_source_id")).join(
                     mapping_df,
                     left_on="__slice_source_id",
                     right_on="source_id",
@@ -207,7 +233,7 @@ def apply_slicing(
         projects = [None]
         if "project_id" in current_df.columns:
             if rule_project_id and rule_project_id != "null":
-                projects = [rule_project_id]
+                projects = [str(rule_project_id)]
             else:
                 projects = (
                     current_df.select("project_id")
@@ -216,11 +242,29 @@ def apply_slicing(
                     .to_series()
                     .to_list()
                 )
+                projects = [str(p) for p in projects if p is not None]
 
         for p_id in projects:
-            p_df = (
-                current_df.filter(pl.col("project_id") == p_id) if p_id else current_df
-            )
+            if p_id:
+                if current_df.schema.get("project_id") == pl.Object:
+                    p_df = current_df.with_columns(
+                        pl.col("project_id")
+                        .map_elements(
+                            lambda x: str(x) if x is not None else None,
+                            return_dtype=pl.Utf8,
+                        )
+                        .alias("__project_id_norm")
+                    ).filter(pl.col("__project_id_norm") == pl.lit(str(p_id)))
+                else:
+                    p_df = current_df.with_columns(
+                        pl.col("project_id")
+                        .cast(pl.Utf8, strict=False)
+                        .alias("__project_id_norm")
+                    ).filter(pl.col("__project_id_norm") == pl.lit(str(p_id)))
+                if "__project_id_norm" in p_df.columns:
+                    p_df = p_df.drop("__project_id_norm")
+            else:
+                p_df = current_df
             if p_df.is_empty():
                 continue
 
@@ -253,9 +297,25 @@ def apply_slicing(
                 if "project_id" not in result_df.columns and p_id:
                     result_df = result_df.with_columns(pl.lit(p_id).alias("project_id"))
 
-                sliced_frames.append(_normalize_datetime_precision(result_df))
+                yield _normalize_datetime_precision(result_df)
 
-    if not sliced_frames:
+
+def apply_slicing(
+    df: pl.DataFrame,
+    rules_df: pl.DataFrame,
+    calculation_func: Any,
+    engine: Engine,
+    source_table: str = "clean_jira.issues",
+) -> pl.DataFrame:
+    frames = list(
+        iter_slicing_results(
+            df=df,
+            rules_df=rules_df,
+            calculation_func=calculation_func,
+            engine=engine,
+            source_table=source_table,
+        )
+    )
+    if not frames:
         return pl.DataFrame()
-
-    return pl.concat(sliced_frames, how="vertical_relaxed")
+    return pl.concat(frames, how="vertical_relaxed")

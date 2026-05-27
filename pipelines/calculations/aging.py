@@ -15,6 +15,26 @@ from pipelines.calculations.commitment_resolver import (
 )
 
 
+def _normalize_utf8(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
+    present = [c for c in cols if c in df.columns]
+    if not present:
+        return df
+    exprs = []
+    for c in present:
+        if df.schema.get(c) == pl.Object:
+            exprs.append(
+                pl.col(c)
+                .map_elements(
+                    lambda x: str(x) if x is not None else None,
+                    return_dtype=pl.Utf8,
+                )
+                .alias(c)
+            )
+        else:
+            exprs.append(pl.col(c).cast(pl.Utf8, strict=False).alias(c))
+    return df.with_columns(exprs)
+
+
 def _to_utc_datetime(value: datetime) -> datetime:
     """Normalize datetime to timezone-aware UTC."""
     if value is None:
@@ -58,6 +78,21 @@ def calculate_work_item_aging_facts(
                 "age_in_status_days": pl.Float64,
             }
         )
+
+    issues_df = _normalize_utf8(
+        issues_df,
+        ["id", "project_id", "status_id"],
+    )
+    status_changelog_df = _normalize_utf8(
+        status_changelog_df,
+        ["issue_id", "from_status_id", "to_status_id"],
+    )
+    boards_df = _normalize_utf8(boards_df, ["id", "project_id"])
+    board_columns_df = _normalize_utf8(
+        board_columns_df,
+        ["id", "board_id", "status_id"],
+    )
+    issue_statuses_df = _normalize_utf8(issue_statuses_df, ["id", "project_id"])
 
     # 1. Join issues with statuses to get category and name
     issues_with_status = issues_df.join(

@@ -21,6 +21,26 @@ from datetime import datetime, timedelta
 import polars as pl
 
 
+def _normalize_utf8(df: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
+    present = [c for c in cols if c in df.columns]
+    if not present:
+        return df
+    out = df
+    for c in present:
+        if df.schema.get(c) == pl.Object:
+            out = out.with_columns(
+                pl.col(c)
+                .map_elements(
+                    lambda x: str(x) if x is not None else None,
+                    return_dtype=pl.Utf8,
+                )
+                .alias(c)
+            )
+        else:
+            out = out.with_columns(pl.col(c).cast(pl.Utf8, strict=False).alias(c))
+    return out
+
+
 def calculate_cumulative_flow_diagram(
     issues_df: pl.DataFrame,
     status_changelog_df: pl.DataFrame,
@@ -59,6 +79,23 @@ def calculate_cumulative_flow_diagram(
                 "column_position": pl.Int32,
             }
         )
+
+    issues_df = _normalize_utf8(
+        issues_df,
+        ["id", "project_id", "status_id"],
+    )
+    status_changelog_df = _normalize_utf8(
+        status_changelog_df,
+        ["issue_id", "from_status_id", "to_status_id"],
+    )
+    issue_statuses_df = _normalize_utf8(
+        issue_statuses_df,
+        ["id", "project_id"],
+    )
+    board_columns_df = _normalize_utf8(
+        board_columns_df,
+        ["id", "board_id", "status_id"],
+    )
 
     # Generate date range
     end_date = datetime.now().date()

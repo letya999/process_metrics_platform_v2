@@ -15,7 +15,7 @@ from pipelines.calculations.commitment_resolver import (
     load_commitment_rules_for_calc,
     resolve_rule_from_cache,
 )
-from pipelines.calculations.slicing_utils import apply_slicing, get_slice_rules
+from pipelines.calculations.slicing_utils import get_slice_rules, iter_slicing_results
 from pipelines.resources.database import DatabaseResource
 from pipelines.utils.metric_registry import (
     get_calculation_id,
@@ -54,49 +54,18 @@ def calculate_aging_extended(
 
     # 1. Resolve metadata
     def_id = get_definition_id(engine, "aging")
-    calc_id_blocked = get_calculation_id(engine, "blocked_time_total")
-    calc_id_stale = get_calculation_id(engine, "stale_days")
+    calc_id_blocked = str(get_calculation_id(engine, "blocked_time_total"))
+    calc_id_stale = str(get_calculation_id(engine, "stale_days"))
 
-    context.log.info("Loading data for Extended Aging metrics...")
-
-    # Load Data
-    issues_df = read_table(
+    context.log.info("Loading project list for Extended Aging metrics...")
+    projects_df = read_table(
         engine,
-        """
-        SELECT i.id, i.project_id, i.external_key as key, it.name as type_name,
-               i.status_id, i.jira_updated_at as updated_at
-        FROM clean_jira.issues i
-        LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
-        """,
+        "SELECT DISTINCT project_id FROM clean_jira.issues WHERE project_id IS NOT NULL",
     )
-    if issues_df.is_empty():
+    if projects_df.is_empty():
         return {"status": "skipped", "reason": "No issues found"}
 
-    issue_status_changelog_df = read_table(
-        engine, "SELECT * FROM clean_jira.issue_status_changelog"
-    )
-    field_value_changelog_df = read_table(
-        engine,
-        """
-        SELECT issue_id, field_key_id, old_value::text as old_value, new_value::text as new_value, changed_at as change_time
-        FROM clean_jira.field_value_changelog
-    """,
-    )
     field_keys_df = read_table(engine, "SELECT * FROM clean_jira.field_keys")
-    board_columns_df = read_table(
-        engine,
-        """
-        SELECT bc.id, bc.board_id, bc.name, bcs.status_id, bc.position
-        FROM clean_jira.board_columns bc
-        LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.board_column_id = bc.id
-    """,
-    )
-    boards_df = read_table(engine, "SELECT * FROM clean_jira.boards")
-
-    # Map project_agg_ids
-    project_ids = issues_df["project_id"].unique().to_list()
-    project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
-
     lead_time_rules = load_commitment_rules_for_calc(engine, "lead_time_days")
 
     # 2. Calculation functions for base and slices
@@ -121,7 +90,29 @@ def calculate_aging_extended(
         # B. Stale Days
         # This requires board-specific "done" statuses
         stale_results = []
-        p_ids = df_subset["project_id"].unique().to_list()
+        if df_subset.schema.get("project_id") == pl.Object:
+            p_ids = (
+                df_subset.select(
+                    pl.col("project_id")
+                    .map_elements(
+                        lambda x: str(x) if x is not None else None,
+                        return_dtype=pl.Utf8,
+                    )
+                    .alias("project_id")
+                )["project_id"]
+                .unique()
+                .drop_nulls()
+                .to_list()
+            )
+        else:
+            p_ids = (
+                df_subset.select(
+                    pl.col("project_id").cast(pl.Utf8, strict=False).alias("project_id")
+                )["project_id"]
+                .unique()
+                .drop_nulls()
+                .to_list()
+            )
         for p_id in p_ids:
             p_boards = boards_df.filter(pl.col("project_id") == p_id)["id"].to_list()
             all_done_ids = []
@@ -168,6 +159,7 @@ def calculate_aging_extended(
                 [
                     pl.lit(cid).alias("metric_id"),
                     pl.col("project_id")
+                    .cast(pl.Utf8)
                     .replace(project_agg_map)
                     .alias("project_agg_id"),
                     pl.lit(time_id).cast(pl.Int32).alias("time_id"),
@@ -204,62 +196,134 @@ def calculate_aging_extended(
             )
         return facts_list
 
-    # 3. BASE calculation
-    base_wide_list = calculate_base_facts(
-        issues_df, issue_status_changelog_df, field_value_changelog_df
-    )
-    all_facts = transform_to_fact_values(base_wide_list)
+    total_rows_written = 0
+    projects_processed = 0
+    metric_ids = [calc_id_blocked, calc_id_stale]
 
-    # 4. Sliced calculation
-    rules_df = get_slice_rules(engine, target_definition_id=def_id)
-    issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
-
-    def aging_extended_slice_calc(df_subset):
-        subset_ids = df_subset["id"].unique().to_list()
-        sub_status_changelog = issue_status_changelog_df.filter(
-            pl.col("issue_id").is_in(subset_ids)
+    for project_id in projects_df["project_id"].to_list():
+        context.log.info(f"Extended aging batch project_id={project_id}")
+        issues_df = read_table(
+            engine,
+            """
+            SELECT i.id, i.project_id, i.external_key as key, it.name as type_name,
+                   i.status_id, i.jira_updated_at as updated_at
+            FROM clean_jira.issues i
+            LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
+            WHERE i.project_id = :project_id
+            """,
+            params={"project_id": project_id},
         )
-        sub_field_changelog = field_value_changelog_df.filter(
-            pl.col("issue_id").is_in(subset_ids)
+        if issues_df.is_empty():
+            continue
+        issue_status_changelog_df = read_table(
+            engine,
+            """
+            SELECT isc.*
+            FROM clean_jira.issue_status_changelog isc
+            JOIN clean_jira.issues i ON i.id = isc.issue_id
+            WHERE i.project_id = :project_id
+            """,
+            params={"project_id": project_id},
+        )
+        field_value_changelog_df = read_table(
+            engine,
+            """
+            SELECT fvc.issue_id, fvc.field_key_id, fvc.old_value::text as old_value,
+                   fvc.new_value::text as new_value, fvc.changed_at as change_time
+            FROM clean_jira.field_value_changelog fvc
+            JOIN clean_jira.issues i ON i.id = fvc.issue_id
+            WHERE i.project_id = :project_id
+            """,
+            params={"project_id": project_id},
+        )
+        board_columns_df = read_table(
+            engine,
+            """
+            SELECT bc.id, bc.board_id, bc.name, bcs.status_id, bc.position
+            FROM clean_jira.board_columns bc
+            LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.board_column_id = bc.id
+            JOIN clean_jira.boards b ON b.id = bc.board_id
+            WHERE b.project_id = :project_id
+            """,
+            params={"project_id": project_id},
+        )
+        boards_df = read_table(
+            engine,
+            "SELECT * FROM clean_jira.boards WHERE project_id = :project_id",
+            params={"project_id": project_id},
         )
 
-        # apply_slicing expects a single DataFrame return, but we have multiple metrics.
-        # We'll return a concatenated DF with a metric indicator.
-        res_list = calculate_base_facts(
-            df_subset, sub_status_changelog, sub_field_changelog
+        project_agg_map = {str(project_id): str(get_project_agg_id(engine, project_id))}
+
+        # 3. BASE calculation
+        base_wide_list = calculate_base_facts(
+            issues_df, issue_status_changelog_df, field_value_changelog_df
         )
-        if not res_list:
-            return pl.DataFrame()
-
-        # Prepare for concat by renaming value columns
-        for i, df in enumerate(res_list):
-            vcol = "blocked_hours" if "blocked_hours" in df.columns else "stale_days"
-            res_list[i] = df.rename({vcol: "value"})
-
-        return pl.concat(res_list)
-
-    if not rules_df.is_empty():
-        for rule in rules_df.to_dicts():
-            rule_id = rule["slice_rule_id"]
-            sliced_wide = apply_slicing(
-                issues_for_slicing,
-                rules_df.filter(pl.col("slice_rule_id") == rule_id),
-                aging_extended_slice_calc,
-                engine=engine,
+        base_facts = transform_to_fact_values(base_wide_list)
+        if base_facts:
+            base_df = pl.concat(base_facts)
+            total_rows_written += write_fact_values(
+                base_df,
+                engine,
+                metric_ids=metric_ids,
+                project_agg_ids=list(project_agg_map.values()),
+                time_id_start=base_df["time_id"].min(),
+                time_id_end=base_df["time_id"].max(),
             )
 
-            if not sliced_wide.is_empty():
-                # Split back by calc_id
-                for cid in [calc_id_blocked, calc_id_stale]:
-                    sub_sliced = sliced_wide.filter(pl.col("calc_id") == cid)
-                    if not sub_sliced.is_empty():
-                        # Transform to fact values
-                        # We need to rename "value" back or handle it in transform
+        # 4. Sliced calculation
+        rules_df = get_slice_rules(
+            engine, project_id=project_id, target_definition_id=def_id
+        )
+        issues_for_slicing = issues_df.with_columns(
+            pl.col("type_name").alias("issue_type")
+        )
+
+        def aging_extended_slice_calc(
+            df_subset,
+            _issue_status_changelog_df=issue_status_changelog_df,
+            _field_value_changelog_df=field_value_changelog_df,
+        ):
+            subset_ids = df_subset["id"].unique().to_list()
+            sub_status_changelog = _issue_status_changelog_df.filter(
+                pl.col("issue_id").is_in(subset_ids)
+            )
+            sub_field_changelog = _field_value_changelog_df.filter(
+                pl.col("issue_id").is_in(subset_ids)
+            )
+            res_list = calculate_base_facts(
+                df_subset, sub_status_changelog, sub_field_changelog
+            )
+            if not res_list:
+                return pl.DataFrame()
+            for i, df_part in enumerate(res_list):
+                vcol = (
+                    "blocked_hours"
+                    if "blocked_hours" in df_part.columns
+                    else "stale_days"
+                )
+                res_list[i] = df_part.rename({vcol: "value"})
+            return pl.concat(res_list)
+
+        if not rules_df.is_empty():
+            for rule in rules_df.to_dicts():
+                rule_id = rule["slice_rule_id"]
+                for sliced_wide in iter_slicing_results(
+                    issues_for_slicing,
+                    rules_df.filter(pl.col("slice_rule_id") == rule_id),
+                    aging_extended_slice_calc,
+                    engine=engine,
+                ):
+                    for cid in metric_ids:
+                        sub_sliced = sliced_wide.filter(pl.col("calc_id") == cid)
+                        if sub_sliced.is_empty():
+                            continue
                         time_id = int(now.strftime("%Y%m%d"))
                         facts = sub_sliced.with_columns(
                             [
                                 pl.lit(cid).alias("metric_id"),
                                 pl.col("project_id")
+                                .cast(pl.Utf8)
                                 .replace(project_agg_map)
                                 .alias("project_agg_id"),
                                 pl.lit(time_id).cast(pl.Int32).alias("time_id"),
@@ -293,29 +357,23 @@ def calculate_aging_extended(
                                 "event_end_at",
                             ]
                         )
-                        all_facts.append(facts)
+                        total_rows_written += write_fact_values(
+                            facts,
+                            engine,
+                            metric_ids=metric_ids,
+                            project_agg_ids=list(project_agg_map.values()),
+                            time_id_start=facts["time_id"].min(),
+                            time_id_end=facts["time_id"].max(),
+                        )
+        projects_processed += 1
 
-    if not all_facts:
+    if total_rows_written == 0:
         return {"status": "no_data"}
-
-    final_df = pl.concat(all_facts)
-
-    # 5. Write to DB
-    metric_ids = final_df["metric_id"].unique().to_list()
-    project_agg_ids = final_df["project_agg_id"].unique().to_list()
-    time_id_start = final_df["time_id"].min()
-    time_id_end = final_df["time_id"].max()
-
-    rows_written = write_fact_values(
-        final_df,
-        engine,
-        metric_ids=metric_ids,
-        project_agg_ids=project_agg_ids,
-        time_id_start=time_id_start,
-        time_id_end=time_id_end,
-    )
-
-    return {"status": "success", "rows_written": rows_written}
+    return {
+        "status": "success",
+        "rows_written": total_rows_written,
+        "projects_processed": projects_processed,
+    }
 
 
 @asset_check(asset=calculate_aging_extended)
