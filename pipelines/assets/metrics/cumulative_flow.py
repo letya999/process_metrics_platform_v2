@@ -46,62 +46,34 @@ def calculate_cumulative_flow_diagram(
     def_id = get_definition_id(engine, "cfd")
     calc_id = get_calculation_id(engine, "cfd_count")
 
-    context.log.info("Loading data from clean_jira schema...")
+    context.log.info("Loading project list for CFD...")
 
-    issues_df = read_table(
+    projects_df = read_table(
         engine,
         """
-        SELECT i.id, i.project_id, it.name as type_name, i.status_id, i.jira_created_at, p.external_key AS project_key
+        SELECT DISTINCT i.project_id
         FROM clean_jira.issues i
-        JOIN clean_jira.projects p ON i.project_id = p.id
-        LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
+        WHERE i.project_id IS NOT NULL
         """,
     )
-
-    if issues_df.is_empty():
+    if projects_df.is_empty():
         return {"status": "skipped", "reason": "No issues found"}
-
-    # Map project_agg_ids
-    project_ids = issues_df["project_id"].unique().to_list()
-    project_agg_map = {pid: get_project_agg_id(engine, pid) for pid in project_ids}
-
-    status_changelog_df = read_table(
-        engine,
-        "SELECT issue_id, from_status_id, to_status_id, changed_at FROM clean_jira.issue_status_changelog",
-    )
 
     issue_statuses_df = read_table(
         engine,
         "SELECT id, project_id, name, category FROM clean_jira.issue_statuses",
     )
-
-    boards_df = read_table(engine, "SELECT id, project_id, name FROM clean_jira.boards")
-
-    board_columns_df = read_table(
-        engine,
-        """
-        SELECT bc.id, bc.board_id, bc.name, bc.position, bcs.status_id
-        FROM clean_jira.board_columns bc
-        LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.board_column_id = bc.id
-        """,
-    )
+    rules_df = get_slice_rules(engine, target_definition_id=def_id)
 
     # 2. Calculate BASE CFD facts
-    cfd_wide = cfd_logic.calculate_cumulative_flow_diagram(
-        issues_df=issues_df,
-        status_changelog_df=status_changelog_df,
-        issue_statuses_df=issue_statuses_df,
-        boards_df=boards_df,
-        board_columns_df=board_columns_df,
-        days_back=90,
-    )
-
-    if cfd_wide.is_empty():
-        return {"status": "no_data"}
-
     # 3. Transform to Long Format (fact_values)
     def transform_to_fact_values(
-        df_wide, slice_rule_id=None, slice_value_col=None, slice_value=None
+        df_wide,
+        board_columns_df,
+        project_agg_id,
+        slice_rule_id=None,
+        slice_value_col=None,
+        slice_value=None,
     ):
         if df_wide.is_empty():
             return pl.DataFrame()
@@ -127,7 +99,7 @@ def calculate_cumulative_flow_diagram(
         facts = df_enriched.with_columns(
             [
                 pl.lit(calc_id).alias("metric_id"),
-                pl.col("project_id").replace(project_agg_map).alias("project_agg_id"),
+                pl.lit(project_agg_id).alias("project_agg_id"),
                 pl.col("date").dt.strftime("%Y%m%d").cast(pl.Int32).alias("time_id"),
                 pl.col("issue_count").cast(pl.Float64).alias("value"),
                 pl.lit("board_column").alias("entity_type"),
@@ -177,64 +149,132 @@ def calculate_cumulative_flow_diagram(
             ]
         )
 
-    base_facts = transform_to_fact_values(cfd_wide)
+    rows_written_total = 0
+    projects_processed = 0
 
-    # 4. Calculate Sliced facts
-    rules_df = get_slice_rules(engine, target_definition_id=def_id)
+    for project_id in projects_df["project_id"].to_list():
+        context.log.info(f"CFD batch project_id={project_id}")
+        issues_df = read_table(
+            engine,
+            """
+            SELECT i.id, i.project_id, it.name as type_name, i.status_id, i.jira_created_at, p.external_key AS project_key
+            FROM clean_jira.issues i
+            JOIN clean_jira.projects p ON i.project_id = p.id
+            LEFT JOIN clean_jira.issue_types it ON i.type_id = it.id
+            WHERE i.project_id = :project_id
+            """,
+            params={"project_id": project_id},
+        )
+        if issues_df.is_empty():
+            continue
 
-    # Slicing source: issues
-    issues_for_slicing = issues_df.with_columns(pl.col("type_name").alias("issue_type"))
+        status_changelog_df = read_table(
+            engine,
+            """
+            SELECT isc.issue_id, isc.from_status_id, isc.to_status_id, isc.changed_at
+            FROM clean_jira.issue_status_changelog isc
+            JOIN clean_jira.issues i ON i.id = isc.issue_id
+            WHERE i.project_id = :project_id
+            """,
+            params={"project_id": project_id},
+        )
 
-    def cfd_slice_calc(df_subset):
-        subset_ids = df_subset["id"].unique().to_list()
-        sub_changelog = status_changelog_df.filter(pl.col("issue_id").is_in(subset_ids))
-        return cfd_logic.calculate_cumulative_flow_diagram(
-            issues_df=df_subset,
-            status_changelog_df=sub_changelog,
+        boards_df = read_table(
+            engine,
+            "SELECT id, project_id, name FROM clean_jira.boards WHERE project_id = :project_id",
+            params={"project_id": project_id},
+        )
+        board_columns_df = read_table(
+            engine,
+            """
+            SELECT bc.id, bc.board_id, bc.name, bc.position, bcs.status_id
+            FROM clean_jira.board_columns bc
+            LEFT JOIN clean_jira.board_column_statuses bcs ON bcs.board_column_id = bc.id
+            JOIN clean_jira.boards b ON b.id = bc.board_id
+            WHERE b.project_id = :project_id
+            """,
+            params={"project_id": project_id},
+        )
+
+        cfd_wide = cfd_logic.calculate_cumulative_flow_diagram(
+            issues_df=issues_df,
+            status_changelog_df=status_changelog_df,
             issue_statuses_df=issue_statuses_df,
             boards_df=boards_df,
             board_columns_df=board_columns_df,
             days_back=90,
         )
+        if cfd_wide.is_empty():
+            continue
 
-    all_facts = [base_facts]
+        project_agg_id = get_project_agg_id(engine, project_id)
+        base_facts = transform_to_fact_values(
+            cfd_wide, board_columns_df=board_columns_df, project_agg_id=project_agg_id
+        )
+        all_facts = [base_facts]
 
-    if not rules_df.is_empty():
-        for rule in rules_df.to_dicts():
-            rule_id = rule["slice_rule_id"]
-            sliced_wide = apply_slicing(
-                issues_for_slicing,
-                rules_df.filter(pl.col("slice_rule_id") == rule_id),
-                cfd_slice_calc,
-                engine=engine,
+        issues_for_slicing = issues_df.with_columns(
+            pl.col("type_name").alias("issue_type")
+        )
+
+        def cfd_slice_calc(
+            df_subset,
+            *,
+            _status_changelog_df=status_changelog_df,
+            _issue_statuses_df=issue_statuses_df,
+            _boards_df=boards_df,
+            _board_columns_df=board_columns_df,
+        ):
+            subset_ids = df_subset["id"].unique().to_list()
+            sub_changelog = _status_changelog_df.filter(
+                pl.col("issue_id").is_in(subset_ids)
+            )
+            return cfd_logic.calculate_cumulative_flow_diagram(
+                issues_df=df_subset,
+                status_changelog_df=sub_changelog,
+                issue_statuses_df=_issue_statuses_df,
+                boards_df=_boards_df,
+                board_columns_df=_board_columns_df,
+                days_back=90,
             )
 
-            if not sliced_wide.is_empty():
-                facts = transform_to_fact_values(
-                    sliced_wide, slice_rule_id=rule_id, slice_value_col="slice_value"
+        if not rules_df.is_empty():
+            for rule in rules_df.to_dicts():
+                rule_id = rule["slice_rule_id"]
+                sliced_wide = apply_slicing(
+                    issues_for_slicing,
+                    rules_df.filter(pl.col("slice_rule_id") == rule_id),
+                    cfd_slice_calc,
+                    engine=engine,
                 )
-                all_facts.append(facts)
+                if not sliced_wide.is_empty():
+                    all_facts.append(
+                        transform_to_fact_values(
+                            sliced_wide,
+                            board_columns_df=board_columns_df,
+                            project_agg_id=project_agg_id,
+                            slice_rule_id=rule_id,
+                            slice_value_col="slice_value",
+                        )
+                    )
 
-    final_df = pl.concat(all_facts)
-
-    # 5. Write to DB
-    time_id_start = final_df["time_id"].min()
-    time_id_end = final_df["time_id"].max()
-    project_agg_ids = list(project_agg_map.values())
-
-    rows_written = write_fact_values(
-        final_df,
-        engine,
-        metric_ids=[calc_id],
-        project_agg_ids=project_agg_ids,
-        time_id_start=time_id_start,
-        time_id_end=time_id_end,
-    )
+        final_df = pl.concat(all_facts)
+        time_id_start = final_df["time_id"].min()
+        time_id_end = final_df["time_id"].max()
+        rows_written_total += write_fact_values(
+            final_df,
+            engine,
+            metric_ids=[calc_id],
+            project_agg_ids=[project_agg_id],
+            time_id_start=time_id_start,
+            time_id_end=time_id_end,
+        )
+        projects_processed += 1
 
     return {
         "status": "success",
-        "rows_written": rows_written,
-        "days_processed": len(cfd_wide["date"].unique()),
+        "rows_written": rows_written_total,
+        "projects_processed": projects_processed,
         "metric_ids": [calc_id],
     }
 
