@@ -32,6 +32,20 @@ def _cast_object_cols(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _normalize_datetimes(df: pl.DataFrame) -> pl.DataFrame:
+    """Replace naive datetime columns with UTC — all DB timestamps are UTC."""
+    exprs = [
+        pl.col(c).dt.replace_time_zone("UTC")
+        for c, dtype in df.schema.items()
+        if isinstance(dtype, pl.Datetime) and dtype.time_zone is None
+    ]
+    return df.with_columns(exprs) if exprs else df
+
+
+def _normalize_df(df: pl.DataFrame) -> pl.DataFrame:
+    return _normalize_datetimes(_cast_object_cols(df))
+
+
 def read_table(
     engine: Engine, query: str, params: dict | list | tuple = None
 ) -> pl.DataFrame:
@@ -52,19 +66,17 @@ def read_table(
     if not params:
         # Fast path used by tests and by read-only queries.
         try:
-            return _cast_object_cols(
-                pl.read_database_uri(query=query, uri=str(engine.url))
-            )
+            return _normalize_df(pl.read_database_uri(query=query, uri=str(engine.url)))
         except Exception:
             # Fallback for complex types/driver edge-cases.
             with engine.connect() as conn:
-                return _cast_object_cols(
+                return _normalize_df(
                     pl.read_database(query=text(query), connection=conn)
                 )
 
     # Parameterized path without pandas bridge to avoid extra RAM copies.
     with engine.connect() as conn:
-        return _cast_object_cols(
+        return _normalize_df(
             pl.read_database(
                 query=text(query),
                 connection=conn,
