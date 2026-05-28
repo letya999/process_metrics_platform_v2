@@ -17,6 +17,21 @@ from sqlalchemy import Engine, text
 logger = logging.getLogger(__name__)
 
 
+def _cast_object_cols(df: pl.DataFrame) -> pl.DataFrame:
+    """Cast pl.Object columns (e.g. psycopg2 UUID objects) to Utf8 strings."""
+    object_cols = [name for name, dtype in df.schema.items() if dtype == pl.Object]
+    if not object_cols:
+        return df
+    return df.with_columns(
+        [
+            pl.col(c).map_elements(
+                lambda x: str(x) if x is not None else None, return_dtype=pl.Utf8
+            )
+            for c in object_cols
+        ]
+    )
+
+
 def read_table(
     engine: Engine, query: str, params: dict | list | tuple = None
 ) -> pl.DataFrame:
@@ -37,18 +52,24 @@ def read_table(
     if not params:
         # Fast path used by tests and by read-only queries.
         try:
-            return pl.read_database_uri(query=query, uri=str(engine.url))
+            return _cast_object_cols(
+                pl.read_database_uri(query=query, uri=str(engine.url))
+            )
         except Exception:
             # Fallback for complex types/driver edge-cases.
             with engine.connect() as conn:
-                return pl.read_database(query=text(query), connection=conn)
+                return _cast_object_cols(
+                    pl.read_database(query=text(query), connection=conn)
+                )
 
     # Parameterized path without pandas bridge to avoid extra RAM copies.
     with engine.connect() as conn:
-        return pl.read_database(
-            query=text(query),
-            connection=conn,
-            execute_options={"parameters": params},
+        return _cast_object_cols(
+            pl.read_database(
+                query=text(query),
+                connection=conn,
+                execute_options={"parameters": params},
+            )
         )
 
 
