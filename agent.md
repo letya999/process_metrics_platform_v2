@@ -10,13 +10,13 @@ This file is the single source of truth for all AI assistants in this repository
 
 ## Architecture Approach
 - Monolithic application stack with clear responsibilities by module
-- Service topology (production simple mode):
+- Service topology (production):
   - `app` (FastAPI admin/API)
-  - `dagster` (orchestration, schedules, asset runs)
+  - `dagster-webserver` + `dagster-daemon` (orchestration, schedules, asset runs)
   - `postgres` (single database, multiple schemas)
-  - `metabase` (dashboards)
+  - `metabase` (dashboards, provisioned via `bi/` pack)
   - `caddy` (reverse proxy + HTTPS)
-- Deployment focus: `docker-compose.simple.yml` for single-host self-hosted setup
+- Compose files: `docker-compose.yml` (local dev), `docker-compose.prod.yml` (production)
 
 ## Data Architecture
 The platform follows Medallion-style layering.
@@ -65,12 +65,14 @@ Short flow: `Sources -> dlt -> raw -> Dagster transforms -> clean -> metrics -> 
 - FastAPI: admin endpoints, platform operations, integration control
 - Dagster: orchestration, scheduling, observability of data assets
 - PostgreSQL 15: persistent storage for all layers
-- Metabase: BI dashboards and self-service analytics
-- Caddy: HTTPS termination and reverse proxy in simple production mode
+- Metabase: BI dashboards; cards/dashboards are code-defined in `bi/packs/` and provisioned via `metabase-init` container
+- Caddy: HTTPS termination and reverse proxy in production
 
 ## Repository Map
 - `app/` FastAPI app, API routes, models, services
 - `pipelines/` Dagster definitions, assets, calculations, resources
+- `bi/` Metabase BI pack: card/dashboard JSON definitions, provisioner (`bi/providers/metabase/`)
+- `streamlit_admin/` admin UI for operational tasks
 - `db/` SQL bootstrap, schemas, migrations, views
 - `spec/` OpenSpec capabilities and active changes
 - `tests/` unit, integration, validation tests

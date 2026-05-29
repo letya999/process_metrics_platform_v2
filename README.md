@@ -14,7 +14,7 @@ Multi-source abstraction and enterprise hardening are tracked in `techdebt.md`.
 
 ## Stack
 
-- Python 3.11
+- Python 3.11 / 3.12
 - FastAPI
 - Dagster
 - PostgreSQL
@@ -26,15 +26,15 @@ Multi-source abstraction and enterprise hardening are tracked in `techdebt.md`.
 Prerequisites:
 
 - Docker + Docker Compose
-- Python 3.11+
+- Python 3.11 or 3.12
 
 Steps:
 
 1. Clone and install dependencies:
 
 ```bash
-git clone https://github.com/process-metrics-platform/process-metrics-platform-v2.git
-cd process-metrics-platform-v2
+git clone https://github.com/letya999/process_metrics_platform_v2.git
+cd process_metrics_platform_v2
 cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\\Scripts\\Activate
