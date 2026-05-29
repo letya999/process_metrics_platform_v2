@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -577,6 +578,15 @@ class MetabaseProvider:
                     )
 
     @staticmethod
+    def _param_id(slug: str) -> str:
+        """Generate deterministic 8-char hex ID from a slug for Metabase parameter IDs.
+
+        Metabase v0.47+ requires parameter ids to be 8-char alphanumeric strings.
+        Using md5 keeps the mapping stable across re-provisions.
+        """
+        return hashlib.md5(slug.encode(), usedforsecurity=False).hexdigest()[:8]
+
+    @staticmethod
     def _normalize_filters(spec: dict[str, Any]) -> list[dict[str, Any]]:
         raw = spec.get("filters", [])
         if not isinstance(raw, list):
@@ -585,16 +595,15 @@ class MetabaseProvider:
         for item in raw:
             if not isinstance(item, dict):
                 continue
-            parameter_id = str(item["id"])
+            slug = item.get("slug") or str(item["id"])
+            parameter_id = MetabaseProvider._param_id(slug)
             filters.append(
                 {
                     "id": parameter_id,
                     "type": item["type"],
-                    "name": item.get("name", parameter_id),
-                    "slug": item.get("slug", parameter_id),
-                    "template_tag": item.get(
-                        "template_tag", item.get("slug", parameter_id)
-                    ),
+                    "name": item.get("name", slug),
+                    "slug": slug,
+                    "template_tag": item.get("template_tag", slug),
                     "default": item.get("default"),
                 }
             )
