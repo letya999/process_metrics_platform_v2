@@ -638,7 +638,7 @@ class MetabaseProvider:
         field_filter_tags = field_filter_tags or set()
         filter_ids = layout_item.get("filter_ids")
         selected = (
-            [flt for flt in filters if flt["id"] in set(filter_ids)]
+            [flt for flt in filters if flt["slug"] in set(filter_ids)]
             if isinstance(filter_ids, list)
             else filters
         )

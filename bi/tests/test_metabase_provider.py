@@ -332,3 +332,230 @@ def test_build_native_query_payload_raises_when_field_filter_id_missing() -> Non
             field_id_map={},
             card_name="Velocity",
         )
+
+
+# ---------------------------------------------------------------------------
+# _param_id
+# ---------------------------------------------------------------------------
+
+
+def test_param_id_returns_8_char_hex() -> None:
+    pid = MetabaseProvider._param_id("project_key")
+    assert len(pid) == 8
+    assert pid.isalnum()
+    assert pid == pid.lower()
+
+
+def test_param_id_is_deterministic() -> None:
+    assert MetabaseProvider._param_id("date_range") == MetabaseProvider._param_id(
+        "date_range"
+    )
+
+
+def test_param_id_differs_per_slug() -> None:
+    assert MetabaseProvider._param_id("project_key") != MetabaseProvider._param_id(
+        "date_range"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _normalize_filters
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_filters_generates_8char_ids() -> None:
+    spec = {
+        "filters": [
+            {
+                "id": "project_key",
+                "name": "Project Key",
+                "slug": "project_key",
+                "type": "category",
+                "template_tag": "project_key",
+            },
+            {
+                "id": "date_range",
+                "name": "Date Range",
+                "slug": "date_range",
+                "type": "date/range",
+                "template_tag": "date_range",
+            },
+        ]
+    }
+    filters = MetabaseProvider._normalize_filters(spec)
+    assert len(filters) == 2
+    for f in filters:
+        assert len(f["id"]) == 8
+        assert f["id"].isalnum()
+
+
+def test_normalize_filters_id_is_deterministic() -> None:
+    spec = {
+        "filters": [{"id": "project_key", "slug": "project_key", "type": "category"}]
+    }
+    f1 = MetabaseProvider._normalize_filters(spec)
+    f2 = MetabaseProvider._normalize_filters(spec)
+    assert f1[0]["id"] == f2[0]["id"]
+
+
+def test_normalize_filters_preserves_template_tag() -> None:
+    spec = {
+        "filters": [
+            {
+                "id": "sprint_name",
+                "name": "Sprint Name",
+                "slug": "sprint_name",
+                "type": "category",
+                "template_tag": "sprint_name",
+            }
+        ]
+    }
+    filters = MetabaseProvider._normalize_filters(spec)
+    assert filters[0]["template_tag"] == "sprint_name"
+    assert filters[0]["slug"] == "sprint_name"
+
+
+def test_provision_dashboard_filter_ids_are_hashed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end: PUT /api/dashboard must contain hashed 8-char parameter ids."""
+    monkeypatch.setenv("METABASE_URL", "http://metabase:3000")
+    monkeypatch.setenv("MB_ADMIN_EMAIL", "admin@example.com")
+    monkeypatch.setenv("MB_ADMIN_PASSWORD", "pass")
+
+    pack_dir = tmp_path / "pack"
+    (pack_dir / "cards").mkdir(parents=True)
+    (pack_dir / "dashboards").mkdir(parents=True)
+
+    (pack_dir / "collections.json").write_text(
+        json.dumps([{"key": "main", "name": "Main"}]), encoding="utf-8"
+    )
+    (pack_dir / "cards" / "vel.json").write_text(
+        json.dumps(
+            {
+                "key": "vel",
+                "collection": "main",
+                "name": "Velocity",
+                "display": "table",
+                "query": "SELECT 1 [[AND {{project_key}}]]",
+                "field_filters": {"project_key": "metrics.v_facts.project_key"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (pack_dir / "dashboards" / "dash.json").write_text(
+        json.dumps(
+            {
+                "key": "dash",
+                "collection": "main",
+                "name": "Dash",
+                "filters": [
+                    {
+                        "id": "project_key",
+                        "name": "Project Key",
+                        "slug": "project_key",
+                        "type": "category",
+                        "template_tag": "project_key",
+                    }
+                ],
+                "layout": [
+                    {
+                        "card_key": "vel",
+                        "row": 0,
+                        "col": 0,
+                        "size_x": 8,
+                        "size_y": 4,
+                        "filter_ids": ["project_key"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    expected_param_id = MetabaseProvider._param_id("project_key")
+    field_id = 42
+
+    provider = MetabaseProvider()
+    fake = FakeMetabaseClient(
+        responses={
+            ("GET", "/api/session/properties"): [{}],
+            ("POST", "/api/session"): [{"id": "sess"}],
+            ("GET", "/api/database"): [[]],
+            ("POST", "/api/database"): [{"id": 1}],
+            ("POST", "/api/database/1/sync_schema"): [{}],
+            ("GET", "/api/database/1/metadata?include_hidden=true"): [
+                # first call: _wait_for_required_fields
+                {
+                    "tables": [
+                        {
+                            "schema": "metrics",
+                            "name": "v_facts",
+                            "fields": [{"name": "project_key", "id": field_id}],
+                        }
+                    ]
+                },
+                # second call: _upsert_cards -> _get_field_id_map
+                {
+                    "tables": [
+                        {
+                            "schema": "metrics",
+                            "name": "v_facts",
+                            "fields": [{"name": "project_key", "id": field_id}],
+                        }
+                    ]
+                },
+            ],
+            ("GET", "/api/collection"): [[]],
+            ("POST", "/api/collection"): [{"id": 10}],
+            ("GET", "/api/card"): [[]],
+            ("POST", "/api/card"): [{"id": 20}],
+            ("GET", "/api/dashboard"): [[]],
+            ("POST", "/api/dashboard"): [{"id": 30}],
+            ("GET", "/api/dashboard/30"): [{"dashcards": []}],
+            ("PUT", "/api/dashboard/30"): [{}],
+        }
+    )
+    provider.client = fake
+
+    provider.provision(pack_dir)
+
+    put_payload = next(
+        p for m, path, p in fake.calls if m == "PUT" and path == "/api/dashboard/30"
+    )
+    param_ids = [p["id"] for p in put_payload["parameters"]]
+    assert param_ids == [
+        expected_param_id
+    ], f"Expected [{expected_param_id}], got {param_ids}"
+    assert len(expected_param_id) == 8
+
+    mapping_param_ids = [
+        m["parameter_id"]
+        for dc in put_payload["dashcards"]
+        for m in dc["parameter_mappings"]
+    ]
+    assert mapping_param_ids == [expected_param_id]
+
+
+# ---------------------------------------------------------------------------
+# sprint_scope_change.json SQL
+# ---------------------------------------------------------------------------
+
+PACK_DIR = Path(__file__).parent.parent / "packs" / "metabase" / "process_metrics_v1"
+
+
+def test_sprint_scope_change_has_default_6month_filter() -> None:
+    card_path = PACK_DIR / "cards" / "sprint_scope_change.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    assert "CURRENT_DATE - INTERVAL '6 months'" in card["query"]
+    assert "sprint_start_date" in card["query"]
+
+
+def test_sprint_scope_change_default_filter_uses_comment_trick() -> None:
+    card_path = PACK_DIR / "cards" / "sprint_scope_change.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    # The -- trick: when sprint_start_date is set, fallback is commented out
+    assert (
+        "{{sprint_start_date}} --" in card["query"]
+        or "sprint_start_date}} -- ]]" in card["query"]
+    )
