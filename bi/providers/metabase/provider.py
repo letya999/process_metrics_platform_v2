@@ -706,6 +706,9 @@ class MetabaseProvider:
                     widget_type = cfg.get("widget_type", "category")
 
                 tag_def: dict[str, Any] = {
+                    "id": hashlib.md5(tag.encode(), usedforsecurity=False).hexdigest()[
+                        :8
+                    ],
                     "name": tag,
                     "display-name": cfg.get(
                         "display_name", tag.replace("_", " ").title()
@@ -738,6 +741,7 @@ class MetabaseProvider:
                 else:
                     tag_type = "text"
             template_tags[tag] = {
+                "id": hashlib.md5(tag.encode(), usedforsecurity=False).hexdigest()[:8],
                 "name": tag,
                 "display-name": cfg.get("display_name", tag.replace("_", " ").title()),
                 "type": tag_type,

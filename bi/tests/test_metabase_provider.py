@@ -284,6 +284,32 @@ def test_build_native_query_payload_infers_template_tags() -> None:
     assert payload["template-tags"]["date_from"]["type"] == "date"
 
 
+def test_template_tags_always_have_id_field() -> None:
+    """Every template tag must have a non-blank id so Metabase can construct
+    valid parameter objects when the question is accessed via direct URL."""
+    provider = MetabaseProvider()
+    payload = provider._build_native_query_payload(
+        {
+            "query": "SELECT 1 [[AND {{project_key}}]] [[AND {{date_range}}]] [[AND {{sprint_name}}]]",
+            "field_filters": {
+                "project_key": "metrics.v_facts.project_key",
+                "date_range": "metrics.v_facts.full_date",
+            },
+        },
+        field_id_map={
+            "metrics.v_facts.project_key": 371,
+            "metrics.v_facts.full_date": 375,
+        },
+    )
+    tags = payload["template-tags"]
+    for tag_name, tag_def in tags.items():
+        tag_id = tag_def.get("id")
+        assert tag_id, f"template tag '{tag_name}' missing id field"
+        assert (
+            isinstance(tag_id, str) and len(tag_id) == 8
+        ), f"template tag '{tag_name}' id must be 8-char string, got {tag_id!r}"
+
+
 def test_collect_required_field_paths_extracts_field_filters(tmp_path: Path) -> None:
     pack_dir = tmp_path / "pack"
     cards_dir = pack_dir / "cards"
