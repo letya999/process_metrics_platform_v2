@@ -250,15 +250,13 @@ def write_fact_values(
             has_null = True
 
         if non_null_ids and not has_null:
-            delete_query = text(
-                """
+            delete_query = text("""
                 DELETE FROM metrics.fact_values
                 WHERE metric_id = ANY(CAST(:metric_ids AS uuid[]))
                   AND project_agg_id = ANY(CAST(:project_agg_ids AS uuid[]))
                   AND time_id BETWEEN :start AND :end
                   AND slice_rule_id = ANY(CAST(:slice_rule_ids AS uuid[]))
-                """
-            )
+                """)
             conn.execute(
                 delete_query,
                 {
@@ -270,15 +268,13 @@ def write_fact_values(
                 },
             )
         elif has_null and not non_null_ids:
-            delete_query = text(
-                """
+            delete_query = text("""
                 DELETE FROM metrics.fact_values
                 WHERE metric_id = ANY(CAST(:metric_ids AS uuid[]))
                   AND project_agg_id = ANY(CAST(:project_agg_ids AS uuid[]))
                   AND time_id BETWEEN :start AND :end
                   AND slice_rule_id IS NULL
-                """
-            )
+                """)
             conn.execute(
                 delete_query,
                 {
@@ -290,14 +286,12 @@ def write_fact_values(
             )
         else:
             # Mixed (null + non-null) or indeterminate — full delete for safety.
-            delete_query = text(
-                """
+            delete_query = text("""
                 DELETE FROM metrics.fact_values
                 WHERE metric_id = ANY(CAST(:metric_ids AS uuid[]))
                   AND project_agg_id = ANY(CAST(:project_agg_ids AS uuid[]))
                   AND time_id BETWEEN :start AND :end
-                """
-            )
+                """)
             conn.execute(
                 delete_query,
                 {

@@ -40,8 +40,7 @@ def clean_jira_sprints(
         if board_config_exists:
             # Use UPSERT strategy instead of TRUNCATE to avoid cascading deletes
             # This is safer if the job is interrupted or if other tables reference sprints
-            insert_query = text(
-                """
+            insert_query = text("""
             INSERT INTO clean_jira.sprints (
                 project_id,
                 external_id,
@@ -81,8 +80,7 @@ def clean_jira_sprints(
                 complete_date = EXCLUDED.complete_date,
                 updated_at = now()
             RETURNING id
-            """
-            )
+            """)
             result = conn.execute(insert_query)
         else:
             # Fallback for legacy/missing config (though risky, better than CROSS JOIN duplication)
@@ -95,8 +93,7 @@ def clean_jira_sprints(
             cols = [c[0] for c in sprints_cols]
 
             if "project_key" in cols:
-                insert_query = text(
-                    """
+                insert_query = text("""
                 INSERT INTO clean_jira.sprints (
                     project_id, external_id, name, goal, status,
                     start_date, end_date, complete_date, updated_at
@@ -127,8 +124,7 @@ def clean_jira_sprints(
                     complete_date = EXCLUDED.complete_date,
                     updated_at = now()
                 RETURNING id
-                """
-                )
+                """)
                 result = conn.execute(insert_query)
             else:
                 context.log.warning(
@@ -189,8 +185,7 @@ def clean_jira_sprint_issues(
         # Build sprint_issues from changelog final state
         sprint_field_id = _detect_sprint_field_id(conn)
         result = conn.execute(
-            text(
-                f"""
+            text(f"""
             WITH changelog_events AS (
                 -- Extract Sprint changes from changelog
                 SELECT
@@ -312,8 +307,7 @@ def clean_jira_sprint_issues(
             ON CONFLICT (sprint_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
             RETURNING id
-            """
-            ),
+            """),
             {"sprint_field_id": sprint_field_id},
         )
         sprint_issues_count = len(result.fetchall())
@@ -321,18 +315,14 @@ def clean_jira_sprint_issues(
 
         # Reconciliation: set is_active = FALSE for issues in closed sprints
         context.log.info("Reconciling is_active for closed sprints...")
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             UPDATE clean_jira.sprint_issues si
             SET is_active = false
             FROM clean_jira.sprints s
             WHERE si.sprint_id = s.id
               AND s.status = 'closed'
               AND si.is_active = true
-        """
-            )
-        )
+        """))
 
         conn.commit()
 
@@ -367,8 +357,7 @@ def clean_jira_sprint_issues_changelog(
 
         sprint_field_id = _detect_sprint_field_id(conn)
         result = conn.execute(
-            text(
-                f"""
+            text(f"""
             WITH changelog_events AS (
                 SELECT
                     r.id::text as issue_external_id,
@@ -504,8 +493,7 @@ def clean_jira_sprint_issues_changelog(
             FROM normalized_events
             ON CONFLICT (sprint_id, issue_id, action, changed_at) DO NOTHING
             RETURNING id
-            """
-            ),
+            """),
             {"sprint_field_id": sprint_field_id},
         )
         changelog_count = len(result.fetchall())
@@ -541,9 +529,7 @@ def clean_jira_sprint_changelog(
     with engine.connect() as conn:
         context.log.info("Processing sprint changelog snapshot-diff...")
 
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             WITH last_known AS (
                 SELECT DISTINCT ON (sprint_id, field_name)
                     sprint_id, field_name, new_value
@@ -572,9 +558,7 @@ def clean_jira_sprint_changelog(
             LEFT JOIN last_known lk ON lk.sprint_id = cf.sprint_id AND lk.field_name = cf.field_name
             WHERE cf.current_value IS DISTINCT FROM lk.new_value
             RETURNING id
-            """
-            )
-        )
+            """))
         changelog_count = len(result.fetchall())
         context.log.info(
             f"Inserted {changelog_count} sprint property changelog entries"

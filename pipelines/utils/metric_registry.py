@@ -172,16 +172,14 @@ def resolve_unit_field(
     with engine.connect() as conn:
         # Priority: specific project, then global NULL
         result = conn.execute(
-            text(
-                """
+            text("""
                 SELECT source_field_id, source_entity, project_id
                 FROM metrics.units
                 WHERE unit_code = :unit_code
                   AND (project_id = :project_id OR project_id IS NULL)
                 ORDER BY project_id NULLS LAST
                 LIMIT 1
-            """
-            ),
+            """),
             {"unit_code": unit_code, "project_id": project_id},
         ).fetchone()
 
@@ -203,13 +201,9 @@ def clear_cache():
 def _sync_dim_projects(engine: Engine) -> None:
     """Backfill metrics.dim_projects from clean_jira.projects."""
     with engine.begin() as conn:
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
                 INSERT INTO metrics.dim_projects (project_id, project_key)
                 SELECT id, external_key FROM clean_jira.projects
                 ON CONFLICT (project_id) DO UPDATE
                 SET project_key = EXCLUDED.project_key
-                """
-            )
-        )
+                """))

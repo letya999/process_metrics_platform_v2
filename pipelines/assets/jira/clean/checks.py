@@ -32,17 +32,13 @@ def check_no_orphan_issues(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.issues i
             WHERE NOT EXISTS (
                 SELECT 1 FROM clean_jira.projects p
                 WHERE p.id = i.project_id
             )
-        """
-            )
-        )
+        """))
         orphan_count = result.scalar() or 0
 
     return AssetCheckResult(
@@ -60,17 +56,13 @@ def check_issues_have_required_fields(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.issues
             WHERE external_key IS NULL
                OR summary IS NULL
                OR type_id IS NULL
                OR status_id IS NULL
-        """
-            )
-        )
+        """))
         invalid_count = result.scalar() or 0
 
     return AssetCheckResult(
@@ -88,16 +80,12 @@ def check_sprint_dates_valid(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.sprints
             WHERE start_date IS NOT NULL
               AND end_date IS NOT NULL
               AND start_date > end_date
-        """
-            )
-        )
+        """))
         invalid_count = result.scalar() or 0
 
     return AssetCheckResult(
@@ -115,9 +103,7 @@ def check_sprint_issues_integrity(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.sprint_issues si
             WHERE NOT EXISTS (
                 SELECT 1 FROM clean_jira.sprints s WHERE s.id = si.sprint_id
@@ -125,9 +111,7 @@ def check_sprint_issues_integrity(
                OR NOT EXISTS (
                    SELECT 1 FROM clean_jira.issues i WHERE i.id = si.issue_id
                )
-        """
-            )
-        )
+        """))
         invalid_count = result.scalar() or 0
 
     return AssetCheckResult(
@@ -145,9 +129,7 @@ def check_release_issues_integrity(
     engine = database.get_engine()
 
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.release_issues ri
             WHERE NOT EXISTS (
                 SELECT 1 FROM clean_jira.releases r WHERE r.id = ri.release_id
@@ -155,9 +137,7 @@ def check_release_issues_integrity(
                OR NOT EXISTS (
                    SELECT 1 FROM clean_jira.issues i WHERE i.id = ri.issue_id
                )
-        """
-            )
-        )
+        """))
         invalid_count = result.scalar() or 0
 
     return AssetCheckResult(
@@ -282,15 +262,11 @@ def check_closed_sprint_issues_inactive(
     """
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.sprint_issues si
             JOIN clean_jira.sprints s ON s.id = si.sprint_id
             WHERE s.status = 'closed' AND si.is_active = true
-        """
-            )
-        )
+        """))
         invalid_count = result.scalar() or 0
     return AssetCheckResult(
         passed=invalid_count == 0,
@@ -313,9 +289,7 @@ def check_issue_fk_integrity(
     """
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.issues i
             WHERE NOT EXISTS (
                 SELECT 1 FROM clean_jira.issue_types t WHERE t.id = i.type_id
@@ -323,9 +297,7 @@ def check_issue_fk_integrity(
                OR NOT EXISTS (
                 SELECT 1 FROM clean_jira.issue_statuses s WHERE s.id = i.status_id
             )
-        """
-            )
-        )
+        """))
         invalid_count = result.scalar() or 0
     return AssetCheckResult(
         passed=invalid_count == 0,
@@ -344,16 +316,12 @@ def check_no_orphan_worklogs(
     """Detect worklogs whose issue_id does not exist in clean_jira.issues."""
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.worklogs w
             WHERE NOT EXISTS (
                 SELECT 1 FROM clean_jira.issues i WHERE i.id = w.issue_id
             )
-        """
-            )
-        )
+        """))
         orphan_count = result.scalar() or 0
     return AssetCheckResult(
         passed=orphan_count == 0,
@@ -372,16 +340,12 @@ def check_no_orphan_sprints(
     """Detect sprints with a project_id that no longer exists in clean_jira.projects."""
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.sprints s
             WHERE NOT EXISTS (
                 SELECT 1 FROM clean_jira.projects p WHERE p.id = s.project_id
             )
-        """
-            )
-        )
+        """))
         orphan_count = result.scalar() or 0
     return AssetCheckResult(
         passed=orphan_count == 0,
@@ -404,16 +368,12 @@ def check_field_values_fk_integrity(
     """
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.field_values fv
             WHERE NOT EXISTS (
                 SELECT 1 FROM clean_jira.field_keys fk WHERE fk.id = fv.field_key_id
             )
-        """
-            )
-        )
+        """))
         invalid_count = result.scalar() or 0
     return AssetCheckResult(
         passed=invalid_count == 0,
@@ -436,14 +396,10 @@ def check_no_self_referencing_issue_links(
     """
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.relation_issue_issues
             WHERE source_issue_id = target_issue_id
-        """
-            )
-        )
+        """))
         self_ref_count = result.scalar() or 0
     return AssetCheckResult(
         passed=self_ref_count == 0,
@@ -466,17 +422,13 @@ def check_status_changelog_fk_integrity(
     """
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.issue_status_changelog sc
             WHERE sc.to_status_id IS NULL
                OR NOT EXISTS (
                    SELECT 1 FROM clean_jira.issue_statuses s WHERE s.id = sc.to_status_id
                )
-        """
-            )
-        )
+        """))
         invalid_count = result.scalar() or 0
     return AssetCheckResult(
         passed=invalid_count == 0,
@@ -500,9 +452,7 @@ def check_at_most_one_active_sprint_per_project(
     """
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM (
                 SELECT project_id
                 FROM clean_jira.sprints
@@ -510,9 +460,7 @@ def check_at_most_one_active_sprint_per_project(
                 GROUP BY project_id
                 HAVING count(*) > 1
             ) sub
-        """
-            )
-        )
+        """))
         projects_with_multiple = result.scalar() or 0
     return AssetCheckResult(
         passed=projects_with_multiple == 0,
@@ -531,14 +479,10 @@ def check_no_self_referencing_parent(
     """Ensure no issue has parent_id == id, which creates an infinite hierarchy loop."""
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.issues
             WHERE parent_id IS NOT NULL AND parent_id = id
-        """
-            )
-        )
+        """))
         self_ref_count = result.scalar() or 0
     return AssetCheckResult(
         passed=self_ref_count == 0,
@@ -561,13 +505,9 @@ def check_jira_users_have_external_id(
     """
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT count(*) FROM clean_jira.jira_users WHERE external_id IS NULL
-        """
-            )
-        )
+        """))
         null_count = result.scalar() or 0
     return AssetCheckResult(
         passed=null_count == 0,
@@ -589,16 +529,12 @@ def check_flow_efficiency_nonzero(
     engine = database.get_engine()
     with engine.connect() as conn:
         # Check fact_values for flow_efficiency metric
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT COUNT(*) as total, SUM(CASE WHEN value > 0 THEN 1 ELSE 0 END) as nonzero
             FROM metrics.fact_values fv
             JOIN metrics.calculations c ON c.id = fv.metric_id
             WHERE c.calc_code = 'flow_efficiency_pct'
-        """
-            )
-        ).fetchone()
+        """)).fetchone()
     total = result[0] or 0
     nonzero = result[1] or 0
     if total == 0:

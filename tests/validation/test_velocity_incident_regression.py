@@ -42,13 +42,11 @@ class TestVelocityIncidentRegression:
         ]
         with engine.connect() as conn:
             rows = conn.execute(
-                text(
-                    """
+                text("""
                     SELECT external_key
                     FROM clean_jira.issues
                     WHERE external_key = ANY(:keys)
-                    """
-                ),
+                    """),
                 {"keys": keys},
             ).fetchall()
         found = {r[0] for r in rows}
@@ -68,25 +66,21 @@ class TestVelocityIncidentRegression:
         ]
         with engine.connect() as conn:
             rows_sprint_issues = conn.execute(
-                text(
-                    """
+                text("""
                     SELECT DISTINCT i.external_key
                     FROM clean_jira.sprint_issues si
                     JOIN clean_jira.issues i ON i.id = si.issue_id
                     WHERE i.external_key = ANY(:keys)
-                    """
-                ),
+                    """),
                 {"keys": keys},
             ).fetchall()
             rows_changelog = conn.execute(
-                text(
-                    """
+                text("""
                     SELECT DISTINCT i.external_key
                     FROM clean_jira.sprint_issues_changelog sic
                     JOIN clean_jira.issues i ON i.id = sic.issue_id
                     WHERE i.external_key = ANY(:keys)
-                    """
-                ),
+                    """),
                 {"keys": keys},
             ).fetchall()
 

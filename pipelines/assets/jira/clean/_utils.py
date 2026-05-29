@@ -20,14 +20,12 @@ def _table_exists(conn: Any, schema: str, table: str) -> bool:
     if key in _TABLE_EXISTS_CACHE:
         return _TABLE_EXISTS_CACHE[key]
     result = conn.execute(
-        text(
-            """
+        text("""
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
             WHERE table_schema = :schema AND table_name = :table
         )
-    """
-        ),
+    """),
         {"schema": schema, "table": table},
     ).scalar()
     _TABLE_EXISTS_CACHE[key] = bool(result)
@@ -75,15 +73,11 @@ def _get_platform_project_id(conn: Any, project_key: str | None = None) -> str:
 def _detect_sprint_field_id(conn: Any) -> str:
     """Auto-detect sprint custom field ID from raw_jira.fields."""
     try:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT id FROM raw_jira.fields
             WHERE schema__custom = 'com.pyxis.greenhopper.jira:gh-sprint'
             LIMIT 1
-        """
-            )
-        )
+        """))
         row = result.first()
         if row:
             return row[0]

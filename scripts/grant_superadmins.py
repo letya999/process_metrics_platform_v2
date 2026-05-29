@@ -52,13 +52,11 @@ def _resolve_metabase_url() -> str:
 
 def _fetch_password_hash(conn, source_email: str) -> str | None:
     row = conn.execute(
-        text(
-            """
+        text("""
             SELECT password_hash
             FROM platform.users
             WHERE email = :email
-            """
-        ),
+            """),
         {"email": source_email},
     ).first()
     if not row:
@@ -74,8 +72,7 @@ def _upsert_platform_user(
     overwrite_password_hash: bool,
 ) -> None:
     conn.execute(
-        text(
-            """
+        text("""
             INSERT INTO platform.users (
                 email,
                 password_hash,
@@ -101,8 +98,7 @@ def _upsert_platform_user(
                 is_active = true,
                 is_admin = true,
                 updated_at = now()
-            """
-        ),
+            """),
         {
             "email": email,
             "password_hash": password_hash,
@@ -198,28 +194,24 @@ def _promote_metabase_user(url: str, token: str, user: dict, display_name: str) 
 
 def _ensure_metabase_admin_membership(conn, email: str) -> None:
     conn.execute(
-        text(
-            """
+        text("""
             UPDATE core_user
             SET is_superuser = true,
                 is_active = true
             WHERE email = :email
-            """
-        ),
+            """),
         {"email": email},
     )
 
     conn.execute(
-        text(
-            """
+        text("""
             INSERT INTO permissions_group_membership (user_id, group_id)
             SELECT cu.id, pg.id
             FROM core_user cu
             JOIN permissions_group pg ON pg.name = 'Administrators'
             WHERE cu.email = :email
             ON CONFLICT DO NOTHING
-            """
-        ),
+            """),
         {"email": email},
     )
 

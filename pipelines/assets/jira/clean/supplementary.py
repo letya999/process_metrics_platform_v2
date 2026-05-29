@@ -41,9 +41,7 @@ def clean_jira_worklogs(
             return {"status": "skipped", "reason": "no_worklogs_table"}
 
         context.log.info("Syncing worklogs...")
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.worklogs (
                 issue_id,
                 external_id,
@@ -68,9 +66,7 @@ def clean_jira_worklogs(
                 time_spent_seconds = EXCLUDED.time_spent_seconds,
                 started_at = EXCLUDED.started_at
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -105,16 +101,14 @@ def clean_jira_comments(
             if exists:
                 # Also check if 'body' column exists in this table
                 has_body = conn.execute(
-                    text(
-                        """
+                    text("""
                         SELECT EXISTS (
                             SELECT 1 FROM information_schema.columns
                             WHERE table_schema = 'raw_jira'
                               AND table_name = :table_name
                               AND column_name = 'body'
                         )
-                    """
-                    ),
+                    """),
                     {"table_name": table},
                 ).scalar()
                 if has_body:
@@ -137,9 +131,7 @@ def clean_jira_comments(
         context.log.info(f"Using raw comment table: {comment_table}")
 
         # Create safe_timestamptz - M-8: Always create at start of block
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             CREATE OR REPLACE FUNCTION pg_temp.safe_timestamptz(val text)
             RETURNS timestamptz AS $$
             BEGIN
@@ -154,9 +146,7 @@ def clean_jira_comments(
                 END;
             END;
             $$ LANGUAGE plpgsql;
-            """
-            )
-        )
+            """))
 
         # Insert comments
         insert_sql_template = """
@@ -197,8 +187,7 @@ def clean_jira_comments(
         context.log.info(f"Synced {len(comments_synced)} comments")
 
         # Sync comment-issue linkage
-        link_query = text(
-            f"""
+        link_query = text(f"""
             INSERT INTO clean_jira.comment_issues (
                 comment_id,
                 issue_id
@@ -213,8 +202,7 @@ def clean_jira_comments(
             JOIN clean_jira.comments c ON c.external_id = rc.id
                 AND c.project_id = i.project_id
             ON CONFLICT (comment_id, issue_id) DO NOTHING
-            """
-        )  # noqa: S608
+            """)  # noqa: S608
 
         conn.execute(link_query)
         context.log.info("Synced comment-issue links")
@@ -242,9 +230,7 @@ def clean_jira_field_values(
         context.log.info("Extracting field values from issues...")
 
         # Create safe_jsonb function to handle invalid JSON gracefully
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             CREATE OR REPLACE FUNCTION pg_temp.safe_jsonb(val text)
             RETURNS jsonb AS $$
             BEGIN
@@ -255,21 +241,15 @@ def clean_jira_field_values(
                 END;
             END;
             $$ LANGUAGE plpgsql;
-        """
-            )
-        )
+        """))
 
         # Get all columns first
-        columns_result = conn.execute(
-            text(
-                """
+        columns_result = conn.execute(text("""
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'raw_jira'
               AND table_name = 'issues'
-        """
-            )
-        ).fetchall()
+        """)).fetchall()
         all_columns = [row[0] for row in columns_result]
 
         # Pre-load field keys map to avoid joins in the loop
@@ -293,8 +273,7 @@ def clean_jira_field_values(
 
         # Process in batches of columns
         batch_size = 20
-        insert_stmt = text(
-            """
+        insert_stmt = text("""
             INSERT INTO clean_jira.field_values (
                 issue_id,
                 field_key_id,
@@ -313,8 +292,7 @@ def clean_jira_field_values(
                 value = EXCLUDED.value,
                 json_value = EXCLUDED.json_value,
                 updated_at = now()
-        """
-        )
+        """)
 
         for i in range(0, len(target_columns), batch_size):
             chunk = target_columns[i : i + batch_size]
@@ -325,8 +303,7 @@ def clean_jira_field_values(
             # Build dynamic select
             select_clause = ", ".join([f'r."{c}"' for c in chunk])
 
-            rows_query = text(
-                f"""
+            rows_query = text(f"""
                 SELECT
                     i.id as issue_id,
                     i.project_id,
@@ -334,8 +311,7 @@ def clean_jira_field_values(
                 FROM raw_jira.issues r
                 JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
                 JOIN clean_jira.issues i ON i.external_id = r.id::text AND i.project_id = p.id
-            """
-            )  # noqa: S608
+            """)  # noqa: S608
 
             # NOTE:
             # stream_results=True uses server-side named cursors on psycopg2.
@@ -408,8 +384,7 @@ def clean_jira_field_values(
 
         if sprint_table_exists:
             result = conn.execute(
-                text(
-                    f"""
+                text(f"""
                 INSERT INTO clean_jira.field_values (
                     issue_id,
                     field_key_id,
@@ -437,8 +412,7 @@ def clean_jira_field_values(
                     json_value = EXCLUDED.json_value,
                     updated_at = now()
                 RETURNING id
-            """
-                ),  # noqa: S608
+            """),  # noqa: S608
                 {"sprint_field_id": sprint_field_id},
             )
             sprint_values_count = len(result.fetchall())
@@ -486,9 +460,7 @@ def clean_jira_field_value_changelog(
             return {"status": "skipped", "reason": "no_changelog_items_table"}
 
         # Use a temporary function to safely cast to JSONB
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             CREATE OR REPLACE FUNCTION pg_temp.safe_jsonb(val text)
             RETURNS jsonb AS $$
             BEGIN
@@ -499,13 +471,9 @@ def clean_jira_field_value_changelog(
                 END;
             END;
             $$ LANGUAGE plpgsql;
-        """
-            )
-        )
+        """))
 
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.field_value_changelog (
                 issue_id,
                 field_key_id,
@@ -540,9 +508,7 @@ def clean_jira_field_value_changelog(
                    ))
             ON CONFLICT (issue_id, field_key_id, changed_at) DO NOTHING
             RETURNING id
-        """
-            )
-        )
+        """))
         changes_count = len(result.fetchall())
         context.log.info(f"Inserted {changes_count} field value changelog entries")
 

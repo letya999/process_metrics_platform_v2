@@ -29,9 +29,7 @@ def get_engine():
 def seed_grains(conn):
     """Populate grains table with supported levels of data granularity."""
     print("Seeding grains...")
-    conn.execute(
-        text(
-            """
+    conn.execute(text("""
         INSERT INTO metrics.grains (grain_code, description) VALUES
         ('issue', 'One row per Jira issue'),
         ('sprint', 'One row per sprint'),
@@ -39,32 +37,24 @@ def seed_grains(conn):
         ('day', 'One row per calendar day'),
         ('release', 'One row per Jira release')
         ON CONFLICT (grain_code) DO NOTHING;
-        """
-        )
-    )
+        """))
 
 
 def seed_definitions(conn):
     """Populate basic metric definitions."""
     print("Seeding definitions...")
-    conn.execute(
-        text(
-            """
+    conn.execute(text("""
         INSERT INTO metrics.definitions (metric_code) VALUES
         ('velocity'), ('lead_time'), ('throughput'), ('cfd'),
         ('backlog_growth'), ('ttm'), ('aging'), ('flow_efficiency')
         ON CONFLICT (metric_code) DO NOTHING;
-        """
-        )
-    )
+        """))
 
 
 def seed_calculations(conn):
     """Populate specific metric calculation rules linked to definitions and grains."""
     print("Seeding calculations...")
-    conn.execute(
-        text(
-            """
+    conn.execute(text("""
         WITH defs AS (SELECT id, metric_code FROM metrics.definitions),
              grns AS (SELECT id, grain_code FROM metrics.grains)
         INSERT INTO metrics.calculations (definition_id, calc_code, grain_id, unit_code, uses_commitment_points)
@@ -97,17 +87,13 @@ def seed_calculations(conn):
         ((SELECT id FROM defs WHERE metric_code = 'flow_efficiency'), 'flow_wait_days', (SELECT id FROM grns WHERE grain_code = 'issue'), 'days', true),
         ((SELECT id FROM defs WHERE metric_code = 'flow_efficiency'), 'flow_efficiency_pct', (SELECT id FROM grns WHERE grain_code = 'issue'), 'percent', true)
         ON CONFLICT (calc_code) DO NOTHING;
-        """
-        )
-    )
+        """))
 
 
 def seed_units(conn):
     """Populate metric units table with default values."""
     print("Seeding units...")
-    conn.execute(
-        text(
-            """
+    conn.execute(text("""
         INSERT INTO metrics.units (project_id, unit_code, display_symbol) VALUES
         (NULL, 'story_points', 'SP'),
         (NULL, 'issues', 'items'),
@@ -115,9 +101,7 @@ def seed_units(conn):
         (NULL, 'hours', 'h'),
         (NULL, 'percent', '%')
         ON CONFLICT DO NOTHING;
-        """
-        )
-    )
+        """))
 
 
 def seed_dim_dates(conn):
@@ -175,29 +159,21 @@ def seed_dim_dates(conn):
 def sync_dim_projects(conn):
     """Synchronize projects from raw layer to dimension table."""
     print("Syncing dim_projects...")
-    conn.execute(
-        text(
-            """
+    conn.execute(text("""
         INSERT INTO metrics.dim_projects (project_id, project_key)
         SELECT id, external_key FROM clean_jira.projects
         ON CONFLICT (project_id) DO UPDATE SET project_key = EXCLUDED.project_key;
-        """
-        )
-    )
+        """))
 
 
 def seed_slice_rules(conn):
     """Populate default slicing rules."""
     print("Seeding default slice_rules...")
     conn.execute(text("DELETE FROM metrics.slice_rules"))
-    conn.execute(
-        text(
-            """
+    conn.execute(text("""
         INSERT INTO metrics.slice_rules (rule_name, source_table, group_by_source_column, enabled) VALUES
         ('By Issue Type', 'clean_jira.issue_types', 'name', true);
-        """
-        )
-    )
+        """))
 
 
 def infer_commitment_rules(conn):
@@ -249,8 +225,7 @@ def infer_commitment_rules(conn):
         if start_col and end_col:
             print(f"  Board '{board_name}': inferred {start_col[1]} -> {end_col[1]}")
             conn.execute(
-                text(
-                    """
+                text("""
                 INSERT INTO metrics.commitment_rules (
                     project_id, board_id, target_calculation_id, target_calculation_name,
                     start_column_id, end_column_id, start_column_name_snapshot, end_column_name_snapshot
@@ -258,8 +233,7 @@ def infer_commitment_rules(conn):
                     :project_id, :board_id, :calc_id, 'lead_time_days',
                     :start_id, :end_id, :start_name, :end_name
                 ) ON CONFLICT DO NOTHING;
-                """
-                ),
+                """),
                 {
                     "project_id": project_id,
                     "board_id": board_id,

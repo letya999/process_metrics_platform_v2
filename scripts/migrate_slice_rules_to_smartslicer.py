@@ -30,14 +30,10 @@ def migrate():
         )
 
         # Insert current rules
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             INSERT INTO metrics.slice_rules (rule_name, source_table, group_by_source_column, enabled) VALUES
             ('By Issue Type', 'clean_jira.issue_types', 'name', true);
-            """
-            )
-        )
+            """))
 
         # Verification
         print("\nVerifying metrics.slice_rules table state:")

@@ -111,8 +111,7 @@ with engine.begin() as conn:
 
         rows = (
             conn.execute(
-                text(
-                    """
+                text("""
             SELECT metric_id::text AS metric_id, value, updated_at
             FROM metrics.fact_values
             WHERE project_agg_id=CAST(:pa AS uuid)
@@ -120,8 +119,7 @@ with engine.begin() as conn:
               AND metric_id IN (CAST(:m1 AS uuid),CAST(:m2 AS uuid))
               AND slice_rule_id IS NULL
             ORDER BY updated_at DESC
-        """
-                ),
+        """),
                 {
                     "pa": pr["project_agg_id"],
                     "sid": sprint,

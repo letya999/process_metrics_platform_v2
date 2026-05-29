@@ -32,8 +32,7 @@ def clean_jira_projects(
         platform_project_id = _get_platform_project_id(conn)
         context.log.info(f"Syncing projects with platform ID {platform_project_id}...")
         result = conn.execute(
-            text(
-                """
+            text("""
             INSERT INTO clean_jira.projects (
                 platform_project_id,
                 external_id,
@@ -56,8 +55,7 @@ def clean_jira_projects(
                 name = EXCLUDED.name,
                 updated_at = now()
             RETURNING id
-        """
-            ),
+        """),
             {"platform_project_id": platform_project_id},
         )
         count = len(result.fetchall())
@@ -116,9 +114,7 @@ def clean_jira_issue_types(
                 END
             """
 
-        result = conn.execute(
-            text(
-                f"""
+        result = conn.execute(text(f"""
             INSERT INTO clean_jira.issue_types (
                 project_id,
                 external_id,
@@ -137,9 +133,7 @@ def clean_jira_issue_types(
                 name = EXCLUDED.name,
                 hierarchy_level = EXCLUDED.hierarchy_level
             RETURNING id
-            """
-            )
-        )
+            """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -159,9 +153,7 @@ def clean_jira_priorities(
     engine = database.get_engine()
     with engine.connect() as conn:
         context.log.info("Syncing issue priorities...")
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.issue_priorities (
                 project_id,
                 external_id,
@@ -177,9 +169,7 @@ def clean_jira_priorities(
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 name = EXCLUDED.name
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -199,9 +189,7 @@ def clean_jira_resolutions(
     engine = database.get_engine()
     with engine.connect() as conn:
         context.log.info("Syncing issue resolutions...")
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.issue_resolutions (
                 project_id,
                 external_id,
@@ -220,9 +208,7 @@ def clean_jira_resolutions(
                 name = EXCLUDED.name,
                 description = EXCLUDED.description
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -395,16 +381,12 @@ def clean_jira_field_keys(
         context.log.info("Extracting field keys from issues...")
 
         # Get all columns from raw_jira.issues
-        columns_result = conn.execute(
-            text(
-                """
+        columns_result = conn.execute(text("""
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'raw_jira'
               AND table_name = 'issues'
-        """
-            )
-        ).fetchall()
+        """)).fetchall()
 
         all_columns = [row[0] for row in columns_result]
         context.log.info(f"Found {len(all_columns)} columns in raw_jira.issues")
@@ -447,8 +429,7 @@ def clean_jira_field_keys(
         if field_data:
             # Multi-row batch insert
             conn.execute(
-                text(
-                    """
+                text("""
                 INSERT INTO clean_jira.field_keys (
                     project_id,
                     external_key,
@@ -459,8 +440,7 @@ def clean_jira_field_keys(
                 VALUES (:project_id, :external_key, :name, :is_custom, now())
                 ON CONFLICT (project_id, external_key) DO UPDATE SET
                     name = EXCLUDED.name
-                """
-                ),
+                """),
                 field_data,
             )
 
@@ -472,21 +452,15 @@ def clean_jira_field_keys(
         if fields_table_exists:
             context.log.info("Updating field names from raw_jira.fields metadata...")
             # Update names matching exact ID
-            conn.execute(
-                text(
-                    """
+            conn.execute(text("""
                 UPDATE clean_jira.field_keys fk
                 SET name = f.name
                 FROM raw_jira.fields f
                 WHERE fk.external_key = f.id
                   AND f.name IS NOT NULL
-            """
-                )
-            )
+            """))
             # Update names for sub-fields (e.g. customfield_10001__value)
-            conn.execute(
-                text(
-                    """
+            conn.execute(text("""
                 UPDATE clean_jira.field_keys fk
                 SET name = f.name || ' (' || SUBSTRING(
                     fk.external_key FROM LENGTH(f.id) + 3
@@ -495,17 +469,14 @@ def clean_jira_field_keys(
                 WHERE fk.external_key LIKE f.id || '__%'
                   AND f.name IS NOT NULL
                   AND fk.name = fk.external_key -- Only update if still using raw key
-            """
-                )
-            )
+            """))
 
         conn.commit()
 
         # Explicitly ensure 'Sprint' field key exists
         sprint_field_id = _detect_sprint_field_id(conn)
         conn.execute(
-            text(
-                """
+            text("""
             INSERT INTO clean_jira.field_keys (
                 project_id,
                 external_key,
@@ -522,8 +493,7 @@ def clean_jira_field_keys(
             FROM clean_jira.projects p
             ON CONFLICT (project_id, external_key) DO UPDATE SET
                 name = EXCLUDED.name
-        """
-            ),
+        """),
             {"sprint_field_id": sprint_field_id},
         )
         conn.commit()

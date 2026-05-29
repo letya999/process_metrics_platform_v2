@@ -127,8 +127,7 @@ def resolve_commitment_columns(
     """
     with engine.connect() as conn:
         result = conn.execute(
-            text(
-                """
+            text("""
                 SELECT cr.id, cr.start_column_id, cr.end_column_id,
                        bc_start.name as start_name, bc_end.name as end_name
                 FROM metrics.commitment_rules cr
@@ -140,8 +139,7 @@ def resolve_commitment_columns(
                   AND (cr.board_id = :board_id OR cr.board_id IS NULL)
                 ORDER BY cr.project_id NULLS LAST, cr.board_id NULLS LAST
                 LIMIT 1
-            """
-            ),
+            """),
             {"calc_code": calc_code, "project_id": project_id, "board_id": board_id},
         ).fetchone()
 

@@ -42,8 +42,7 @@ def provision_platform(
     engine, email: str, password: str, display_name: str, is_admin: bool
 ) -> str:
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    upsert_sql = text(
-        """
+    upsert_sql = text("""
         INSERT INTO platform.users (email, password_hash, display_name, is_active, is_admin)
         VALUES (:email, :password_hash, :display_name, true, :is_admin)
         ON CONFLICT (email) DO UPDATE
@@ -54,8 +53,7 @@ def provision_platform(
             is_admin = CASE WHEN :force_admin THEN true ELSE platform.users.is_admin END,
             updated_at = now()
         RETURNING (xmax = 0) AS is_insert
-        """
-    )
+        """)
     try:
         with engine.begin() as conn:
             res = conn.execute(

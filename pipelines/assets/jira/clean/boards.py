@@ -33,9 +33,7 @@ def clean_jira_boards(
         if not boards_exists:
             return {"status": "skipped", "reason": "no_board_configurations_table"}
 
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.boards (project_id, external_id, name, created_at)
             SELECT DISTINCT ON (p.id, bc.board_id::text)
                 p.id, bc.board_id::text, bc.board_name, now()
@@ -45,9 +43,7 @@ def clean_jira_boards(
             ORDER BY p.id, bc.board_id::text, bc._dlt_id DESC
             ON CONFLICT (project_id, external_id) DO UPDATE SET name = EXCLUDED.name
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -69,17 +65,11 @@ def clean_jira_board_columns(
         context.log.info("Syncing board columns...")
         # Serialize board column rebuild to avoid concurrent run collisions on
         # unique (board_id, position) when multiple runs overlap.
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             LOCK TABLE clean_jira.board_column_statuses IN EXCLUSIVE MODE;
             LOCK TABLE clean_jira.board_columns IN EXCLUSIVE MODE;
-            """
-            )
-        )
-        conn.execute(
-            text(
-                """
+            """))
+        conn.execute(text("""
             CREATE TEMP TABLE tmp_board_columns_src (
                 board_id uuid NOT NULL,
                 name text NOT NULL,
@@ -104,37 +94,23 @@ def clean_jira_board_columns(
                 name,
                 (row_number() OVER (PARTITION BY board_id ORDER BY raw_position, name) - 1)::int AS position
             FROM src_raw;
-            """
-            )
-        )
-        conn.execute(
-            text(
-                """
+            """))
+        conn.execute(text("""
             DELETE FROM clean_jira.board_column_statuses bcs
             USING clean_jira.board_columns bc
             WHERE bcs.board_column_id = bc.id
               AND bc.board_id IN (SELECT DISTINCT board_id FROM tmp_board_columns_src);
-            """
-            )
-        )
-        conn.execute(
-            text(
-                """
+            """))
+        conn.execute(text("""
             DELETE FROM clean_jira.board_columns bc
             WHERE bc.board_id IN (SELECT DISTINCT board_id FROM tmp_board_columns_src);
-            """
-            )
-        )
-        result = conn.execute(
-            text(
-                """
+            """))
+        result = conn.execute(text("""
             INSERT INTO clean_jira.board_columns (board_id, name, position)
             SELECT s.board_id, s.name, s.position
             FROM tmp_board_columns_src s
             RETURNING id;
-            """
-            )
-        )
+            """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -154,9 +130,7 @@ def clean_jira_board_column_statuses(
     engine = database.get_engine()
     with engine.connect() as conn:
         context.log.info("Syncing board column statuses...")
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.board_column_statuses (board_column_id, status_id)
             SELECT DISTINCT ON (bc_col.id, ist.id)
                 bc_col.id, ist.id
@@ -171,9 +145,7 @@ def clean_jira_board_column_statuses(
             ORDER BY bc_col.id, ist.id, bc._dlt_id DESC
             ON CONFLICT (board_column_id, status_id) DO NOTHING
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}

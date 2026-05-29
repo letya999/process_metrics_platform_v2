@@ -209,13 +209,11 @@ async def admin_login(request: Request, payload: AdminLoginRequest, db: DBSessio
     row = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT id, email, display_name, password_hash, is_admin, is_active
                 FROM platform.users
                 WHERE email = :email
-                """
-                ),
+                """),
                 {"email": payload.email},
             )
         )
@@ -334,13 +332,11 @@ async def admin_google_callback(
     row = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT id, email, display_name, is_admin, is_active
                 FROM platform.users
                 WHERE email = :email
-                """
-                ),
+                """),
                 {"email": email},
             )
         )
@@ -376,21 +372,11 @@ async def catalog_projects(
     db: DBSession,
     _admin: AdminDependency,
 ):
-    rows = (
-        (
-            await db.execute(
-                text(
-                    """
+    rows = (await db.execute(text("""
                 SELECT p.id AS project_id, p.external_key AS project_key, p.name AS project_name
                 FROM clean_jira.projects p
                 ORDER BY p.external_key
-                """
-                )
-            )
-        )
-        .mappings()
-        .all()
-    )
+                """))).mappings().all()
     return [ProjectCatalogItem(**row) for row in rows]
 
 
@@ -403,14 +389,12 @@ async def catalog_boards(
     rows = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT id AS board_id, name AS board_name, project_id
                 FROM clean_jira.boards
                 WHERE project_id = :project_id
                 ORDER BY name
-                """
-                ),
+                """),
                 {"project_id": str(project_id)},
             )
         )
@@ -429,8 +413,7 @@ async def catalog_board_columns(
     rows = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT
                     bc.id AS column_id,
                     bc.board_id,
@@ -444,8 +427,7 @@ async def catalog_board_columns(
                 LEFT JOIN clean_jira.issue_statuses s ON s.id = bcs.status_id
                 WHERE bc.board_id = :board_id
                 ORDER BY bc.position, bc.name
-                """
-                ),
+                """),
                 {"board_id": str(board_id)},
             )
         )
@@ -464,14 +446,12 @@ async def catalog_statuses(
     rows = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT id AS status_id, project_id, name AS status_name, category
                 FROM clean_jira.issue_statuses
                 WHERE project_id = :project_id
                 ORDER BY name
-                """
-                ),
+                """),
                 {"project_id": str(project_id)},
             )
         )
@@ -490,14 +470,12 @@ async def catalog_field_keys(
     rows = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT id AS field_key_id, project_id, external_key, name
                 FROM clean_jira.field_keys
                 WHERE project_id = :project_id
                 ORDER BY external_key
-                """
-                ),
+                """),
                 {"project_id": str(project_id)},
             )
         )
@@ -516,14 +494,12 @@ async def catalog_issue_types(
     rows = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT id AS issue_type_id, project_id, name AS issue_type_name
                 FROM clean_jira.issue_types
                 WHERE project_id = :project_id
                 ORDER BY name
-                """
-                ),
+                """),
                 {"project_id": str(project_id)},
             )
         )
@@ -538,22 +514,12 @@ async def catalog_clean_jira_schema_map(
     db: DBSession,
     _admin: AdminDependency,
 ):
-    rows = (
-        (
-            await db.execute(
-                text(
-                    """
+    rows = (await db.execute(text("""
                 SELECT table_name, column_name, data_type
                 FROM information_schema.columns
                 WHERE table_schema = 'clean_jira'
                 ORDER BY table_name, ordinal_position
-                """
-                )
-            )
-        )
-        .mappings()
-        .all()
-    )
+                """))).mappings().all()
 
     grouped: dict[str, list[SchemaMapColumn]] = {}
     for row in rows:
@@ -564,11 +530,7 @@ async def catalog_clean_jira_schema_map(
         SchemaMapTable(table_name=table_name, columns=columns)
         for table_name, columns in grouped.items()
     ]
-    relation_rows = (
-        (
-            await db.execute(
-                text(
-                    """
+    relation_rows = (await db.execute(text("""
                 SELECT
                     tc.table_name AS from_table,
                     kcu.column_name AS from_column,
@@ -584,13 +546,7 @@ async def catalog_clean_jira_schema_map(
                 WHERE tc.constraint_type = 'FOREIGN KEY'
                   AND tc.table_schema = 'clean_jira'
                 ORDER BY tc.table_name, kcu.column_name
-                """
-                )
-            )
-        )
-        .mappings()
-        .all()
-    )
+                """))).mappings().all()
     relations = [SchemaRelation(**row) for row in relation_rows]
     return SchemaMapResponse(tables=tables, relations=relations)
 
@@ -600,22 +556,12 @@ async def contract_catalog(
     db: DBSession,
     _admin: AdminDependency,
 ):
-    rows = (
-        (
-            await db.execute(
-                text(
-                    """
+    rows = (await db.execute(text("""
                 SELECT d.metric_code, c.calc_code, c.unit_code, c.uses_commitment_points
                 FROM metrics.calculations c
                 JOIN metrics.definitions d ON d.id = c.definition_id
                 ORDER BY d.metric_code, c.calc_code
-                """
-                )
-            )
-        )
-        .mappings()
-        .all()
-    )
+                """))).mappings().all()
 
     contracts: list[CalculationContract] = []
     for row in rows:
@@ -696,12 +642,10 @@ async def upsert_commitment_rule(
     col_rows = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT id, name FROM clean_jira.board_columns
                 WHERE id IN (:start_id, :end_id)
-                """
-                ),
+                """),
                 {
                     "start_id": str(payload.start_column_id),
                     "end_id": str(payload.end_column_id),
@@ -714,8 +658,7 @@ async def upsert_commitment_rule(
     names = {str(r["id"]): r["name"] for r in col_rows}
 
     if payload.id:
-        sql = text(
-            """
+        sql = text("""
             UPDATE metrics.commitment_rules
             SET project_id=:project_id,
                 board_id=:board_id,
@@ -732,8 +675,7 @@ async def upsert_commitment_rule(
                 target_calculation_name,
                 start_column_id, end_column_id,
                 start_column_name_snapshot, end_column_name_snapshot
-            """
-        )
+            """)
         params = {
             "id": str(payload.id),
             "project_id": str(payload.project_id) if payload.project_id else None,
@@ -747,8 +689,7 @@ async def upsert_commitment_rule(
             "calc_code": payload.calc_code,
         }
     else:
-        sql = text(
-            """
+        sql = text("""
             INSERT INTO metrics.commitment_rules (
                 project_id, board_id, target_calculation_id, target_calculation_name,
                 start_column_id, end_column_id,
@@ -763,8 +704,7 @@ async def upsert_commitment_rule(
                 target_calculation_name,
                 start_column_id, end_column_id,
                 start_column_name_snapshot, end_column_name_snapshot
-            """
-        )
+            """)
         params = {
             "project_id": str(payload.project_id) if payload.project_id else None,
             "board_id": str(payload.board_id) if payload.board_id else None,
@@ -845,14 +785,12 @@ async def upsert_calculation_setting(
     calc = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT c.id, c.calc_code, d.metric_code
                 FROM metrics.calculations c
                 JOIN metrics.definitions d ON d.id = c.definition_id
                 WHERE c.calc_code = :calc_code
-                """
-                ),
+                """),
                 {"calc_code": payload.calc_code},
             )
         )
@@ -863,8 +801,7 @@ async def upsert_calculation_setting(
         raise HTTPException(status_code=404, detail="Calculation not found")
 
     if payload.id:
-        sql = text(
-            """
+        sql = text("""
             UPDATE metrics.calculation_settings
             SET project_id=:project_id,
                 target_calculation_id=:target_calculation_id,
@@ -877,8 +814,7 @@ async def upsert_calculation_setting(
                 :calc_code AS calc_code,
                 :metric_code AS metric_code,
                 settings_type, settings_json, enabled
-            """
-        )
+            """)
         params = {
             "id": str(payload.id),
             "project_id": str(payload.project_id) if payload.project_id else None,
@@ -890,8 +826,7 @@ async def upsert_calculation_setting(
             "metric_code": calc["metric_code"],
         }
     else:
-        sql = text(
-            """
+        sql = text("""
             INSERT INTO metrics.calculation_settings (
                 project_id, target_calculation_id, settings_type, settings_json, enabled
             ) VALUES (
@@ -901,8 +836,7 @@ async def upsert_calculation_setting(
                 :calc_code AS calc_code,
                 :metric_code AS metric_code,
                 settings_type, settings_json, enabled
-            """
-        )
+            """)
         params = {
             "project_id": str(payload.project_id) if payload.project_id else None,
             "target_calculation_id": str(calc["id"]),
@@ -971,16 +905,14 @@ async def upsert_unit(
     existing = (
         (
             await db.execute(
-                text(
-                    """
+                text("""
                 SELECT id
                 FROM metrics.units
                 WHERE unit_code=:unit_code AND (
                     (project_id = :project_id) OR
                     (project_id IS NULL AND :project_id IS NULL)
                 )
-                """
-                ),
+                """),
                 {
                     "unit_code": unit_code,
                     "project_id": (
@@ -994,8 +926,7 @@ async def upsert_unit(
     )
 
     if existing:
-        sql = text(
-            """
+        sql = text("""
             UPDATE metrics.units
             SET display_symbol = COALESCE(:display_symbol, display_symbol),
                 source_field_id = :source_field_id,
@@ -1003,8 +934,7 @@ async def upsert_unit(
                 updated_at = now()
             WHERE id = :id
             RETURNING id, project_id, unit_code, display_symbol, source_field_id, source_entity
-            """
-        )
+            """)
         params = {
             "id": str(existing["id"]),
             "display_symbol": payload.display_symbol,
@@ -1014,16 +944,14 @@ async def upsert_unit(
             "source_entity": payload.source_entity,
         }
     else:
-        sql = text(
-            """
+        sql = text("""
             INSERT INTO metrics.units (
                 project_id, unit_code, display_symbol, source_field_id, source_entity
             ) VALUES (
                 :project_id, :unit_code, :display_symbol, :source_field_id, :source_entity
             )
             RETURNING id, project_id, unit_code, display_symbol, source_field_id, source_entity
-            """
-        )
+            """)
         params = {
             "project_id": str(payload.project_id) if payload.project_id else None,
             "unit_code": unit_code,
@@ -1093,8 +1021,7 @@ async def upsert_slice_rule(
     _admin: AdminDependency,
 ):
     if payload.id:
-        sql = text(
-            """
+        sql = text("""
             UPDATE metrics.slice_rules
             SET project_id=:project_id,
                 rule_name=:rule_name,
@@ -1108,8 +1035,7 @@ async def upsert_slice_rule(
             RETURNING id, project_id, rule_name, target_definition_id,
                       target_definition_name, source_table,
                       group_by_source_column, enabled
-            """
-        )
+            """)
         params = {
             "id": str(payload.id),
             "project_id": str(payload.project_id) if payload.project_id else None,
@@ -1125,8 +1051,7 @@ async def upsert_slice_rule(
             "enabled": payload.enabled,
         }
     else:
-        sql = text(
-            """
+        sql = text("""
             INSERT INTO metrics.slice_rules (
                 project_id, rule_name, target_definition_id,
                 target_definition_name, source_table,
@@ -1139,8 +1064,7 @@ async def upsert_slice_rule(
             RETURNING id, project_id, rule_name, target_definition_id,
                       target_definition_name, source_table,
                       group_by_source_column, enabled
-            """
-        )
+            """)
         params = {
             "project_id": str(payload.project_id) if payload.project_id else None,
             "rule_name": payload.rule_name,
@@ -1218,15 +1142,13 @@ async def validate_config(
         sp_row = (
             (
                 await db.execute(
-                    text(
-                        """
+                    text("""
                     SELECT source_field_id
                     FROM metrics.units
                     WHERE unit_code='story_points' AND (project_id=:pid OR project_id IS NULL)
                     ORDER BY project_id NULLS LAST
                     LIMIT 1
-                    """
-                    ),
+                    """),
                     {"pid": pid},
                 )
             )
@@ -1247,15 +1169,13 @@ async def validate_config(
         for calc_code in commitment_calcs:
             cnt = (
                 await db.execute(
-                    text(
-                        """
+                    text("""
                         SELECT COUNT(*)
                         FROM metrics.commitment_rules cr
                         JOIN metrics.calculations c ON c.id = cr.target_calculation_id
                         WHERE c.calc_code=:calc_code
                           AND (cr.project_id=:pid OR cr.project_id IS NULL)
-                        """
-                    ),
+                        """),
                     {"calc_code": calc_code, "pid": pid},
                 )
             ).scalar()
@@ -1275,8 +1195,7 @@ async def validate_config(
             for settings_type in settings_types:
                 cnt = (
                     await db.execute(
-                        text(
-                            """
+                        text("""
                             SELECT COUNT(*)
                             FROM metrics.calculation_settings s
                             JOIN metrics.calculations c ON c.id = s.target_calculation_id
@@ -1284,8 +1203,7 @@ async def validate_config(
                               AND s.settings_type=:settings_type
                               AND s.enabled=true
                               AND (s.project_id=:pid OR s.project_id IS NULL)
-                            """
-                        ),
+                            """),
                         {
                             "calc_code": calc_code,
                             "settings_type": settings_type,

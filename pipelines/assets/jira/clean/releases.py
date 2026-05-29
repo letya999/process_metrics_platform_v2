@@ -37,8 +37,7 @@ def clean_jira_releases(
             return {"status": "skipped", "reason": "no_versions_table"}
 
         result = conn.execute(
-            text(
-                """
+            text("""
             INSERT INTO clean_jira.releases (
                 project_id,
                 external_id,
@@ -81,8 +80,7 @@ def clean_jira_releases(
                 is_released = EXCLUDED.is_released,
                 updated_at = now()
             RETURNING id
-        """
-            ),
+        """),
         )
         releases_count = len(result.fetchall())
         context.log.info(f"Synced {releases_count} releases")
@@ -117,9 +115,7 @@ def clean_jira_release_changelog(
     with engine.connect() as conn:
         context.log.info("Detecting release property changes via snapshot diff...")
 
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             WITH current_state AS (
                 SELECT
                     r.id AS release_id,
@@ -157,9 +153,7 @@ def clean_jira_release_changelog(
             SELECT release_id, field_name, old_value, new_value, now()
             FROM changes
             RETURNING id
-        """
-            )
-        )
+        """))
         changelog_count = len(result.fetchall())
         context.log.info(f"Inserted {changelog_count} release changelog entries")
 
@@ -199,9 +193,7 @@ def clean_jira_release_issues(
             context.log.warning("No releases found, skipping release_issues")
             return {"status": "skipped", "reason": "no_releases"}
 
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             WITH changelog_events AS (
                 SELECT
                     r.id::text as issue_external_id,
@@ -274,9 +266,7 @@ def clean_jira_release_issues(
             ON CONFLICT (release_id, issue_id) DO UPDATE SET
                 is_active = EXCLUDED.is_active
             RETURNING id
-        """
-            )
-        )
+        """))
         release_issues_count = len(result.fetchall())
         context.log.info(f"Inserted {release_issues_count} release-issue relationships")
 
@@ -316,9 +306,7 @@ def clean_jira_release_issues_changelog(
             context.log.warning("No releases found, skipping release_issues_changelog")
             return {"status": "skipped", "reason": "no_releases"}
 
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             WITH changelog_events AS (
                 SELECT
                     r.id::text as issue_external_id,
@@ -389,9 +377,7 @@ def clean_jira_release_issues_changelog(
                 AND u.external_id = ae.author_id
             ON CONFLICT (release_id, issue_id, action, changed_at) DO NOTHING
             RETURNING id
-        """
-            )
-        )
+        """))
         changelog_count = len(result.fetchall())
         context.log.info(f"Inserted {changelog_count} release-issue changelog entries")
 

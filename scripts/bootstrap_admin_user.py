@@ -39,8 +39,7 @@ def main() -> int:
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
     engine = create_engine(db_url, future=True)
-    upsert_sql = text(
-        """
+    upsert_sql = text("""
         INSERT INTO platform.users (email, password_hash, display_name, is_active, is_admin)
         VALUES (:email, :password_hash, :display_name, true, true)
         ON CONFLICT (email) DO UPDATE
@@ -50,8 +49,7 @@ def main() -> int:
             is_active = true,
             is_admin = true,
             updated_at = now()
-        """
-    )
+        """)
 
     with engine.begin() as conn:
         conn.execute(

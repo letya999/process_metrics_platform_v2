@@ -65,13 +65,11 @@ def reset_db_watermark(engine, pipeline_name: str, new_date: str) -> None:
     """Reset watermark in PostgreSQL _dlt_pipeline_state table."""
     with engine.begin() as conn:
         row = conn.execute(
-            text(
-                """
+            text("""
             SELECT version, state FROM raw_jira._dlt_pipeline_state
             WHERE pipeline_name = :name
             ORDER BY version DESC LIMIT 1
-            """
-            ),
+            """),
             {"name": pipeline_name},
         ).fetchone()
 
@@ -96,8 +94,7 @@ def reset_db_watermark(engine, pipeline_name: str, new_date: str) -> None:
         # Copying load_id from the previous state row is unsafe — that row may itself
         # have an invalid load_id, causing dlt to silently ignore our reset state.
         conn.execute(
-            text(
-                """
+            text("""
             INSERT INTO raw_jira._dlt_pipeline_state
                 (version, engine_version, pipeline_name, created_at, version_hash,
                  state, _dlt_load_id, _dlt_id)
@@ -108,8 +105,7 @@ def reset_db_watermark(engine, pipeline_name: str, new_date: str) -> None:
             FROM raw_jira._dlt_pipeline_state ps
             WHERE ps.pipeline_name = :name
             ORDER BY ps.version DESC LIMIT 1
-            """
-            ),
+            """),
             {"version": new_version, "state": new_blob, "name": pipeline_name},
         )
 

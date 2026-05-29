@@ -45,9 +45,7 @@ def clean_jira_issues(
     with engine.connect() as conn:
         # Get or create default Jira integration for syncing
         context.log.info("Getting system user and Jira integration...")
-        system_integration = conn.execute(
-            text(
-                """
+        system_integration = conn.execute(text("""
             SELECT ti.id FROM platform.tool_integrations ti
             JOIN platform.users u ON ti.user_id = u.id
             WHERE u.email = 'system@metrics.local'
@@ -55,9 +53,7 @@ def clean_jira_issues(
                   SELECT id FROM platform.integration_types WHERE name = 'jira_cloud'
               )
             LIMIT 1
-        """
-            )
-        ).first()
+        """)).first()
 
         if not system_integration:
             raise RuntimeError(
@@ -70,9 +66,7 @@ def clean_jira_issues(
 
         # Sync Jira users from raw_jira.users
         context.log.info("Syncing Jira users...")
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             INSERT INTO clean_jira.jira_users (
                 project_id,
                 external_id,
@@ -92,9 +86,7 @@ def clean_jira_issues(
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 display_name = EXCLUDED.display_name,
                 updated_at = now()
-        """
-            )
-        )
+        """))
 
         # Also extract users from issue changelog authors
         context.log.info("Extracting users from changelog...")
@@ -104,9 +96,7 @@ def clean_jira_issues(
         )
 
         if history_table_exists:
-            conn.execute(
-                text(
-                    """
+            conn.execute(text("""
                 INSERT INTO clean_jira.jira_users (
                     project_id,
                     external_id,
@@ -134,9 +124,7 @@ def clean_jira_issues(
                         clean_jira.jira_users.display_name
                     ),
                     updated_at = now()
-            """
-                )
-            )
+            """))
         else:
             context.log.warning(
                 "Table raw_jira.issues__changelog__histories not found, "
@@ -145,9 +133,7 @@ def clean_jira_issues(
 
         # Extract users from issue assignee/reporter/creator fields
         context.log.info("Extracting users from issue assignee/reporter/creator...")
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             INSERT INTO clean_jira.jira_users (
                 project_id,
                 external_id,
@@ -186,17 +172,13 @@ def clean_jira_issues(
                     clean_jira.jira_users.display_name
                 ),
                 updated_at = now()
-        """
-            )
-        )
+        """))
 
         # Sync issues
         context.log.info("Syncing issues...")
 
         # Check if optional fields exist in raw_jira.issues
-        columns_result = conn.execute(
-            text(
-                """
+        columns_result = conn.execute(text("""
             SELECT column_name FROM information_schema.columns
             WHERE table_schema = 'raw_jira' AND table_name = 'issues'
             AND column_name IN (
@@ -206,9 +188,7 @@ def clean_jira_issues(
                 'fields__priority__id',
                 'fields__resolution__id'
             )
-        """
-            )
-        ).fetchall()
+        """)).fetchall()
 
         column_names = {row[0] for row in columns_result}
         has_description = "rendered_fields__description" in column_names
@@ -243,14 +223,10 @@ def clean_jira_issues(
 
         # C-4: Count dropped issues due to missing dimensions
         # Check for issues with null/empty project ID - these are silently dropped by the JOIN
-        null_project_result = conn.execute(
-            text(
-                """
+        null_project_result = conn.execute(text("""
             SELECT COUNT(*) FROM raw_jira.issues
             WHERE fields__project__id IS NULL OR fields__project__id = ''
-            """
-            )
-        )
+            """))
         null_project_count = null_project_result.scalar() or 0
         if null_project_count > 0:
             context.log.warning(
@@ -259,9 +235,7 @@ def clean_jira_issues(
                 f"Check that 'project' is in the Jira API fields whitelist (raw.py default_fields)."
             )
 
-        drop_count_result = conn.execute(
-            text(
-                """
+        drop_count_result = conn.execute(text("""
             SELECT COUNT(*)
             FROM raw_jira.issues r
             JOIN clean_jira.projects p ON r.fields__project__id::text = p.external_id
@@ -270,9 +244,7 @@ def clean_jira_issues(
             LEFT JOIN clean_jira.issue_statuses ist ON ist.project_id = p.id
                 AND ist.external_id = r.fields__status__id
             WHERE (it.id IS NULL OR ist.id IS NULL) AND r.id IS NOT NULL
-        """
-            )
-        )
+        """))
         drop_count = drop_count_result.scalar() or 0
         if drop_count > 0:
             context.log.warning(
@@ -351,9 +323,7 @@ def clean_jira_issues(
         # Reconcile parent_id links in a second pass
         if has_parent_id:
             context.log.info("Reconciling parent_id links...")
-            conn.execute(
-                text(
-                    f"""
+            conn.execute(text(f"""
                 UPDATE clean_jira.issues i
                 SET parent_id = parent.id
                 FROM raw_jira.issues r
@@ -361,9 +331,7 @@ def clean_jira_issues(
                 WHERE i.external_id = r.id::text
                   AND parent.project_id = i.project_id
                   AND i.parent_id IS DISTINCT FROM parent.id
-            """
-                )
-            )  # noqa: S608
+            """))  # noqa: S608
 
         conn.commit()
 
@@ -394,9 +362,7 @@ def clean_jira_labels(
             return {"status": "skipped", "reason": "no_labels_table"}
 
         context.log.info("Syncing unique labels...")
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.labels (
                 project_id,
                 name
@@ -410,9 +376,7 @@ def clean_jira_labels(
             WHERE rl.value IS NOT NULL
             ON CONFLICT (project_id, name) DO NOTHING
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -438,9 +402,7 @@ def clean_jira_issue_labels(
             return {"status": "skipped", "reason": "no_labels_table"}
 
         context.log.info("Syncing issue labels...")
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.issue_labels (
                 issue_id,
                 label_id
@@ -455,9 +417,7 @@ def clean_jira_issue_labels(
             JOIN clean_jira.labels l ON l.project_id = p.id AND l.name = rl.value
             ON CONFLICT (issue_id, label_id) DO NOTHING
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -477,9 +437,7 @@ def clean_jira_user_issue_roles(
     engine = database.get_engine()
     with engine.connect() as conn:
         context.log.info("Syncing user issue roles...")
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             INSERT INTO clean_jira.jira_user_issue_roles (
                 user_id,
                 issue_id,
@@ -505,9 +463,7 @@ def clean_jira_user_issue_roles(
             JOIN clean_jira.jira_users u ON u.external_id = role_data.account_id AND u.project_id = p.id
             ON CONFLICT (user_id, issue_id, role_type) DO NOTHING
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -535,9 +491,7 @@ def clean_jira_issue_links(
 
         context.log.info("Syncing issue link types...")
         # First sync relation_issue_types
-        conn.execute(
-            text(
-                """
+        conn.execute(text("""
             INSERT INTO clean_jira.relation_issue_types (
                 project_id,
                 external_id,
@@ -553,16 +507,12 @@ def clean_jira_issue_links(
             WHERE il.type__id IS NOT NULL
             ON CONFLICT (project_id, external_id) DO UPDATE SET
                 name = EXCLUDED.name
-        """
-            )
-        )
+        """))
 
         context.log.info("Syncing issue relationships...")
         # Then sync relation_issue_issues
         # H-3: We need to handle both outward and inward links via UNION ALL
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             WITH link_data AS (
                 -- Outward links: source -> target
                 SELECT
@@ -601,9 +551,7 @@ def clean_jira_issue_links(
             JOIN clean_jira.issues ti ON ti.external_id = ld.target_external_id AND ti.project_id = p.id
             ON CONFLICT (relation_type_id, source_issue_id, target_issue_id) DO NOTHING
             RETURNING id
-        """
-            )
-        )
+        """))
         count = len(result.fetchall())
         conn.commit()
     return {"status": "success", "count": count}
@@ -636,9 +584,7 @@ def clean_jira_issue_status_changelog(
         if not changelog_exists:
             return {"status": "skipped", "reason": "no_raw_changelog"}
 
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             WITH status_changes AS (
                 SELECT
                     r.id::text as issue_external_id,
@@ -687,9 +633,7 @@ def clean_jira_issue_status_changelog(
                 from_status_id = EXCLUDED.from_status_id
             WHERE clean_jira.issue_status_changelog.from_status_id IS DISTINCT FROM EXCLUDED.from_status_id
             RETURNING id
-        """
-            )
-        )
+        """))
 
         count = len(result.fetchall())
         context.log.info(f"Inserted {count} status changelog entries")

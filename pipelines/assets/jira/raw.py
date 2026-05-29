@@ -886,14 +886,10 @@ def check_raw_issues_project_populated(
 
     engine = database.get_engine()
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                """
+        result = conn.execute(text("""
             SELECT COUNT(*) FROM raw_jira.issues
             WHERE fields__project__id IS NULL OR fields__project__id = ''
-            """
-            )
-        )
+            """))
         null_count = result.scalar() or 0
 
     return AssetCheckResult(
