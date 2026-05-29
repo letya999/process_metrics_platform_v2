@@ -67,7 +67,12 @@ def main() -> int:
             makefile,
         )
         for ref in sorted(set(references)):
-            if ref.startswith(".env") and ref in {".env", ".env.example"}:
+            if ref.startswith(".env") and ref in {
+                ".env",
+                ".env.example",
+                ".env.prod",
+                ".env.prod.example",
+            }:
                 continue
             if not (ROOT / ref).exists():
                 failures.append(f"Makefile: referenced file does not exist: {ref}")
