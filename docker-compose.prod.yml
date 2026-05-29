@@ -174,6 +174,7 @@ services:
       context: .
       dockerfile: Dockerfile.dagster
     container_name: dagster-daemon
+    init: true
     command: ["dagster-daemon", "run", "-m", "pipelines.definitions"]
     restart: unless-stopped
     environment:
