@@ -238,24 +238,75 @@ def write_fact_values(
                 {"lock_key": lock_key},
             )
 
-        # d. DELETE existing rows
-        delete_query = text(
-            """
-            DELETE FROM metrics.fact_values
-            WHERE metric_id = ANY(CAST(:metric_ids AS uuid[]))
-              AND project_agg_id = ANY(CAST(:project_agg_ids AS uuid[]))
-              AND time_id BETWEEN :start AND :end
-            """
-        )
-        conn.execute(
-            delete_query,
-            {
-                "metric_ids": metric_ids,
-                "project_agg_ids": project_agg_ids,
-                "start": time_id_start,
-                "end": time_id_end,
-            },
-        )
+        # d. DELETE existing rows — scoped to the slice_rule_ids present in this
+        # batch so that a sliced write never clobbers base rows (IS NULL) and
+        # a base write never clobbers sliced rows.
+        if "slice_rule_id" in df.columns and not df.is_empty():
+            raw_ids = df["slice_rule_id"].cast(pl.Utf8, strict=False).unique().to_list()
+            non_null_ids = [x for x in raw_ids if x is not None]
+            has_null = any(x is None for x in raw_ids)
+        else:
+            non_null_ids = []
+            has_null = True
+
+        if non_null_ids and not has_null:
+            delete_query = text(
+                """
+                DELETE FROM metrics.fact_values
+                WHERE metric_id = ANY(CAST(:metric_ids AS uuid[]))
+                  AND project_agg_id = ANY(CAST(:project_agg_ids AS uuid[]))
+                  AND time_id BETWEEN :start AND :end
+                  AND slice_rule_id = ANY(CAST(:slice_rule_ids AS uuid[]))
+                """
+            )
+            conn.execute(
+                delete_query,
+                {
+                    "metric_ids": metric_ids,
+                    "project_agg_ids": project_agg_ids,
+                    "start": time_id_start,
+                    "end": time_id_end,
+                    "slice_rule_ids": non_null_ids,
+                },
+            )
+        elif has_null and not non_null_ids:
+            delete_query = text(
+                """
+                DELETE FROM metrics.fact_values
+                WHERE metric_id = ANY(CAST(:metric_ids AS uuid[]))
+                  AND project_agg_id = ANY(CAST(:project_agg_ids AS uuid[]))
+                  AND time_id BETWEEN :start AND :end
+                  AND slice_rule_id IS NULL
+                """
+            )
+            conn.execute(
+                delete_query,
+                {
+                    "metric_ids": metric_ids,
+                    "project_agg_ids": project_agg_ids,
+                    "start": time_id_start,
+                    "end": time_id_end,
+                },
+            )
+        else:
+            # Mixed (null + non-null) or indeterminate — full delete for safety.
+            delete_query = text(
+                """
+                DELETE FROM metrics.fact_values
+                WHERE metric_id = ANY(CAST(:metric_ids AS uuid[]))
+                  AND project_agg_id = ANY(CAST(:project_agg_ids AS uuid[]))
+                  AND time_id BETWEEN :start AND :end
+                """
+            )
+            conn.execute(
+                delete_query,
+                {
+                    "metric_ids": metric_ids,
+                    "project_agg_ids": project_agg_ids,
+                    "start": time_id_start,
+                    "end": time_id_end,
+                },
+            )
 
         # e. INSERT from staging to final
         if not insert_df.is_empty():

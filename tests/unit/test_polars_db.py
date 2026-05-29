@@ -128,3 +128,137 @@ def test_execute_sql_runs_statement():
     engine = _DummyEngine()
     polars_db.execute_sql(engine, "SELECT 1")
     assert len(engine.conn.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# write_fact_values slice_rule_id scoping (the base-vs-sliced DELETE bug fix)
+# ---------------------------------------------------------------------------
+
+_BASE_COLS = {
+    "metric_id": ["m1"],
+    "project_agg_id": ["p1"],
+    "time_id": [20260301],
+    "value": [1.0],
+}
+
+
+def _delete_sql(engine: _DummyEngine) -> str:
+    """Return the DELETE statement that was executed."""
+    stmts = [c[0] for c in engine.conn.calls]
+    return next(s for s in stmts if "DELETE FROM metrics.fact_values" in s)
+
+
+def _delete_params(engine: _DummyEngine) -> dict:
+    """Return the params dict for the DELETE statement."""
+    for stmt, params in engine.conn.calls:
+        if "DELETE FROM metrics.fact_values" in stmt:
+            return params or {}
+    return {}
+
+
+def test_write_fact_values_base_delete_scopes_to_null_slice():
+    """Base write (no slice_rule_id column) must scope DELETE to IS NULL rows only."""
+    engine = _DummyEngine()
+    df = pl.DataFrame(_BASE_COLS)
+
+    polars_db.write_fact_values(
+        df=df,
+        engine=engine,
+        metric_ids=["m1"],
+        project_agg_ids=["p1"],
+        time_id_start=20260301,
+        time_id_end=20260301,
+    )
+
+    sql = _delete_sql(engine)
+    assert "slice_rule_id IS NULL" in sql
+    assert "ANY(CAST(:slice_rule_ids" not in sql
+
+
+def test_write_fact_values_base_with_null_column_scopes_to_null():
+    """Base write with explicit slice_rule_id=None must scope DELETE to IS NULL."""
+    engine = _DummyEngine()
+    df = pl.DataFrame({**_BASE_COLS, "slice_rule_id": [None]})
+
+    polars_db.write_fact_values(
+        df=df,
+        engine=engine,
+        metric_ids=["m1"],
+        project_agg_ids=["p1"],
+        time_id_start=20260301,
+        time_id_end=20260301,
+    )
+
+    sql = _delete_sql(engine)
+    assert "slice_rule_id IS NULL" in sql
+
+
+def test_write_fact_values_sliced_delete_scopes_to_rule_id():
+    """Sliced write must scope DELETE to that specific slice_rule_id only."""
+    rule_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    engine = _DummyEngine()
+    df = pl.DataFrame({**_BASE_COLS, "slice_rule_id": [rule_id]})
+
+    polars_db.write_fact_values(
+        df=df,
+        engine=engine,
+        metric_ids=["m1"],
+        project_agg_ids=["p1"],
+        time_id_start=20260301,
+        time_id_end=20260301,
+    )
+
+    sql = _delete_sql(engine)
+    params = _delete_params(engine)
+    assert "slice_rule_ids" in sql
+    assert rule_id in params.get("slice_rule_ids", [])
+    assert "IS NULL" not in sql
+
+
+def test_write_fact_values_sliced_does_not_affect_base_in_same_range():
+    """Key regression: sliced DELETE must NOT contain IS NULL — base rows are safe."""
+    rule_id = "11111111-2222-3333-4444-555555555555"
+    engine = _DummyEngine()
+    df = pl.DataFrame({**_BASE_COLS, "slice_rule_id": [rule_id]})
+
+    polars_db.write_fact_values(
+        df=df,
+        engine=engine,
+        metric_ids=["m1"],
+        project_agg_ids=["p1"],
+        time_id_start=20260301,
+        time_id_end=20260301,
+    )
+
+    sql = _delete_sql(engine)
+    # The DELETE must restrict to this rule_id, not wipe all rows
+    assert "slice_rule_id = ANY" in sql or "slice_rule_ids" in sql
+    assert "slice_rule_id IS NULL" not in sql
+
+
+def test_write_fact_values_mixed_slice_uses_full_delete():
+    """Mixed batch (null + non-null slice_rule_id) falls back to full delete."""
+    rule_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    engine = _DummyEngine()
+    df = pl.DataFrame(
+        {
+            "metric_id": ["m1", "m1"],
+            "project_agg_id": ["p1", "p1"],
+            "time_id": [20260301, 20260302],
+            "value": [1.0, 2.0],
+            "slice_rule_id": [None, rule_id],
+        }
+    )
+
+    polars_db.write_fact_values(
+        df=df,
+        engine=engine,
+        metric_ids=["m1"],
+        project_agg_ids=["p1"],
+        time_id_start=20260301,
+        time_id_end=20260302,
+    )
+
+    sql = _delete_sql(engine)
+    # Full delete — no scoping
+    assert "slice_rule_id" not in sql
