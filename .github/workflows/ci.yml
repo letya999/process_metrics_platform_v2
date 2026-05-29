@@ -11,10 +11,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.5.0
         with:
           python-version: "3.11"
 
@@ -36,7 +36,9 @@ jobs:
         run: python scripts/run_smoke_tests.py
 
       - name: Validate docker compose manifests
-        run: make compose-validate
+        run: |
+          cp .env.example .env
+          make compose-validate
 
       - name: Unit test gate with coverage threshold
         run: |
