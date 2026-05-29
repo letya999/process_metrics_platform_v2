@@ -78,7 +78,8 @@ services:
       ENVIRONMENT: production
       LOG_LEVEL: ${LOG_LEVEL:-WARNING}
     env_file:
-      - .env.prod
+      - path: .env.prod
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,7 +108,8 @@ services:
       ADMIN_API_URL: http://app:8000/api/v1
       ADMIN_PUBLIC_API_URL: https://${API_DOMAIN}/api/v1
     env_file:
-      - .env.prod
+      - path: .env.prod
+        required: false
     depends_on:
       app:
         condition: service_healthy
@@ -146,7 +148,8 @@ services:
       DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${POSTGRES_USER}
       DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${POSTGRES_PASSWORD}
     env_file:
-      - .env.prod
+      - path: .env.prod
+        required: false
     volumes:
       - dagster_home:/opt/dagster/dagster_home
       - ./config:/opt/dagster/app/config:ro
@@ -190,7 +193,8 @@ services:
       DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${POSTGRES_USER}
       DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${POSTGRES_PASSWORD}
     env_file:
-      - .env.prod
+      - path: .env.prod
+        required: false
     volumes:
       - dagster_home:/opt/dagster/dagster_home
       - ./config:/opt/dagster/app/config:ro
@@ -256,7 +260,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     env_file:
-      - .env.prod
+      - path: .env.prod
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -283,7 +288,8 @@ services:
       BI_DATABASE_ENGINE: postgres
       BI_DATABASE_SCHEMA: metrics
     env_file:
-      - .env.prod
+      - path: .env.prod
+        required: false
     volumes:
       - ./scripts:/app/scripts
       - ./bi:/app/bi:ro
