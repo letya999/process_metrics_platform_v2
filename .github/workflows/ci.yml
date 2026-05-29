@@ -46,4 +46,13 @@ jobs:
         run: python -m pytest tests/integration -v
 
       - name: Alembic heads gate
-        run: python scripts/check_alembic_heads.py
+        run: |
+          output=$(alembic -c db/migrations/alembic.ini heads 2>&1)
+          count=$(echo "$output" | grep -c "(head)" || true)
+          if [ "$count" -ne 1 ]; then
+            echo "[ALEMBIC] FAILED: expected 1 head, found $count"
+            echo "$output"
+            exit 1
+          fi
+          echo "[ALEMBIC] OK: exactly one head"
+          echo "$output"
