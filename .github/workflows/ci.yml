@@ -36,9 +36,7 @@ jobs:
         run: python scripts/run_smoke_tests.py
 
       - name: Validate docker compose manifests
-        run: |
-          cp .env.example .env
-          make compose-validate
+        run: make compose-validate
 
       - name: Unit test gate with coverage threshold
         run: |

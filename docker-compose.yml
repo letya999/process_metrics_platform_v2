@@ -45,7 +45,8 @@ services:
       ADMIN_GOOGLE_REDIRECT_URI: ${ADMIN_GOOGLE_REDIRECT_URI:-http://localhost:8000/api/v1/admin/auth/google/callback}
       ADMIN_UI_URL: ${ADMIN_UI_URL:-http://localhost:8501}
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,7 +88,8 @@ services:
       DESTINATION__POSTGRES__CREDENTIALS__USERNAME: ${POSTGRES_USER:-postgres}
       DESTINATION__POSTGRES__CREDENTIALS__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     env_file:
-      - .env
+      - path: .env
+        required: false
     volumes:
       - dagster_home:/opt/dagster/dagster_home
       - ./pipelines:/opt/dagster/app/pipelines:ro
@@ -168,7 +170,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-process_metrics}
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -192,7 +195,8 @@ services:
     environment:
       METABASE_URL: http://metabase:3000
     env_file:
-      - .env
+      - path: .env
+        required: false
     volumes:
       - ./scripts:/app/scripts
     depends_on:

@@ -17,6 +17,7 @@ from app.services.admin_auth import (
 @pytest.fixture(autouse=True)
 def _set_auth_secret(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SECRET_KEY", "unit-test-secret")
+    monkeypatch.delenv("ADMIN_AUTH_TTL_MINUTES", raising=False)
 
 
 def _session() -> AdminSession:
